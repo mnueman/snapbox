@@ -6,7 +6,7 @@ shutdown Pi safely:
 
 `sudo shutdown -h now`
 
-copy photobooth.py to Pi:3
+copy photobooth.py to Pi:
 
 `scp photobooth.py username@photobooth.local:~/photobooth/`
 
