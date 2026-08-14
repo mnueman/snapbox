@@ -691,13 +691,13 @@ def _refresh_browse_list():
     return True
 
 
-def browse_next():
+def browse_step(step):
     global browse_index
 
     if not _refresh_browse_list():
         return
 
-    browse_index = (browse_index + 1) % len(browse_strips)
+    browse_index = (browse_index + step) % len(browse_strips)
 
     print(
         f"Browsing {browse_index + 1}/{len(browse_strips)}: "
@@ -928,7 +928,9 @@ def shutdown_pi():
 def handle_short_presses(count):
     if mode == "browse":
         if count == 1:
-            browse_next()
+            browse_step(1)
+        elif count == 2:
+            browse_step(-1)
         elif count == 3:
             print_current_browsed_item()
         else:
