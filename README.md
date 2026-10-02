@@ -97,6 +97,30 @@ Layers that keep it running:
 - Raspberry Pi OS's hardware watchdog reboots the Pi if the whole system hangs.
 - Settings and strips are written with fsync + rename, so a power cut can't leave them empty.
 
+## Updates
+
+Booths install the `stable` branch from the private GitHub repo (mnueman/snapbox). Day-to-day work goes on
+`pi5-photobooth`; booths only see a change once `stable` moves.
+
+Publish an update (after trying it on your own booth):
+
+`git push origin pi5-photobooth:stable`
+
+Each booth checks 90 s after starting and every 6 hours. When it finds something new and is idle it shows
+"Your creator has gifted you with an update!"; BOOTH tab > UPDATES > INSTALL UPDATE installs it. The
+updater (`system/photobooth-update.py`, runs as root) refuses if the code was edited on the booth, checks
+the new version compiles, switches to it, reinstalls the system files, and requires the app to start and
+stay up for 20 s; otherwise it switches back to the old version. If power is cut mid-update, the next boot
+restores the old version. Photos and settings aren't touched.
+
+Set up a new booth for updates (once per booth, as admin):
+
+1. `~/photobooth/system/setup-updates.sh` (makes the booth's own read-only key and prints it)
+2. On GitHub: repo Settings > Deploy keys > Add deploy key, paste it, leave "Allow write access" unticked.
+
+To cut a booth off, delete its key there. The updater runs as root, so whoever controls the GitHub repo
+controls the booths: keep two-factor authentication on the GitHub account.
+
 ## Useful commands
 
 shutdown Pi safely:
