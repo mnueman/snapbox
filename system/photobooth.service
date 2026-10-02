@@ -1,0 +1,24 @@
+[Unit]
+Description=Photobooth app
+After=multi-user.target
+# Never stop retrying, however many times it fails in a row.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/home/admin/photobooth
+ExecStart=/usr/bin/python3 -u /home/admin/photobooth/photobooth.py
+# Send Ctrl+C so the app stops the camera and closes the screen cleanly.
+KillSignal=SIGINT
+TimeoutStopSec=10
+# Restart on any exit: crash, clean exit, screen not ready yet, or frozen (watchdog below).
+Restart=always
+RestartSec=3
+# The app pings systemd from its main loop; no ping for 60s means it froze, so restart it.
+WatchdogSec=60
+NotifyAccess=main
+
+[Install]
+WantedBy=multi-user.target

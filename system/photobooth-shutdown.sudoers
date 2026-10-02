@@ -1,0 +1,3 @@
+# Lets the photobooth app shut the Pi down (6-second press, empty battery).
+# Only "shutdown now" is allowed: /usr/sbin/shutdown links to systemctl.
+admin ALL=(root) NOPASSWD: /usr/sbin/shutdown now

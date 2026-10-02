@@ -1,0 +1,6 @@
+[Unit]
+Description=Start the photobooth app if it isn't running
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl start --no-block photobooth.service

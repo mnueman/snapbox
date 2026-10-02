@@ -1,0 +1,8 @@
+# Runtime data written by the app on the device; not code.
+__pycache__/
+captures/
+strips/
+current_preview.jpg
+settings.json
+screen_rotation.txt
+.*.tmp
