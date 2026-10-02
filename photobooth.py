@@ -283,8 +283,10 @@ def camera_controls_from_settings():
         "ExposureValue": settings["brightness"],
         "Saturation": COLOUR_LOOKS[settings["colour"]]["sat"],
         "AwbMode": AWB_MODES[settings["light"]],
-        "ScalerCrop": (cx + (cw - zw) // 2, cy + (ch - zh) // 2, zw, zh),
     }
+    # The sensor size is only known once the camera is configured; until then it reads as 0.
+    if cw and ch:
+        c["ScalerCrop"] = (cx + (cw - zw) // 2, cy + (ch - zh) // 2, zw, zh)
     if settings["focus"] == "auto":
         c["AfMode"] = controls.AfModeEnum.Continuous
     else:
@@ -314,6 +316,8 @@ try:
     LORES_FORMAT = _configure_camera()
     print(f"Camera configured: main {CAPTURE_W}x{CAPTURE_H}, lores {LORES_FORMAT}")
     picam2.start()
+    # Again now the sensor size is known, so the zoom (ScalerCrop) applies from the start.
+    picam2.set_controls(camera_controls_from_settings())
 except RuntimeError as e:
     print(f"Camera failed to start: {e}")
     _fatal_screen("CAMERA PROBLEM\n\nTurn the booth off and on again.\n\nTrying again...")
@@ -927,9 +931,13 @@ def _vignette(w, h, strength):
 def apply_colour_look(img, name=None):
     name = name or settings["colour"]
     look = COLOUR_LOOKS.get(name, COLOUR_LOOKS["normal"])
-    if "curve" not in look and "grain" not in look and "vignette" not in look:
+    if look["sat"] != 0 and "curve" not in look and "grain" not in look and "vignette" not in look:
         return img
     img = img.convert("RGB")
+    if look["sat"] == 0:
+        # The camera's saturation change takes a second or more to arrive, so B&W looks
+        # also go grey here: right away, and certain for the photo.
+        img = img.convert("L").convert("RGB")
     if "curve" in look:
         img = img.point(_colour_lut(name))
     if "grain" not in look and "vignette" not in look:
