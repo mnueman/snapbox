@@ -53,6 +53,17 @@ automatically (`settings.json`) and the camera tab shows a live preview. Tap DON
   connects, so a wrong password can't leave the booth offline. Open and WPA/WPA2/WPA3 networks work;
   enterprise (802.1X) and hidden networks don't. Needs `system/photobooth-wifi.rules` (installed by `install.sh`).
 
+## Reviewing saved strips (photo button)
+
+Tap the photo button under the gear to open REVIEW. Swipe left/right (or use ◀ ▶) through saved strips,
+newest first. PRINT prints the strip on screen; DELETE asks for a second tap within 4 seconds before it
+deletes, so a stray tap can't remove a photo. The top shows free storage and roughly how many more strips
+fit. BACK, any button press, or a minute untouched returns to the camera.
+
+Storage: after saving a strip with under 1 GB free the screen warns "STORAGE LOW". Under 200 MB the booth
+won't take a photo and says "STORAGE FULL – delete old strips in REVIEW"; if a strip can't be saved, its
+photos are kept so it can be saved once there's room.
+
 ## Review screen
 
 When the last photo is taken, the finished strip stays on screen:

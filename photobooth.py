@@ -4,6 +4,7 @@ from queue import Queue
 import json
 import math
 import os
+import shutil
 import socket
 import time
 import subprocess
@@ -699,6 +700,7 @@ def should_show_live_preview():
         lcd is not None
         and not screen_asleep
         and not menu_open
+        and not gallery_open
         and mode == "creation"
         and not strip_is_full()
         and 0 <= current_slot < current_capacity()
@@ -940,17 +942,23 @@ def update_lcd(img=None, overlay_text=None, fast=False):
         screen_w, screen_h = lcd.get_size()
 
         if img is None:
-            img = render_menu(_menu_last_cam) if menu_open else compose_display()
+            if menu_open:
+                img = render_menu(_menu_last_cam)
+            elif gallery_open:
+                img = render_gallery()
+            else:
+                img = compose_display()
 
         img = img.copy()
         if countdown_value is not None:
             _draw_countdown(img)
         if overlay_text is not None:
             _draw_centered_banner(img, overlay_text)
-        elif not menu_open:
+        elif not menu_open and not gallery_open:
             if in_review() and review_started is not None:
                 _draw_review_hint(img, review_seconds_left())
             _draw_gear_button(img)
+            _draw_gallery_button(img)
         _draw_battery_indicator(img)
 
         img = img.rotate(screen_rotation, expand=True)
@@ -1036,6 +1044,7 @@ def sleep_screen():
     _set_backlight(False)
     screen_asleep = True
     close_menu(redraw=False)
+    close_gallery(redraw=False)
     # Left streaming with nothing reading it, the camera can stall; it also saves power.
     stop_camera()
 
@@ -1118,11 +1127,20 @@ def start_fresh_strip():
 
 
 def save_and_advance():
-    save_finished_strip()
+    try:
+        save_finished_strip()
+    except OSError as e:
+        # Keep the photos and captures so the strip can be saved once there's room.
+        print(f"Could not save strip: {e}")
+        flash_message("COULD NOT SAVE STRIP\nStorage full?\nDelete old strips in REVIEW", seconds=2.5)
+        return
     # The strip JPG is the keeper; raw captures are only needed until it's built.
     delete_live_captures()
     start_fresh_strip()
     flash_message("STRIP SAVED", seconds=0.8)
+    free = storage_free_bytes()
+    if free is not None and free < STORAGE_LOW_BYTES:
+        flash_message("STORAGE LOW\nDelete old strips\nin REVIEW", seconds=2.0)
 
 
 def in_review():
@@ -1212,6 +1230,12 @@ def take_next_photo():
         print("Strip is already full; not taking another photo.")
         return
 
+    free = storage_free_bytes()
+    if free is not None and free < STORAGE_FULL_BYTES:
+        print(f"Storage full ({free} bytes free); not taking a photo.")
+        flash_message("STORAGE FULL\nDelete old strips\nin REVIEW", seconds=2.5)
+        return
+
     run_countdown()
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -1222,6 +1246,11 @@ def take_next_photo():
         picam2.capture_file(str(capture_path), wait=CAMERA_TIMEOUT_SECONDS * 2)
     except TimeoutError:
         camera_failed("photo capture")
+    except OSError as e:
+        print(f"Could not save photo: {e}")
+        delete_capture_file(capture_path)
+        flash_message("COULD NOT SAVE PHOTO\nStorage full?", seconds=2.0)
+        return
 
     img = Image.open(capture_path).convert("RGB")
     if img.width > CAPTURE_W or img.height > CAPTURE_H:
@@ -1512,15 +1541,16 @@ def _print_worker(path):
 
 
 def print_current_browsed_item():
-    if not browse_strips:
-        return
+    if browse_strips:
+        start_print(browse_strips[browse_index])
 
+
+def start_print(path):
     if _print_busy.is_set():
         print("Print already in progress; ignoring.")
         flash_message("ALREADY PRINTING", seconds=0.8)
         return
 
-    path = browse_strips[browse_index]
     _print_busy.set()
     threading.Thread(target=_print_worker, args=(path,), daemon=True).start()
     flash_message("PRINTING...", seconds=0.6)
@@ -2218,10 +2248,10 @@ def wifi_page_step(step):
 
 def _draw_key(draw, box, label, buttons, action, fill=MENU_ROW, text_fill=MENU_TEXT, size=22):
     draw.rounded_rectangle(box, radius=8, fill=fill)
-    font = _fit_font(draw, label, box[2] - box[0] - 6, size, bold=True)
     # Anchor on the font's middle so q, g and y line up with the other keys.
-    draw.text(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2), label, font=font,
-              fill=text_fill, anchor="mm")
+    font = _fit_font(draw, max(label.split("\n"), key=len), box[2] - box[0] - 6, size, bold=True)
+    draw.multiline_text(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2), label, font=font,
+                        fill=text_fill, anchor="mm", align="center", spacing=2)
     buttons.append((box, action))
 
 
@@ -2394,6 +2424,311 @@ def render_wifi_tab(draw, area, buttons):
         _render_wifi_list(draw, area, buttons)
 
 
+# ---------------------------------------------------------------------------
+# Review screen: swipe through saved strips to print or delete them
+# (opened with the photo button under the gear). Called "gallery" in the code
+# because "review" already means the end-of-strip KEEP / RETAKE screen.
+# ---------------------------------------------------------------------------
+
+GALLERY_BUTTON_TOP = 8 + GEAR_SIZE + 12
+GALLERY_IDLE_SECONDS = 60  # back to the camera after this long untouched
+DELETE_CONFIRM_SECONDS = 4
+SWIPE_MIN_PX = 50
+STORAGE_LOW_BYTES = 1024 ** 3
+STORAGE_FULL_BYTES = 200 * 1024 ** 2
+
+gallery_open = False
+gallery_paths = []
+gallery_index = 0
+gallery_buttons = []
+_gallery_delete_until = 0.0
+_gallery_drawn = None
+_gallery_thumbs = {}
+_gesture_down = None
+
+
+def storage_free_bytes():
+    try:
+        return shutil.disk_usage(BASE).free
+    except OSError:
+        return None
+
+
+def storage_status():
+    """Returns (text, level) with level "ok", "low" or "full"."""
+    free = storage_free_bytes()
+    if free is None:
+        return "STORAGE UNKNOWN", "ok"
+    sizes = [_size(p) for p in gallery_paths[:20]]
+    sizes = [s for s in sizes if s]
+    per_strip = sum(sizes) / len(sizes) if sizes else 1_000_000
+    usable = max(0, free - STORAGE_FULL_BYTES)
+    text = f"{free / 1024 ** 3:.1f} GB FREE · ABOUT {int(usable / per_strip):,} MORE STRIPS"
+    if free < STORAGE_FULL_BYTES:
+        return text, "full"
+    if free < STORAGE_LOW_BYTES:
+        return text, "low"
+    return text, "ok"
+
+
+def _size(path):
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
+def _draw_gallery_button(img):
+    if lcd is None:
+        return
+    draw = ImageDraw.Draw(img, "RGBA")
+    m, s, top = 8, GEAR_SIZE, GALLERY_BUTTON_TOP
+    draw.ellipse((m, top, m + s, top + s), fill=(0, 0, 0, 150))
+    # Two stacked photos, the front one with a mountain and a sun.
+    cx, cy = m + s / 2, top + s / 2
+    white = (255, 255, 255, 230)
+    draw.rounded_rectangle((cx - 9, cy - 12, cx + 13, cy + 6), radius=2, outline=white, width=2)
+    front = (cx - 13, cy - 7, cx + 9, cy + 11)
+    draw.rounded_rectangle(front, radius=2, fill=(0, 0, 0, 255), outline=white, width=2)
+    draw.polygon([(cx - 10, cy + 9), (cx - 4, cy + 1), (cx + 1, cy + 6), (cx + 3, cy + 4),
+                  (cx + 7, cy + 9)], fill=white)
+    draw.ellipse((cx + 1, cy - 4, cx + 5, cy), fill=white)
+
+
+def open_gallery():
+    global gallery_open, gallery_paths, gallery_index, _gallery_delete_until, _gallery_drawn
+    close_menu(redraw=False)
+    print("Review screen opened.")
+    gallery_open = True
+    gallery_paths = browsable_paths()
+    gallery_index = 0
+    _gallery_delete_until = 0.0
+    _gallery_drawn = None
+    stop_camera()  # nothing reads it here; a camera left streaming unread can stall
+    update_gallery(force=True)
+
+
+def close_gallery(redraw=True):
+    global gallery_open, _gesture_down
+    if not gallery_open:
+        return
+    print("Review screen closed.")
+    gallery_open = False
+    _gesture_down = None
+    _gallery_thumbs.clear()
+    if mode == "browse":
+        _refresh_browse_list()  # a strip shown in browse mode may have been deleted
+    if not screen_asleep:
+        start_camera()
+    _invalidate_live_preview()
+    if redraw:
+        update_lcd()
+
+
+def gallery_step(step):
+    global gallery_index, _gallery_delete_until
+    new = gallery_index + step
+    if 0 <= new < len(gallery_paths):
+        gallery_index = new
+        _gallery_delete_until = 0.0
+
+
+def gallery_print():
+    if gallery_paths:
+        start_print(gallery_paths[gallery_index])
+
+
+def gallery_delete():
+    global gallery_paths, gallery_index, _gallery_delete_until
+    if not gallery_paths:
+        return
+    now = time.monotonic()
+    if now >= _gallery_delete_until:
+        _gallery_delete_until = now + DELETE_CONFIRM_SECONDS
+        return
+    _gallery_delete_until = 0.0
+    path = gallery_paths[gallery_index]
+    try:
+        path.unlink()
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"Could not delete strip {path}: {e}")
+        flash_message("COULD NOT DELETE", seconds=1.0)
+        return
+    print(f"Deleted strip: {path}")
+    for key in [k for k in _gallery_thumbs if k[0] == path]:
+        del _gallery_thumbs[key]
+    gallery_paths = browsable_paths()
+    gallery_index = min(gallery_index, max(0, len(gallery_paths) - 1))
+    flash_message("DELETED", seconds=0.6)
+
+
+def _gallery_thumb(path, w, h):
+    key = (path, _mtime(path), w, h)
+    thumb = _gallery_thumbs.get(key)
+    if thumb is None:
+        try:
+            img = Image.open(path)
+            img.draft("RGB", (w, h))  # JPEG decodes straight to a small size: fast
+            img = img.convert("RGB")
+            img.thumbnail((w, h), Image.BILINEAR)
+        except Exception as e:
+            print(f"Could not open saved strip {path}: {e}")
+            img = None
+        if len(_gallery_thumbs) > 12:
+            _gallery_thumbs.clear()
+        thumb = _gallery_thumbs[key] = img
+    return thumb
+
+
+def _strip_time_label(path):
+    try:
+        when = datetime.strptime(path.stem, "strip_%Y-%m-%d_%H%M%S")
+    except ValueError:
+        when = datetime.fromtimestamp((_mtime(path) or 0) / 1e9)
+    return when.strftime("%b %-d, %Y  %-I:%M %p").upper()
+
+
+def render_gallery():
+    global gallery_buttons
+    w, h = ui_size()
+    img = Image.new("RGB", (w, h), (0, 0, 0))
+    draw = ImageDraw.Draw(img, "RGBA")
+    buttons = []
+    pad, gap = 8, 6
+    bar_h = 64
+
+    back = (pad, pad, pad + 110, bar_h - 6)
+    _draw_key(draw, back, "◀ BACK", buttons, close_gallery, fill=MENU_DONE, size=20)
+    n = len(gallery_paths)
+    title_box = (back[2] + pad, pad, w - pad, bar_h - 6)
+    if n:
+        path = gallery_paths[gallery_index]
+        _draw_text_centered(draw, (title_box[0], title_box[1], title_box[2], title_box[1] + 26),
+                            f"STRIP {gallery_index + 1} OF {n}", menu_font(20, True), MENU_TEXT)
+        label = _strip_time_label(path)
+        _draw_text_centered(draw, (title_box[0], title_box[1] + 28, title_box[2], title_box[3]),
+                            label, _fit_font(draw, label, title_box[2] - title_box[0], 15, False),
+                            MENU_DIM)
+    else:
+        _draw_text_centered(draw, title_box, "REVIEW", menu_font(22, True), MENU_TEXT)
+
+    text, level = storage_status()
+    color = {"ok": MENU_DIM, "low": MENU_ACCENT, "full": (255, 90, 90)}[level]
+    if level != "ok":
+        text = ("STORAGE FULL: " if level == "full" else "STORAGE LOW: ") + text
+    _draw_text_centered(draw, (pad, bar_h, w - pad, bar_h + 24), text,
+                        _fit_font(draw, text, w - 2 * pad, 15, level != "ok"), color)
+
+    action_h = 64
+    area = (pad, bar_h + 28, w - pad, h - pad - action_h - gap)
+    ax0, ay0, ax1, ay1 = area
+    if not n:
+        _draw_text_centered(draw, area, "NO SAVED STRIPS YET", menu_font(22, True), MENU_DIM)
+    else:
+        aw, ah = ax1 - ax0, ay1 - ay0
+        cur = _gallery_thumb(gallery_paths[gallery_index], aw, ah)
+        if cur is not None:
+            cx, cy = (ax0 + ax1) // 2, (ay0 + ay1) // 2
+            # Neighbours peek in at the sides, dimmed, as a hint that you can swipe.
+            nh = int(ah * 0.8)
+            for step, side in ((-1, -1), (1, 1)):
+                i = gallery_index + step
+                if not 0 <= i < n:
+                    continue
+                nb = _gallery_thumb(gallery_paths[i], aw, nh)
+                if nb is None:
+                    continue
+                nx = cx + side * (cur.width // 2 + 16 + nb.width // 2) - nb.width // 2
+                ny = cy - nb.height // 2
+                img.paste(nb, (nx, ny))
+                draw.rectangle((nx, ny, nx + nb.width, ny + nb.height), fill=(0, 0, 0, 150))
+            img.paste(cur, (cx - cur.width // 2, cy - cur.height // 2))
+        else:
+            _draw_text_centered(draw, area, "COULD NOT OPEN THIS STRIP", menu_font(18), MENU_DIM)
+
+    top = h - pad - action_h
+    arrow_w = 70
+    can_newer, can_older = gallery_index > 0, gallery_index < n - 1
+    _draw_key(draw, (pad, top, pad + arrow_w, h - pad), "◀", buttons,
+              lambda: gallery_step(-1), fill=MENU_ROW if can_newer else (30, 30, 36),
+              text_fill=MENU_TEXT if can_newer else (90, 90, 98), size=26)
+    _draw_key(draw, (w - pad - arrow_w, top, w - pad, h - pad), "▶", buttons,
+              lambda: gallery_step(1), fill=MENU_ROW if can_older else (30, 30, 36),
+              text_fill=MENU_TEXT if can_older else (90, 90, 98), size=26)
+    if n:
+        mid0, mid1 = pad + arrow_w + gap, w - pad - arrow_w - gap
+        half = (mid1 - mid0 - gap) // 2
+        printing = _print_busy.is_set()
+        _draw_key(draw, (mid0, top, mid0 + half, h - pad), "PRINTING..." if printing else "PRINT",
+                  buttons, gallery_print, fill=(80, 80, 88) if printing else MENU_ACCENT,
+                  text_fill=MENU_TEXT if printing else (0, 0, 0), size=22)
+        confirming = time.monotonic() < _gallery_delete_until
+        _draw_key(draw, (mid1 - half, top, mid1, h - pad),
+                  "DELETE?\nTAP AGAIN" if confirming else "DELETE", buttons, gallery_delete,
+                  fill=(235, 60, 60) if confirming else MENU_DANGER, size=22)
+
+    gallery_buttons = buttons
+    return img
+
+
+def update_gallery(force=False):
+    global _gallery_drawn
+    state = (gallery_index, tuple(gallery_paths), time.monotonic() < _gallery_delete_until,
+             _print_busy.is_set(), screen_rotation)
+    if force or state != _gallery_drawn:
+        _gallery_drawn = state
+        update_lcd()
+
+
+def next_gallery_gesture(events):
+    """Returns ("tap", (x, y)) or ("swipe", dx) in screen coordinates, acting on release."""
+    global _gesture_down
+    for event in events:
+        if event.type in (pygame.FINGERDOWN, pygame.FINGERUP):
+            screen_w, screen_h = lcd.get_size()
+            pos = (event.x * screen_w, event.y * screen_h)
+        elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+            if getattr(event, "touch", False):
+                continue  # the same touch also arrives as a finger event
+            pos = event.pos
+        else:
+            continue
+        point = screen_to_ui(*pos)
+        if point is None:
+            continue
+        if event.type in (pygame.FINGERDOWN, pygame.MOUSEBUTTONDOWN):
+            _gesture_down = point
+        elif _gesture_down is not None:
+            start, _gesture_down = _gesture_down, None
+            dx, dy = point[0] - start[0], point[1] - start[1]
+            if abs(dx) >= SWIPE_MIN_PX and abs(dx) > abs(dy):
+                return ("swipe", dx)
+            return ("tap", start)
+    return None
+
+
+def handle_gallery_gesture(gesture):
+    kind, value = gesture
+    if kind == "swipe":
+        # Finger moves left: the next (older) strip slides in from the right.
+        gallery_step(1 if value < 0 else -1)
+    else:
+        x, y = value
+        for (x0, y0, x1, y1), action in gallery_buttons:
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                action()
+                break
+    if gallery_open:
+        update_gallery(force=True)
+
+
 HELP_LINES = [
     "BUTTON: 1 press = photo   2 = next frame",
     "3 = 3 or 4 photos   hold 1 sec = browse",
@@ -2539,8 +2874,10 @@ def handle_tap(pos):
                 if menu_open:
                     update_menu(force=True)
                 return
-    elif x < GEAR_HIT and y < GEAR_HIT:
+    elif x < GEAR_HIT and y < GALLERY_BUTTON_TOP - 6:
         open_menu()
+    elif x < GEAR_HIT and y < GALLERY_BUTTON_TOP + GEAR_SIZE + 16:
+        open_gallery()
 
 
 def handle_short_presses(count):
@@ -2638,8 +2975,8 @@ def tick_review():
         _review_shown_seconds = None
         return
 
-    if review_started is None or menu_open:
-        # The countdown waits while the settings menu is open.
+    if review_started is None or menu_open or gallery_open:
+        # The countdown waits while the settings menu or the review screen is open.
         review_started = time.monotonic()
 
     left = review_seconds_left()
@@ -2655,18 +2992,27 @@ def tick_review():
 try:
     while True:
         if lcd is not None:
-            tap = next_tap(pygame.event.get())
-            # A tap on a sleeping screen only wakes it.
-            if tap is not None and not wake_screen():
-                handle_tap(tap)
+            events = pygame.event.get()
+            if gallery_open:
+                # Swipes need the release, so the review screen acts on touch-up.
+                gesture = next_gallery_gesture(events)
+                if gesture is not None:
+                    wake_screen(camera=False)
+                    handle_gallery_gesture(gesture)
+            else:
+                tap = next_tap(events)
+                # A tap on a sleeping screen only wakes it.
+                if tap is not None and not wake_screen():
+                    handle_tap(tap)
 
         while not action_queue.empty():
             action, payload = action_queue.get()
 
             if action in ("short", "toggle_mode"):
                 # The press that wakes the screen only wakes it; one in the menu closes it.
-                if wake_screen() or menu_open:
+                if wake_screen() or menu_open or gallery_open:
                     close_menu()
+                    close_gallery()
                     pending_short_time = None
                     short_press_count = 0
                     continue
@@ -2710,8 +3056,13 @@ try:
         ):
             sleep_screen()
 
+        if gallery_open and time.monotonic() - last_activity > GALLERY_IDLE_SECONDS:
+            close_gallery()
+
         if menu_open:
             update_menu()
+        elif gallery_open:
+            update_gallery()
         else:
             update_live_slot_preview()
         watchdog_ping()
