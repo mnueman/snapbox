@@ -111,8 +111,11 @@ CAMERA_SETTINGS = [
         (0.5, "A BIT BRIGHTER"), (1.0, "BRIGHTER"), (1.5, "BRIGHTEST"),
     ], 0.0),
     ("colour", "COLOUR", [
-        ("normal", "NORMAL"), ("bw", "BLACK & WHITE"), ("vivid", "VIVID"),
-        ("film", "FILM (WARM)"), ("film_bw", "FILM (B&W)"),
+        ("normal", "NORMAL"), ("vivid", "VIVID"), ("warm", "WARM"), ("cool", "COOL"),
+        ("soft", "SOFT & DREAMY"), ("bw", "BLACK & WHITE"), ("noir", "NOIR (HIGH CONTRAST B&W)"),
+        ("sepia", "SEPIA"), ("film", "FILM (WARM)"), ("film_bw", "FILM (B&W)"),
+        ("portrait", "FILM: PORTRAIT"), ("golden", "FILM: GOLDEN"), ("green", "FILM: COOL GREEN"),
+        ("instant", "INSTANT PHOTO"), ("faded70s", "70s FADED"), ("cross", "CROSS-PROCESSED"),
     ], "normal"),
     ("motion", "MOVEMENT", [
         (10000, "SHARPEST (DARKER)"), (20000, "BALANCED"), (33333, "BRIGHTER (MORE BLUR)"),
@@ -178,8 +181,49 @@ AWB_MODES = {
     "daylight": controls.AwbModeEnum.Daylight,
     "cloudy": controls.AwbModeEnum.Cloudy,
 }
-SATURATION = {"normal": 1.0, "bw": 0.0, "vivid": 1.6, "film": 0.85, "film_bw": 0.0}
 FOCUS_DIOPTRES = {"near": 1.5, "far": 0.3}  # 1 / distance in metres
+
+# Colour looks. "sat" is the camera's saturation (so the live preview matches); "curve" is a tone
+# curve applied after capture; plus optional vignette and grain (film looks).
+#   contrast: 0 = straight line .. 1 = full S-curve    fade/roll: output black and white levels
+#   gamma/lift/gain (r, g, b): per-channel shape, shadow tint and highlight level
+COLOUR_LOOKS = {
+    "normal": {"sat": 1.0},
+    "vivid": {"sat": 1.6, "curve": {"contrast": 0.25}},
+    "warm": {"sat": 1.1, "curve": {"gamma": (0.94, 0.99, 1.08), "gain": (1.0, 0.99, 0.93)}},
+    "cool": {"sat": 1.0, "curve": {"gamma": (1.07, 1.0, 0.94), "lift": (0.0, 0.01, 0.03)}},
+    "soft": {"sat": 0.85, "curve": {"contrast": -0.25, "fade": 0.06, "roll": 0.97,
+                                    "gamma": (0.95, 0.97, 0.98)}, "vignette": 0.12},
+    "bw": {"sat": 0.0},
+    "noir": {"sat": 0.0, "curve": {"contrast": 1.0, "gamma": (1.15, 1.15, 1.15)},
+             "grain": 9.0, "vignette": 0.45},
+    "sepia": {"sat": 0.0, "curve": {"contrast": 0.3, "fade": 0.04, "roll": 0.96,
+                                    "gamma": (0.92, 1.0, 1.2), "gain": (1.0, 0.92, 0.74),
+                                    "lift": (0.04, 0.02, 0.0)}, "grain": 6.0, "vignette": 0.3},
+    "film": {"sat": 0.85, "curve": {"contrast": 0.35, "fade": 0.05, "roll": 0.95,
+                                    "gamma": (0.93, 0.98, 1.06), "lift": (0.0, 0.0, 0.04),
+                                    "gain": (1.0, 1.0, 0.96)}, "grain": 5.0, "vignette": 0.28},
+    "film_bw": {"sat": 0.0, "curve": {"contrast": 0.45, "fade": 0.05, "roll": 0.95},
+                "grain": 8.0, "vignette": 0.32},
+    "portrait": {"sat": 0.9, "curve": {"contrast": 0.15, "fade": 0.04, "roll": 0.97,
+                                       "gamma": (0.95, 0.98, 1.03), "gain": (1.0, 0.99, 0.96)},
+                 "grain": 3.0, "vignette": 0.15},
+    "golden": {"sat": 1.15, "curve": {"contrast": 0.45, "fade": 0.03, "roll": 0.97,
+                                      "gamma": (0.88, 0.96, 1.12), "gain": (1.0, 0.98, 0.88)},
+               "grain": 4.0, "vignette": 0.25},
+    "green": {"sat": 1.0, "curve": {"contrast": 0.4, "fade": 0.04, "roll": 0.96,
+                                    "gamma": (1.04, 0.95, 0.99), "lift": (0.0, 0.03, 0.02)},
+              "grain": 4.0, "vignette": 0.22},
+    "instant": {"sat": 0.8, "curve": {"contrast": 0.2, "fade": 0.12, "roll": 0.92,
+                                      "gamma": (0.94, 0.97, 1.05), "lift": (0.0, 0.02, 0.04),
+                                      "gain": (1.0, 0.98, 0.9)}, "grain": 4.0, "vignette": 0.38},
+    "faded70s": {"sat": 0.75, "curve": {"contrast": 0.2, "fade": 0.09, "roll": 0.93,
+                                        "gamma": (0.85, 0.95, 1.2), "lift": (0.03, 0.01, 0.0),
+                                        "gain": (1.0, 0.95, 0.82)}, "grain": 6.0, "vignette": 0.3},
+    "cross": {"sat": 1.25, "curve": {"contrast": 0.7, "gamma": (0.9, 0.88, 1.2),
+                                     "lift": (0.0, 0.0, 0.06), "gain": (1.0, 1.0, 0.82)},
+              "grain": 3.0, "vignette": 0.2},
+}
 
 
 def camera_controls_from_settings():
@@ -191,7 +235,7 @@ def camera_controls_from_settings():
         "FrameDurationLimits": (100, settings["motion"]),
         "AeExposureMode": controls.AeExposureModeEnum.Short,
         "ExposureValue": settings["brightness"],
-        "Saturation": SATURATION[settings["colour"]],
+        "Saturation": COLOUR_LOOKS[settings["colour"]]["sat"],
         "AwbMode": AWB_MODES[settings["light"]],
         "ScalerCrop": (cx + (cw - zw) // 2, cy + (ch - zh) // 2, zw, zh),
     }
@@ -784,37 +828,35 @@ def yuv420_to_image(yuv, w, h):
     return Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8), "RGB")
 
 
-# Film looks: tone curve with faded blacks (+ warm tint for colour), vignette, grain.
-FILM_LOOKS = {
-    "film": {"bw": False, "grain": 5.0, "vignette": 0.28},
-    "film_bw": {"bw": True, "grain": 8.0, "vignette": 0.32},
-}
-_film_luts = {}
+_colour_luts = {}
 _vignettes = {}
 
 
-def _film_lut(bw):
-    if bw not in _film_luts:
+def _colour_lut(name):
+    if name not in _colour_luts:
+        c = COLOUR_LOOKS[name]["curve"]
         x = np.arange(256) / 255.0
         s_curve = 0.5 - 0.5 * np.cos(np.pi * x)
-        tone = (0.55 if bw else 0.65) * x + (0.45 if bw else 0.35) * s_curve
-        tone = 0.05 + 0.9 * tone  # lifted blacks, softened whites
-        if bw:
-            r = g = b = tone
-        else:
-            r = tone ** 0.93
-            g = tone ** 0.98
-            b = 0.04 + 0.92 * tone ** 1.06  # bluer shadows, warmer highlights
+        k = c.get("contrast", 0.0)
+        tone = (1.0 - k) * x + k * s_curve  # negative contrast flattens instead
+        fade, roll = c.get("fade", 0.0), c.get("roll", 1.0)
+        tone = fade + (roll - fade) * np.clip(tone, 0.0, 1.0)
         lut = []
-        for channel in (r, g, b):
+        for i in range(3):
+            gamma = c.get("gamma", (1.0, 1.0, 1.0))[i]
+            lift = c.get("lift", (0.0, 0.0, 0.0))[i]
+            gain = c.get("gain", (1.0, 1.0, 1.0))[i]
+            channel = lift + (gain - lift) * tone ** gamma
             lut.extend(np.clip(channel * 255.0, 0, 255).astype(np.uint8).tolist())
-        _film_luts[bw] = lut
-    return _film_luts[bw]
+        _colour_luts[name] = lut
+    return _colour_luts[name]
 
 
 def _vignette(w, h, strength):
     key = (w, h, strength)
     if key not in _vignettes:
+        if len(_vignettes) > 8:
+            _vignettes.clear()
         ys = np.linspace(-1.0, 1.0, h, dtype=np.float32)[:, None]
         xs = np.linspace(-1.0, 1.0, w, dtype=np.float32)[None, :]
         r2 = (xs * xs + ys * ys) / 2.0
@@ -822,18 +864,25 @@ def _vignette(w, h, strength):
     return _vignettes[key]
 
 
-def apply_colour_look(img):
-    look = FILM_LOOKS.get(settings["colour"])
-    if look is None:
+def apply_colour_look(img, name=None):
+    name = name or settings["colour"]
+    look = COLOUR_LOOKS.get(name, COLOUR_LOOKS["normal"])
+    if "curve" not in look and "grain" not in look and "vignette" not in look:
         return img
-    img = img.convert("RGB").point(_film_lut(look["bw"]))
+    img = img.convert("RGB")
+    if "curve" in look:
+        img = img.point(_colour_lut(name))
+    if "grain" not in look and "vignette" not in look:
+        return img
     a = np.asarray(img, dtype=np.float32)
     h, w = a.shape[:2]
-    a = a * _vignette(w, h, look["vignette"])
-    # Grain at half resolution so it stays visible once the photo is scaled down.
-    grain = np.random.normal(0.0, look["grain"], ((h + 1) // 2, (w + 1) // 2))
-    grain = grain.astype(np.float32).repeat(2, axis=0).repeat(2, axis=1)[:h, :w]
-    a += grain[..., None]
+    if "vignette" in look:
+        a = a * _vignette(w, h, look["vignette"])
+    if "grain" in look:
+        # Grain at half resolution so it stays visible once the photo is scaled down.
+        grain = np.random.normal(0.0, look["grain"], ((h + 1) // 2, (w + 1) // 2))
+        grain = grain.astype(np.float32).repeat(2, axis=0).repeat(2, axis=1)[:h, :w]
+        a += grain[..., None]
     return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8), "RGB")
 
 
