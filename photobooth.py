@@ -2141,7 +2141,7 @@ def _wifi_connect_worker(net, password, saved_uuid):
         print(f"WiFi connected to {net['ssid']} ({wifi_current[1]})")
         wifi_message = (f"CONNECTED TO {net['ssid']}", True)
     else:
-        wifi_message = (f"{message}: {net['ssid']}", False)
+        wifi_message = (f"{message} ({net['ssid']})", False)
     wifi_connecting = False
     _wifi_scan_start()
 
@@ -2284,11 +2284,22 @@ def _render_wifi_list(draw, area, buttons):
     _draw_text_centered(draw, (x0, y0, x1, y0 + 28), status,
                         _fit_font(draw, status, x1 - x0, 18), color)
     y = y0 + 30
+    if ip and not wifi_connecting:
+        # What to type on a computer on the same WiFi; the IP changes with the network.
+        ssh_box = (x0, y, x1, y + 52)
+        draw.rounded_rectangle(ssh_box, radius=10, fill=(34, 34, 40))
+        cmd = f"ssh admin@{ip}"
+        alt = f"or  ssh admin@{socket.gethostname()}.local"
+        _draw_text_centered(draw, (x0, y + 3, x1, y + 29), cmd,
+                            _fit_font(draw, cmd, x1 - x0 - 16, 20), MENU_ACCENT)
+        _draw_text_centered(draw, (x0, y + 29, x1, y + 49), alt,
+                            _fit_font(draw, alt, x1 - x0 - 16, 14, bold=False), MENU_DIM)
+        y += 56
     if wifi_message:
         text, ok = wifi_message
         _draw_text_centered(draw, (x0, y, x1, y + 26), text,
                             _fit_font(draw, text, x1 - x0, 17), (120, 220, 140) if ok else (255, 110, 110))
-    y += 30
+        y += 30
 
     bottom_h = 60
     scan_box = (x0, y1 - bottom_h, x1, y1)
@@ -2297,7 +2308,7 @@ def _render_wifi_list(draw, area, buttons):
               buttons, wifi_scan, fill=(80, 80, 88) if busy else MENU_ACCENT,
               text_fill=MENU_TEXT if busy else (0, 0, 0))
 
-    row_h, gap = 52, 6
+    row_h, gap = (52 if y1 - y0 > 500 else 44), 6
     list_bottom = y1 - bottom_h - gap
     per_page = max(1, (list_bottom - y + gap) // (row_h + gap))
     nets = wifi_networks
