@@ -47,6 +47,11 @@ automatically (`settings.json`) and the camera tab shows a live preview. Tap DON
   focus, lighting type, zoom, mirror preview.
 - Booth tab: screen orientation, screen-off time, countdown before each photo (off / 3 / 5 / 10 s), review auto-keep time, Shut down (tap twice), and a
   reminder of the button presses.
+- WiFi tab: shows the connected network and IP, scans for nearby networks (one entry per name, strongest
+  access point), and joins one. Tap a network, type the password on the on-screen keyboard and tap CONNECT
+  (or USE SAVED PASSWORD for a network the Pi already knows). The old network stays saved until the new one
+  connects, so a wrong password can't leave the booth offline. Open and WPA/WPA2/WPA3 networks work;
+  enterprise (802.1X) and hidden networks don't. Needs `system/photobooth-wifi.rules` (installed by `install.sh`).
 
 ## Review screen
 

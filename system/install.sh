@@ -5,6 +5,8 @@ set -e
 cd "$(dirname "$0")"
 visudo -cf photobooth-shutdown.sudoers
 install -m 0440 photobooth-shutdown.sudoers /etc/sudoers.d/photobooth-shutdown
+# Lets the app scan for and join WiFi networks from the touchscreen menu.
+install -m 0644 photobooth-wifi.rules /etc/polkit-1/rules.d/50-photobooth-wifi.rules
 install -m 0644 photobooth.service photobooth-guard.service photobooth-guard.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable photobooth.service photobooth-guard.timer

@@ -1850,7 +1850,10 @@ def close_menu(redraw=True):
 
 
 def set_menu_tab(tab):
-    global menu_tab
+    global menu_tab, wifi_view
+    if tab == "wifi" and menu_tab != "wifi":
+        wifi_view = "list"
+        wifi_scan()
     menu_tab = tab
 
 
@@ -1913,6 +1916,484 @@ def _draw_setting_rows(draw, area, keys, buttons, max_row_h=76):
     return y0 + len(keys) * (row_h + gap)
 
 
+# ---------------------------------------------------------------------------
+# WiFi tab: scan with NetworkManager (nmcli) and join a network from the touchscreen.
+# Needs system/photobooth-wifi.rules (installed by system/install.sh).
+# ---------------------------------------------------------------------------
+
+WIFI_IFACE = "wlan0"
+WIFI_CONNECT_SECONDS = 45
+WIFI_PROFILE_PRIORITY = 10  # networks joined from the booth win over older saved ones
+
+wifi_view = "list"  # "list" or "keyboard"
+wifi_networks = []  # [{"ssid", "signal", "security", "in_use"}], one per name, strongest AP
+wifi_scanning = False
+wifi_connecting = False
+wifi_message = None  # (text, ok) result of the last scan or connect
+wifi_current = (None, None)  # (SSID, IP) of the connected network
+wifi_page = 0
+wifi_target = None  # network being joined
+wifi_saved_uuid = None  # saved profile for wifi_target, if the Pi already knows it
+wifi_password = ""
+wifi_kb_page = "lower"
+wifi_show_password = True
+
+
+def _nmcli(args, timeout=20):
+    return subprocess.run(["nmcli"] + args, capture_output=True, text=True, timeout=timeout)
+
+
+def _nmcli_fields(line):
+    # `nmcli -t` separates fields with ":" and escapes ":" and "\" inside values.
+    fields, cur, escaped = [], [], False
+    for ch in line:
+        if escaped:
+            cur.append(ch)
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == ":":
+            fields.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    fields.append("".join(cur))
+    return fields
+
+
+def wifi_supported(net):
+    # Enterprise (802.1X) needs a username too, and WEP is obsolete; only open and WPA work here.
+    return "802.1X" not in net["security"] and "WEP" not in net["security"]
+
+
+def _scan_wifi():
+    result = _nmcli(["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY",
+                     "device", "wifi", "list", "--rescan", "yes"], timeout=40)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "scan failed")
+    best = {}
+    for line in result.stdout.splitlines():
+        fields = _nmcli_fields(line)
+        if len(fields) < 4 or not fields[1]:
+            continue  # hidden network: no name to show
+        in_use, ssid, security = fields[0] == "*", fields[1], fields[3].strip()
+        try:
+            signal = int(fields[2])
+        except ValueError:
+            signal = 0
+        # One entry per network name, even when several access points broadcast it.
+        net = best.setdefault(ssid, {"ssid": ssid, "signal": signal,
+                                     "security": security, "in_use": False})
+        if signal > net["signal"]:
+            net["signal"], net["security"] = signal, security
+        net["in_use"] |= in_use
+    return sorted(best.values(), key=lambda n: (not n["in_use"], -n["signal"], n["ssid"].lower()))
+
+
+def _wifi_status():
+    ssid = ip = None
+    result = _nmcli(["-t", "-f", "ACTIVE,SSID", "device", "wifi", "list", "--rescan", "no"])
+    for line in result.stdout.splitlines():
+        fields = _nmcli_fields(line)
+        if len(fields) >= 2 and fields[0] == "yes" and fields[1]:
+            ssid = fields[1]
+            break
+    result = _nmcli(["-t", "-f", "IP4.ADDRESS", "device", "show", WIFI_IFACE])
+    for line in result.stdout.splitlines():
+        value = line.partition(":")[2]
+        if value:
+            ip = value.split("/")[0]
+            break
+    return ssid, ip
+
+
+def _wifi_profiles(ssid=None, active=False):
+    """UUIDs of saved WiFi profiles, optionally only for one network or only active ones."""
+    args = ["-t", "-f", "UUID,TYPE", "connection", "show"] + (["--active"] if active else [])
+    uuids = []
+    for line in _nmcli(args).stdout.splitlines():
+        uuid, _, ctype = line.partition(":")
+        if ctype != "802-11-wireless":
+            continue
+        if ssid is not None:
+            got = _nmcli(["-g", "802-11-wireless.ssid", "connection", "show", uuid])
+            if got.returncode != 0 or "".join(_nmcli_fields(got.stdout.strip())) != ssid:
+                continue
+        uuids.append(uuid)
+    return uuids
+
+
+def _wifi_error(result):
+    err = (result.stderr or result.stdout).strip()
+    print(f"nmcli failed (rc={result.returncode}): {err}")
+    low = err.lower()
+    if "secrets were required" in low or "802-1x" in low or "psk" in low:
+        return "WRONG PASSWORD?"
+    if "no network with ssid" in low:
+        return "NETWORK NOT FOUND"
+    if "timeout" in low or "timed out" in low:
+        return "TIMED OUT"
+    return "COULD NOT CONNECT"
+
+
+def _wifi_connect(net, password, saved_uuid):
+    """Returns (ok, message). The previous network stays saved until the new one works."""
+    ssid = net["ssid"]
+    up_timeout = WIFI_CONNECT_SECONDS + 15
+
+    if password is None and saved_uuid:
+        result = _nmcli(["--wait", str(WIFI_CONNECT_SECONDS), "connection", "up", saved_uuid],
+                        timeout=up_timeout)
+        return (True, None) if result.returncode == 0 else (False, _wifi_error(result))
+
+    previous = _wifi_profiles(active=True)
+    others = _wifi_profiles(ssid)
+    sec = net["security"]
+    args = ["connection", "add", "type", "wifi", "ifname", WIFI_IFACE,
+            "con-name", ssid, "ssid", ssid,
+            "connection.autoconnect-priority", str(WIFI_PROFILE_PRIORITY)]
+    if sec:
+        # WPA3-only networks use SAE; anything offering WPA/WPA2 works with WPA-PSK.
+        key_mgmt = "sae" if "WPA3" in sec and "WPA2" not in sec and "WPA1" not in sec else "wpa-psk"
+        args += ["wifi-sec.key-mgmt", key_mgmt, "wifi-sec.psk", password]
+    result = _nmcli(args)
+    if result.returncode != 0:
+        return False, _wifi_error(result)
+    new_uuid = None
+    for word in result.stdout.replace("(", " ").replace(")", " ").split():
+        if word.count("-") == 4 and len(word) == 36:
+            new_uuid = word
+    if new_uuid is None:
+        return False, "COULD NOT CONNECT"
+
+    result = _nmcli(["--wait", str(WIFI_CONNECT_SECONDS), "connection", "up", new_uuid],
+                    timeout=up_timeout)
+    if result.returncode == 0:
+        for uuid in others:
+            _nmcli(["connection", "delete", uuid])
+        return True, None
+
+    message = _wifi_error(result)
+    _nmcli(["connection", "delete", new_uuid])
+    for uuid in previous:
+        _nmcli(["--wait", str(WIFI_CONNECT_SECONDS), "connection", "up", uuid], timeout=up_timeout)
+    return False, message
+
+
+def _wifi_scan_worker():
+    global wifi_networks, wifi_scanning, wifi_message, wifi_current, wifi_page
+    try:
+        wifi_networks = _scan_wifi()
+        wifi_page = 0
+        wifi_message = None if wifi_networks else ("NO NETWORKS FOUND", False)
+    except Exception as e:
+        print(f"WiFi scan failed: {e}")
+        wifi_message = ("SCAN FAILED", False)
+    try:
+        wifi_current = _wifi_status()
+    except Exception as e:
+        print(f"WiFi status failed: {e}")
+    wifi_scanning = False
+
+
+def _wifi_connect_worker(net, password, saved_uuid):
+    global wifi_connecting, wifi_message, wifi_current
+    try:
+        ok, message = _wifi_connect(net, password, saved_uuid)
+    except Exception as e:
+        print(f"WiFi connect failed: {e}")
+        ok, message = False, "COULD NOT CONNECT"
+    try:
+        wifi_current = _wifi_status()
+    except Exception as e:
+        print(f"WiFi status failed: {e}")
+    if ok:
+        print(f"WiFi connected to {net['ssid']} ({wifi_current[1]})")
+        wifi_message = (f"CONNECTED TO {net['ssid']}", True)
+    else:
+        wifi_message = (f"{message}: {net['ssid']}", False)
+    wifi_connecting = False
+    _wifi_scan_start()
+
+
+def _wifi_scan_start():
+    global wifi_scanning
+    if wifi_scanning:
+        return
+    wifi_scanning = True
+    threading.Thread(target=_wifi_scan_worker, daemon=True).start()
+
+
+def wifi_scan():
+    if wifi_connecting:
+        return
+    _wifi_scan_start()
+
+
+def wifi_choose(net):
+    global wifi_view, wifi_target, wifi_password, wifi_kb_page, wifi_saved_uuid, wifi_message
+    if wifi_connecting:
+        return
+    if not wifi_supported(net):
+        wifi_message = ("THAT NETWORK TYPE ISN'T SUPPORTED", False)
+        return
+    if not net["security"]:
+        wifi_start_connect(net, "")
+        return
+    wifi_target = net
+    wifi_password = ""
+    wifi_kb_page = "lower"
+    wifi_message = None
+    wifi_saved_uuid = None
+    wifi_view = "keyboard"
+    threading.Thread(target=_wifi_find_saved, args=(net,), daemon=True).start()
+
+
+def _wifi_find_saved(net):
+    global wifi_saved_uuid
+    try:
+        uuids = _wifi_profiles(net["ssid"])
+    except Exception as e:
+        print(f"WiFi profile lookup failed: {e}")
+        return
+    if uuids and wifi_target is net:
+        wifi_saved_uuid = uuids[0]
+
+
+def wifi_start_connect(net, password, saved_uuid=None):
+    global wifi_connecting, wifi_view, wifi_message
+    if wifi_connecting:
+        return
+    print(f"WiFi: connecting to {net['ssid']}...")
+    wifi_connecting = True
+    wifi_message = None
+    wifi_view = "list"
+    threading.Thread(target=_wifi_connect_worker, args=(net, password, saved_uuid),
+                     daemon=True).start()
+
+
+def wifi_cancel_keyboard():
+    global wifi_view, wifi_password
+    wifi_view = "list"
+    wifi_password = ""
+
+
+WIFI_KB_ROWS = {
+    "lower": ["qwertyuiop", "asdfghjkl", "zxcvbnm"],
+    "upper": ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"],
+    "sym1": ["1234567890", "-/:;()$&@\"", ".,?!'"],
+    "sym2": ["[]{}#%^*+=", "_\\|~<>`", ".,?!'"],
+}
+# Left key on the third row switches page: shift on letters, more symbols on symbols.
+WIFI_KB_SWITCH = {"lower": ("SHIFT", "upper"), "upper": ("SHIFT", "lower"),
+                  "sym1": ("#+=", "sym2"), "sym2": ("123", "sym1")}
+WIFI_PASSWORD_MAX = 63  # WPA passphrases are 8-63 characters
+
+
+def wifi_type(ch):
+    global wifi_password
+    if len(wifi_password) < WIFI_PASSWORD_MAX:
+        wifi_password += ch
+
+
+def wifi_backspace():
+    global wifi_password
+    wifi_password = wifi_password[:-1]
+
+
+def wifi_set_kb_page(page):
+    global wifi_kb_page
+    wifi_kb_page = page
+
+
+def wifi_toggle_show():
+    global wifi_show_password
+    wifi_show_password = not wifi_show_password
+
+
+def wifi_page_step(step):
+    global wifi_page
+    wifi_page = max(0, wifi_page + step)
+
+
+def _draw_key(draw, box, label, buttons, action, fill=MENU_ROW, text_fill=MENU_TEXT, size=22):
+    draw.rounded_rectangle(box, radius=8, fill=fill)
+    font = _fit_font(draw, label, box[2] - box[0] - 6, size, bold=True)
+    # Anchor on the font's middle so q, g and y line up with the other keys.
+    draw.text(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2), label, font=font,
+              fill=text_fill, anchor="mm")
+    buttons.append((box, action))
+
+
+def _draw_signal_bars(draw, x, y, h, signal, color):
+    bars = 4
+    lit = max(1, min(bars, (signal + 12) // 25))
+    bw = 5
+    for i in range(bars):
+        bh = int(h * (i + 1) / bars)
+        draw.rectangle((x + i * (bw + 2), y + h - bh, x + i * (bw + 2) + bw, y + h),
+                       fill=color if i < lit else (80, 80, 88))
+
+
+def _draw_lock(draw, x, y, color):
+    draw.arc((x + 2, y, x + 12, y + 12), 180, 360, fill=color, width=2)
+    draw.rectangle((x, y + 6, x + 14, y + 16), fill=color)
+
+
+def _render_wifi_list(draw, area, buttons):
+    x0, y0, x1, y1 = area
+    ssid, ip = wifi_current
+    if wifi_connecting:
+        status, color = "CONNECTING...", MENU_ACCENT
+    elif ssid:
+        status, color = f"CONNECTED: {ssid}" + (f"  ({ip})" if ip else ""), (120, 220, 140)
+    elif wifi_scanning:
+        status, color = "CHECKING...", MENU_DIM
+    else:
+        status, color = "NOT CONNECTED", MENU_DIM
+    _draw_text_centered(draw, (x0, y0, x1, y0 + 28), status,
+                        _fit_font(draw, status, x1 - x0, 18), color)
+    y = y0 + 30
+    if wifi_message:
+        text, ok = wifi_message
+        _draw_text_centered(draw, (x0, y, x1, y + 26), text,
+                            _fit_font(draw, text, x1 - x0, 17), (120, 220, 140) if ok else (255, 110, 110))
+    y += 30
+
+    bottom_h = 60
+    scan_box = (x0, y1 - bottom_h, x1, y1)
+    busy = wifi_scanning or wifi_connecting
+    _draw_key(draw, scan_box, "SCANNING..." if wifi_scanning else "SCAN FOR NETWORKS",
+              buttons, wifi_scan, fill=(80, 80, 88) if busy else MENU_ACCENT,
+              text_fill=MENU_TEXT if busy else (0, 0, 0))
+
+    row_h, gap = 52, 6
+    list_bottom = y1 - bottom_h - gap
+    per_page = max(1, (list_bottom - y + gap) // (row_h + gap))
+    nets = wifi_networks
+    pages = max(1, (len(nets) + per_page - 1) // per_page)
+    page = min(wifi_page, pages - 1)
+    if pages > 1:
+        per_page = max(1, (list_bottom - y - row_h) // (row_h + gap))
+        pages = max(1, (len(nets) + per_page - 1) // per_page)
+        page = min(wifi_page, pages - 1)
+    if not nets and not wifi_scanning:
+        _draw_text_centered(draw, (x0, y, x1, y + 40), "TAP SCAN TO LOOK FOR WIFI",
+                            menu_font(18), MENU_DIM)
+    for n, net in enumerate(nets[page * per_page:(page + 1) * per_page]):
+        top = y + n * (row_h + gap)
+        box = (x0, top, x1, top + row_h)
+        supported = wifi_supported(net)
+        draw.rounded_rectangle(box, radius=10, fill=(40, 90, 55) if net["in_use"] else MENU_ROW)
+        text_color = MENU_TEXT if supported else MENU_DIM
+        _draw_signal_bars(draw, x0 + 12, top + (row_h - 22) // 2, 22, net["signal"], text_color)
+        name_x = x0 + 52
+        right = x1 - 12
+        if net["security"]:
+            _draw_lock(draw, right - 14, top + (row_h - 16) // 2, text_color)
+            right -= 24
+        label = net["ssid"] if supported else f"{net['ssid']} (NOT SUPPORTED)"
+        font = _fit_font(draw, label, right - name_x, 20, bold=net["in_use"])
+        bbox = draw.textbbox((0, 0), label, font=font)
+        draw.text((name_x - bbox[0], top + (row_h - (bbox[3] - bbox[1])) // 2 - bbox[1]),
+                  label, font=font, fill=text_color)
+        buttons.append((box, lambda net=net: wifi_choose(net)))
+
+    if pages > 1:
+        top = list_bottom - row_h
+        half = (x1 - x0 - gap) // 2
+        _draw_key(draw, (x0, top, x0 + half, top + row_h), "< PREV", buttons,
+                  lambda: wifi_page_step(-1), fill=MENU_ROW if page > 0 else (34, 34, 40))
+        _draw_key(draw, (x1 - half, top, x1, top + row_h), "NEXT >", buttons,
+                  lambda: wifi_page_step(1), fill=MENU_ROW if page < pages - 1 else (34, 34, 40))
+        _draw_text_centered(draw, (x0 + half, top, x1 - half, top + row_h),
+                            f"{page + 1}/{pages}", menu_font(14), MENU_DIM)
+
+
+def _render_wifi_keyboard(draw, area, buttons):
+    x0, y0, x1, y1 = area
+    gap = 5
+    title = f"PASSWORD FOR {wifi_target['ssid']}"
+    _draw_text_centered(draw, (x0, y0, x1, y0 + 26), title,
+                        _fit_font(draw, title, x1 - x0, 18), MENU_DIM)
+    y = y0 + 30
+
+    field_h = 50
+    show_w = 90
+    field = (x0, y, x1 - show_w - gap, y + field_h)
+    draw.rounded_rectangle(field, radius=8, fill=(0, 0, 0), outline=MENU_ACCENT, width=2)
+    shown = wifi_password if wifi_show_password else "•" * len(wifi_password)
+    font = menu_font(22)
+    max_w = field[2] - field[0] - 24
+    while shown and draw.textlength(shown + "|", font=font) > max_w:
+        shown = shown[1:]  # keep the end (where you're typing) visible
+    bbox = draw.textbbox((0, 0), shown + "|", font=font)
+    draw.text((field[0] + 12 - bbox[0], y + (field_h - (bbox[3] - bbox[1])) // 2 - bbox[1]),
+              shown + "|", font=font, fill=MENU_TEXT)
+    _draw_key(draw, (x1 - show_w, y, x1, y + field_h), "HIDE" if wifi_show_password else "SHOW",
+              buttons, wifi_toggle_show, size=18)
+    y += field_h + gap
+
+    if wifi_saved_uuid:
+        sbox = (x0, y, x1, y + 44)
+        _draw_key(draw, sbox, "USE SAVED PASSWORD", buttons,
+                  lambda: wifi_start_connect(wifi_target, None, wifi_saved_uuid),
+                  fill=(40, 90, 55), size=18)
+        y += 44 + gap
+
+    action_h = 56
+    rows_bottom = y1 - action_h - gap
+    key_h = min(80, (rows_bottom - y - 3 * gap) // 4)
+    key_w = (x1 - x0 - 9 * gap) / 10
+    rows = WIFI_KB_ROWS[wifi_kb_page]
+
+    def key_box(col, row, span=1.0, offset=0.0):
+        left = x0 + (col + offset) * (key_w + gap)
+        top = y + row * (key_h + gap)
+        return (int(left), top, int(left + span * key_w + (span - 1) * gap), top + key_h)
+
+    for r in range(2):
+        chars = rows[r]
+        offset = (10 - len(chars)) / 2
+        for c, ch in enumerate(chars):
+            _draw_key(draw, key_box(c, r, offset=offset), ch, buttons, lambda ch=ch: wifi_type(ch))
+
+    # Third row: page switch, keys, backspace.
+    label, target = WIFI_KB_SWITCH[wifi_kb_page]
+    active = wifi_kb_page == "upper"
+    _draw_key(draw, key_box(0, 2, span=1.5), label, buttons, lambda t=target: wifi_set_kb_page(t),
+              fill=MENU_ACCENT if active else (70, 70, 80),
+              text_fill=(0, 0, 0) if active else MENU_TEXT, size=16)
+    chars = rows[2]
+    offset = 1.5 + (7 - len(chars)) / 2
+    for c, ch in enumerate(chars):
+        _draw_key(draw, key_box(c, 2, offset=offset), ch, buttons, lambda ch=ch: wifi_type(ch))
+    _draw_key(draw, key_box(8.5, 2, span=1.5), "⌫", buttons, wifi_backspace,
+              fill=(70, 70, 80), size=24)
+
+    # Fourth row: letters/symbols toggle and space.
+    letters = wifi_kb_page in ("lower", "upper")
+    _draw_key(draw, key_box(0, 3, span=2), "123" if letters else "ABC", buttons,
+              lambda: wifi_set_kb_page("sym1" if letters else "lower"), fill=(70, 70, 80), size=18)
+    _draw_key(draw, key_box(2, 3, span=8), "SPACE", buttons, lambda: wifi_type(" "), size=16)
+
+    half = (x1 - x0 - gap) // 2
+    ready = len(wifi_password) >= 8
+    _draw_key(draw, (x0, y1 - action_h, x0 + half, y1), "CANCEL", buttons, wifi_cancel_keyboard,
+              fill=(70, 70, 80))
+    _draw_key(draw, (x1 - half, y1 - action_h, x1, y1),
+              "CONNECT" if ready else "8+ CHARACTERS", buttons,
+              (lambda: wifi_start_connect(wifi_target, wifi_password)) if ready else (lambda: None),
+              fill=MENU_DONE if ready else (50, 50, 58), size=20 if ready else 16)
+
+
+def render_wifi_tab(draw, area, buttons):
+    if wifi_view == "keyboard" and wifi_target is not None:
+        _render_wifi_keyboard(draw, area, buttons)
+    else:
+        _render_wifi_list(draw, area, buttons)
+
+
 HELP_LINES = [
     "BUTTON: 1 press = photo   2 = next frame",
     "3 = 3 or 4 photos   hold 1 sec = browse",
@@ -1930,17 +2411,19 @@ def render_menu(cam=None):
     pad = 8
     bar_h = 64
 
-    tab_w = 136 if w < 600 else 160
+    tabs = (("camera", "CAMERA"), ("booth", "BOOTH"), ("wifi", "WIFI"))
+    done_w = 100 if w < 600 else 120
+    tab_w = min(160, (w - done_w - pad * (len(tabs) + 2)) // len(tabs))
     x = pad
-    for tab, text in (("camera", "CAMERA"), ("booth", "BOOTH")):
+    for tab, text in tabs:
         box = (x, pad, x + tab_w, bar_h - 6)
         active = tab == menu_tab
         draw.rounded_rectangle(box, radius=10, fill=MENU_ACCENT if active else MENU_ROW)
-        _draw_text_centered(draw, box, text, menu_font(20, True),
+        _draw_text_centered(draw, box, text, _fit_font(draw, text, tab_w - 10, 20),
                             (0, 0, 0) if active else MENU_TEXT)
         buttons.append((box, lambda t=tab: set_menu_tab(t)))
         x += tab_w + pad
-    done = (w - pad - 120, pad, w - pad, bar_h - 6)
+    done = (w - pad - done_w, pad, w - pad, bar_h - 6)
     draw.rounded_rectangle(done, radius=10, fill=MENU_DONE)
     _draw_text_centered(draw, done, "DONE", menu_font(20, True), MENU_TEXT)
     buttons.append((done, close_menu))
@@ -1965,6 +2448,8 @@ def render_menu(cam=None):
             _draw_text_centered(draw, (px, py, px + pw, py + ph), "CAMERA STARTING...",
                                 menu_font(18), MENU_DIM)
         _draw_setting_rows(draw, rows, keys, buttons)
+    elif menu_tab == "wifi":
+        render_wifi_tab(draw, (pad, bar_h + 2, w - pad, h - pad), buttons)
     else:
         keys = [k for k, _, _, _ in BOOTH_SETTINGS]
         # Leave room under the rows for the shut-down button and the help text.
