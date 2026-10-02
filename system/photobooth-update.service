@@ -1,0 +1,7 @@
+[Unit]
+Description=Update the photobooth app from GitHub (rolls back if the new version fails)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/admin/photobooth/system/photobooth-update.py
+TimeoutStartSec=15min

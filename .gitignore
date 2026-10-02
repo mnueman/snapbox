@@ -6,3 +6,5 @@ current_preview.jpg
 settings.json
 screen_rotation.txt
 .*.tmp
+update-result.json
+update-pending.json

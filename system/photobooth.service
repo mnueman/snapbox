@@ -5,7 +5,9 @@ After=multi-user.target
 StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+# The app tells systemd when it's fully started; the updater relies on this to check a new version.
+Type=notify
+TimeoutStartSec=120
 User=admin
 Group=admin
 WorkingDirectory=/home/admin/photobooth

@@ -1,0 +1,10 @@
+// Lets the photobooth app (runs as admin) start its updater from the touchscreen.
+// Only starting that one service is allowed.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "photobooth-update.service" &&
+        action.lookup("verb") == "start" &&
+        subject.user == "admin") {
+        return polkit.Result.YES;
+    }
+});

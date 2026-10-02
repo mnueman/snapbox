@@ -1,0 +1,11 @@
+[Unit]
+Description=Restore the previous photobooth version if an update was interrupted
+ConditionPathExists=/home/admin/photobooth/update-pending.json
+Before=photobooth.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/admin/photobooth/system/photobooth-update.py --recover
+
+[Install]
+WantedBy=multi-user.target

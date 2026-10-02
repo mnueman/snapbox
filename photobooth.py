@@ -291,21 +291,27 @@ _NOTIFY_SOCKET = os.environ.get("NOTIFY_SOCKET")
 _last_watchdog_ping = 0.0
 
 
-def watchdog_ping():
-    # Tells systemd the main loop is alive; if the pings stop (app frozen), systemd restarts it.
-    global _last_watchdog_ping
-    now = time.monotonic()
-    if not _NOTIFY_SOCKET or now - _last_watchdog_ping < 5:
+def sd_notify(message):
+    if not _NOTIFY_SOCKET:
         return
-    _last_watchdog_ping = now
     addr = _NOTIFY_SOCKET
     if addr.startswith("@"):
         addr = "\0" + addr[1:]
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
-            s.sendto(b"WATCHDOG=1", addr)
+            s.sendto(message, addr)
     except OSError as e:
-        print(f"Watchdog ping failed: {e}")
+        print(f"systemd notify failed: {e}")
+
+
+def watchdog_ping():
+    # Tells systemd the main loop is alive; if the pings stop (app frozen), systemd restarts it.
+    global _last_watchdog_ping
+    now = time.monotonic()
+    if now - _last_watchdog_ping < 5:
+        return
+    _last_watchdog_ping = now
+    sd_notify(b"WATCHDOG=1")
 
 
 def save_settings():
@@ -2740,6 +2746,187 @@ def handle_gallery_gesture(gesture):
         update_gallery(force=True)
 
 
+# ---------------------------------------------------------------------------
+# Software updates (BOOTH tab > UPDATES). The booth downloads the "stable" branch with its own
+# read-only key (system/setup-updates.sh); system/photobooth-update.py installs it and rolls
+# back if the new version doesn't run.
+# ---------------------------------------------------------------------------
+
+UPDATE_REMOTE = "updates"
+UPDATE_BRANCH = "stable"
+UPDATE_FIRST_CHECK_SECONDS = 90
+UPDATE_CHECK_SECONDS = 6 * 3600
+UPDATE_RESULT_FILE = BASE / "update-result.json"
+UPDATE_ANNOUNCEMENT = "Your creator has gifted\nyou with an update!\n\nTap the gear > BOOTH > UPDATES"
+
+update_state = "idle"  # idle, checking, up_to_date, available, installing, error
+update_info = None  # the available update: {"sha", "version", "subject"}
+update_error = None
+update_last_result = None
+_update_next_check = time.monotonic() + UPDATE_FIRST_CHECK_SECONDS
+_update_next_result_poll = 0.0
+_update_announced = None
+_update_announce_pending = False
+
+
+def _git(*args, timeout=60):
+    return subprocess.run(["git", "-C", str(BASE), *args], capture_output=True, text=True,
+                          timeout=timeout)
+
+
+def _booth_version():
+    try:
+        result = _git("log", "-1", "--format=%h %cs")
+    except Exception:
+        return "UNKNOWN"
+    return result.stdout.strip() or "UNKNOWN"
+
+
+BOOTH_VERSION = _booth_version()
+
+
+def _update_check_worker(announce):
+    global update_state, update_info, update_error, _update_announced, _update_announce_pending
+    try:
+        result = _git("fetch", "--quiet", UPDATE_REMOTE, UPDATE_BRANCH, timeout=90)
+        if result.returncode != 0:
+            print(f"Update check failed: {result.stderr.strip()}")
+            update_error = "COULDN'T REACH GITHUB; CHECK WIFI"
+            update_state = "error"
+            return
+        ref = f"{UPDATE_REMOTE}/{UPDATE_BRANCH}"
+        # Nothing new if stable is already part of what this booth runs.
+        if _git("merge-base", "--is-ancestor", ref, "HEAD").returncode == 0:
+            update_info = None
+            update_state = "up_to_date"
+            return
+        sha = _git("rev-parse", ref).stdout.strip()
+        version, _, subject = _git("log", "-1", "--format=%h %cs%n%s", ref).stdout.strip().partition("\n")
+        update_info = {"sha": sha, "version": version, "subject": subject}
+        update_state = "available"
+        print(f"Update available: {version} {subject}")
+        if announce and _update_announced != sha:
+            _update_announced = sha
+            _update_announce_pending = True
+    except Exception as e:
+        print(f"Update check failed: {e}")
+        update_error = "UPDATE CHECK FAILED"
+        update_state = "error"
+
+
+def check_for_updates(announce=False):
+    global update_state
+    if update_state in ("checking", "installing"):
+        return
+    update_state = "checking"
+    threading.Thread(target=_update_check_worker, args=(announce,), daemon=True).start()
+
+
+def install_update():
+    global update_state, update_error
+    if update_state != "available":
+        return
+    try:
+        result = subprocess.run(["systemctl", "start", "--no-block", "photobooth-update.service"],
+                                capture_output=True, text=True, timeout=20)
+    except Exception as e:
+        result = None
+        print(f"Could not start the updater: {e}")
+    if result is None or result.returncode != 0:
+        if result is not None:
+            print(f"Could not start the updater: {result.stderr.strip()}")
+        update_error = "COULDN'T START THE UPDATER"
+        update_state = "error"
+        return
+    print("Updater started; the app will restart.")
+    update_state = "installing"
+
+
+def _booth_idle():
+    return (not menu_open and not gallery_open and not screen_asleep and mode == "creation"
+            and current_slot == 0 and countdown_value is None and not in_review())
+
+
+def tick_updates():
+    global _update_next_check, _update_next_result_poll, _update_announce_pending
+    global update_last_result
+    now = time.monotonic()
+    if now >= _update_next_check:
+        _update_next_check = now + UPDATE_CHECK_SECONDS
+        check_for_updates(announce=True)
+
+    if now >= _update_next_result_poll:
+        # The updater leaves its outcome here; it finishes after this (new) app has started.
+        _update_next_result_poll = now + 2
+        if UPDATE_RESULT_FILE.exists():
+            try:
+                update_last_result = json.loads(UPDATE_RESULT_FILE.read_text())
+            except (OSError, ValueError):
+                update_last_result = None
+            try:
+                UPDATE_RESULT_FILE.unlink()
+            except OSError:
+                pass
+            if update_last_result:
+                text = update_last_result.get("message", "")
+                if update_last_result.get("version"):
+                    text += f"\n{update_last_result['version']}"
+                wake_screen()
+                flash_message(text, seconds=3.0)
+
+    if _update_announce_pending and _booth_idle():
+        _update_announce_pending = False
+        flash_message(UPDATE_ANNOUNCEMENT, seconds=6.0)
+
+
+def render_update_view(draw, area, buttons):
+    x0, y0, x1, y1 = area
+    w = x1 - x0
+    _draw_text_centered(draw, (x0, y0, x1, y0 + 34), "SOFTWARE UPDATE", menu_font(22, True), MENU_TEXT)
+    line = f"THIS BOOTH: {BOOTH_VERSION}"
+    _draw_text_centered(draw, (x0, y0 + 36, x1, y0 + 60), line, _fit_font(draw, line, w, 17, False),
+                        MENU_DIM)
+    y = y0 + 72
+
+    lines, color = [], MENU_DIM
+    if update_state == "checking":
+        lines = ["CHECKING..."]
+    elif update_state == "up_to_date":
+        lines, color = ["UP TO DATE"], (120, 220, 140)
+    elif update_state == "available" and update_info:
+        lines, color = ["Your creator has gifted", "you with an update!",
+                        update_info["version"], update_info["subject"]], MENU_ACCENT
+    elif update_state == "installing":
+        lines, color = ["INSTALLING...", "THE BOOTH WILL RESTART"], MENU_ACCENT
+    elif update_state == "error":
+        lines, color = [update_error or "SOMETHING WENT WRONG"], (255, 110, 110)
+    elif update_last_result:
+        lines = ["LAST UPDATE: " + update_last_result.get("message", "")]
+    else:
+        lines = ["TAP CHECK FOR UPDATES"]
+    for n, text in enumerate(lines):
+        size = 15 if n >= 2 else 20
+        _draw_text_centered(draw, (x0, y, x1, y + 28), text,
+                            _fit_font(draw, text, w, size, n < 2), color if n < 2 else MENU_DIM)
+        y += 30
+
+    button_h, gap = 64, 8
+    bottom = y1 - 40
+    back = (x0, bottom - button_h, x1, bottom)
+    _draw_key(draw, back, "\u25c0 BACK", buttons, lambda: set_menu_tab("booth"), fill=MENU_ROW)
+    busy = update_state in ("checking", "installing")
+    check = (x0, back[1] - gap - button_h, x1, back[1] - gap)
+    _draw_key(draw, check, "CHECKING..." if update_state == "checking" else "CHECK FOR UPDATES",
+              buttons, check_for_updates, fill=(80, 80, 88) if busy else MENU_ACCENT,
+              text_fill=MENU_TEXT if busy else (0, 0, 0))
+    if update_state == "available":
+        install = (x0, check[1] - gap - button_h, x1, check[1] - gap)
+        _draw_key(draw, install, "INSTALL UPDATE", buttons, install_update, fill=MENU_DONE)
+    note = "THE BOOTH RESTARTS WHILE UPDATING. PHOTOS AND SETTINGS ARE KEPT."
+    _draw_text_centered(draw, (x0, y1 - 32, x1, y1), note, _fit_font(draw, note, w, 13, False),
+                        MENU_DIM)
+
+
 HELP_LINES = [
     "BUTTON: 1 press = photo   2 = next frame",
     "3 = 3 or 4 photos   hold 1 sec = browse",
@@ -2796,6 +2983,8 @@ def render_menu(cam=None):
         _draw_setting_rows(draw, rows, keys, buttons)
     elif menu_tab == "wifi":
         render_wifi_tab(draw, (pad, bar_h + 2, w - pad, h - pad), buttons)
+    elif menu_tab == "update":
+        render_update_view(draw, (pad, bar_h + 2, w - pad, h - pad), buttons)
     else:
         keys = [k for k, _, _, _ in BOOTH_SETTINGS]
         # Leave room under the rows for the shut-down button and the help text.
@@ -2803,11 +2992,14 @@ def render_menu(cam=None):
         bottom = _draw_setting_rows(
             draw, (pad, bar_h + 2, w - pad, bar_h + 2 + rows_h), keys, buttons)
         confirming = time.monotonic() < _shutdown_confirm_until
-        sbox = (pad, bottom + 4, w - pad, bottom + 4 + 64)
-        draw.rounded_rectangle(sbox, radius=10, fill=MENU_DANGER)
-        _draw_text_centered(draw, sbox, "TAP AGAIN TO SHUT DOWN" if confirming else "SHUT DOWN",
-                            menu_font(22, True), MENU_TEXT)
-        buttons.append((sbox, press_shutdown))
+        half = (w - 3 * pad) // 2
+        ubox = (pad, bottom + 4, pad + half, bottom + 4 + 64)
+        _draw_key(draw, ubox, "UPDATE READY" if update_state == "available" else "UPDATES",
+                  buttons, lambda: set_menu_tab("update"),
+                  fill=MENU_DONE if update_state == "available" else MENU_ROW, size=22)
+        sbox = (w - pad - half, bottom + 4, w - pad, bottom + 4 + 64)
+        _draw_key(draw, sbox, "TAP AGAIN TO\nSHUT DOWN" if confirming else "SHUT DOWN",
+                  buttons, press_shutdown, fill=MENU_DANGER, size=22)
         y = sbox[3] + 12
         help_font = _fit_font(draw, max(HELP_LINES, key=len), w - 2 * pad, 16, bold=False)
         for line in HELP_LINES:
@@ -3000,6 +3192,10 @@ def tick_review():
         _review_shown_seconds = left
         update_lcd()
 
+
+# Fully started: photobooth.service is Type=notify, and the updater waits for this.
+sd_notify(b"READY=1")
+
 try:
     while True:
         if lcd is not None:
@@ -3057,6 +3253,7 @@ try:
             update_lcd()
 
         tick_review()
+        tick_updates()
 
         if (
             settings["sleep"] is not None
