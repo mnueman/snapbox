@@ -41,10 +41,15 @@ Raw captures in `captures/` are deleted once their strip is saved to `strips/arc
 Tap the gear in the top-left corner of the screen. Use the ◀ ▶ arrows to change a setting; changes save
 automatically (`settings.json`) and the camera tab shows a live preview. Tap DONE or press the button to close.
 
-- Camera tab: brightness, colour (normal / black & white / vivid / film warm / film B&W), movement (sharper vs brighter),
-  focus, lighting type, zoom, mirror preview.
-- Booth tab: screen orientation, screen-off time, countdown before each photo (off / 3 / 5 / 10 s), review auto-keep time, Shut down (tap twice), and a
-  reminder of the button presses.
+- Camera tab: brightness, colour look, movement (sharper vs brighter), focus, lighting type, zoom, mirror preview.
+  Colour looks: normal, vivid, warm, cool, soft & dreamy, black & white, noir, sepia, film (warm), film (B&W),
+  film: portrait, film: golden, film: cool green, instant photo, 70s faded, cross-processed. The live preview
+  shows the look; film looks add grain and a vignette.
+- Booth tab: screen orientation, screen-off time, countdown before each photo (off / 3 / 5 / 10 s), review auto-keep
+  time, auto shut down when idle (off / 15 / 30 min / 1 / 2 / 4 h), UPDATES, Shut down (tap twice), and a reminder
+  of the button presses.
+- Auto shut down works on battery and on mains or a power bank. A minute before, the screen wakes and counts down;
+  any tap or press keeps the booth on. A half-finished strip is saved first.
 - WiFi tab: shows the connected network and IP, scans for nearby networks (one entry per name, strongest
   access point), and joins one. Tap a network, type the password on the on-screen keyboard and tap CONNECT
   (or USE SAVED PASSWORD for a network the Pi already knows). The old network stays saved until the new one
@@ -96,6 +101,11 @@ Layers that keep it running:
 - If the screen isn't ready at boot, the app exits so systemd retries instead of running without a screen.
 - Raspberry Pi OS's hardware watchdog reboots the Pi if the whole system hangs.
 - Settings and strips are written with fsync + rename, so a power cut can't leave them empty.
+- An unexpected error in the main loop is logged and the booth carries on; 5 within a minute restarts the app.
+- If the camera isn't detected the screen says "CAMERA NOT FOUND - check the cable" and keeps retrying.
+- A damaged frame file is skipped instead of crashing; only the 4 most recent frames are kept in memory.
+- Raw captures left by an interrupted strip are cleared at startup.
+- Logs survive reboots (capped at 50 MB): `journalctl -u photobooth -b -1` shows the previous boot.
 
 ## Updates
 

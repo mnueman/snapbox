@@ -11,6 +11,9 @@ install -m 0644 photobooth-wifi.rules /etc/polkit-1/rules.d/50-photobooth-wifi.r
 install -m 0644 photobooth-update.rules /etc/polkit-1/rules.d/50-photobooth-update.rules
 install -m 0644 photobooth.service photobooth-guard.service photobooth-guard.timer \
     photobooth-update.service photobooth-update-recover.service /etc/systemd/system/
+install -d /etc/systemd/journald.conf.d
+install -m 0644 photobooth-journald.conf /etc/systemd/journald.conf.d/50-photobooth.conf
+systemctl restart systemd-journald
 systemctl daemon-reload
 systemctl enable photobooth.service photobooth-guard.timer photobooth-update-recover.service
 # Automatic package-list updates write to the SD card at random times; not needed on a booth.

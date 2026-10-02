@@ -10,6 +10,7 @@ import time
 import subprocess
 import tempfile
 import threading
+import traceback
 
 from gpiozero import Button, InputDevice
 from PIL import Image, ImageDraw, ImageFont
@@ -40,6 +41,15 @@ ARCHIVE_DIR = STRIP_DIR / "archive"
 
 for d in [FRAME_DIR, STRIP_DIR, CAPTURE_DIR, ARCHIVE_DIR]:
     d.mkdir(parents=True, exist_ok=True)
+
+# Raw captures only live until their strip is saved. Any here at startup belong to a strip that
+# was interrupted (crash, power cut) and can't be resumed, so clear them before they pile up.
+for _leftover in CAPTURE_DIR.glob("capture_*.jpg"):
+    try:
+        _leftover.unlink()
+        print(f"Removed leftover capture {_leftover.name}")
+    except OSError:
+        pass
 
 STRIP_W, STRIP_H = 1200, 3600
 PRINT_W, PRINT_H = STRIP_W * 2, STRIP_H
@@ -175,7 +185,38 @@ settings = _load_settings()
 screen_rotation = settings["rotation"]
 
 
-picam2 = Picamera2()
+def _fatal_screen(message, seconds=15):
+    """Shows a problem on the booth screen before the app's UI exists, then exits so the
+    service tries again (the problem may get fixed, e.g. a camera cable pushed back in)."""
+    print(message.replace("\n", " "), flush=True)
+    try:
+        pygame.init()
+        screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        pygame.mouse.set_visible(False)
+        sw, sh = screen.get_size()
+        rotation = settings["rotation"]
+        w, h = (sw, sh) if rotation in (0, 180) else (sh, sw)
+        img = Image.new("RGB", (w, h), "black")
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
+        except OSError:
+            font = ImageFont.load_default()
+        ImageDraw.Draw(img).multiline_text((w / 2, h / 2), message, font=font, fill="white",
+                                           anchor="mm", align="center", spacing=10)
+        img = img.rotate(rotation, expand=True).resize((sw, sh))
+        screen.blit(pygame.image.fromstring(img.tobytes(), img.size, "RGB"), (0, 0))
+        pygame.display.flip()
+        time.sleep(seconds)
+    except Exception as e:
+        print(f"Could not show the problem on screen: {e}")
+    os._exit(1)
+
+
+try:
+    picam2 = Picamera2()
+except Exception as e:
+    print(f"Camera not found: {e}")
+    _fatal_screen("CAMERA NOT FOUND\n\nTurn the booth off and check\nthe camera cable is pushed in.\n\nTrying again...")
 
 
 AWB_MODES = {
@@ -253,13 +294,15 @@ def camera_controls_from_settings():
 
 
 def _configure_camera():
+    # Outside the try: a mistake here is a bug to see, not an unsupported format.
+    camera_controls = camera_controls_from_settings()
     # Pi 5 can deliver lores as RGB (PIL-ready); older Pis only allow YUV420.
     for fmt in ("BGR888", "YUV420"):
         try:
             picam2.configure(picam2.create_still_configuration(
                 main={"size": (CAPTURE_W, CAPTURE_H)},
                 lores={"size": (PREVIEW_W, PREVIEW_H), "format": fmt},
-                controls=camera_controls_from_settings(),
+                controls=camera_controls,
             ))
             return fmt
         except Exception as e:
@@ -267,9 +310,13 @@ def _configure_camera():
     raise RuntimeError("Could not configure camera")
 
 
-LORES_FORMAT = _configure_camera()
-print(f"Camera configured: main {CAPTURE_W}x{CAPTURE_H}, lores {LORES_FORMAT}")
-picam2.start()
+try:
+    LORES_FORMAT = _configure_camera()
+    print(f"Camera configured: main {CAPTURE_W}x{CAPTURE_H}, lores {LORES_FORMAT}")
+    picam2.start()
+except RuntimeError as e:
+    print(f"Camera failed to start: {e}")
+    _fatal_screen("CAMERA PROBLEM\n\nTurn the booth off and on again.\n\nTrying again...")
 camera_running = True
 time.sleep(1.5)
 
@@ -495,8 +542,16 @@ def load_frame_image(frame_index):
     if cached is not None and cached[0] == mtime:
         return cached[1]
 
-    frame = Image.open(frame_path).convert("RGBA")
-    frame = frame.resize((STRIP_W, STRIP_H), Image.LANCZOS)
+    try:
+        frame = Image.open(frame_path).convert("RGBA")
+        frame = frame.resize((STRIP_W, STRIP_H), Image.LANCZOS)
+    except Exception as e:
+        # A damaged frame file shows the photos without it instead of crashing the booth.
+        print(f"Could not load frame {frame_path.name}: {e}")
+        frame = None
+    # Each frame is ~17 MB at full size; keep only the few most recent.
+    while len(_frame_img_cache) >= 4:
+        del _frame_img_cache[next(iter(_frame_img_cache))]
     _frame_img_cache[frame_index] = (mtime, frame)
     return frame
 
@@ -1647,7 +1702,15 @@ def shutdown_pi(message="Shutting down..."):
         except Exception as e:
             print(f"Could not show shutdown screen: {e}")
 
-    subprocess.run(["sudo", "-n", "shutdown", "now"], check=False)
+    try:
+        result = subprocess.run(["sudo", "-n", "shutdown", "now"], capture_output=True, text=True,
+                                timeout=30)
+        failed = result.returncode != 0 and (result.stderr.strip() or f"rc={result.returncode}")
+    except Exception as e:
+        failed = str(e)
+    if failed:
+        print(f"Shutdown failed: {failed}")
+        flash_message("COULDN'T SHUT DOWN", seconds=2.0)
 
 
 class FuelGauge:
@@ -3288,88 +3351,99 @@ def tick_review():
 # Fully started: photobooth.service is Type=notify, and the updater waits for this.
 sd_notify(b"READY=1")
 
+_loop_errors = []
 try:
     while True:
-        if lcd is not None:
-            events = pygame.event.get()
-            if gallery_open:
-                # Swipes need the release, so the review screen acts on touch-up.
-                gesture = next_gallery_gesture(events)
-                if gesture is not None:
-                    wake_screen(camera=False)
-                    handle_gallery_gesture(gesture)
-            else:
-                tap = next_tap(events)
-                # A tap on a sleeping screen only wakes it.
-                if tap is not None and not wake_screen():
-                    handle_tap(tap)
+        try:
+            if lcd is not None:
+                events = pygame.event.get()
+                if gallery_open:
+                    # Swipes need the release, so the review screen acts on touch-up.
+                    gesture = next_gallery_gesture(events)
+                    if gesture is not None:
+                        wake_screen(camera=False)
+                        handle_gallery_gesture(gesture)
+                else:
+                    tap = next_tap(events)
+                    # A tap on a sleeping screen only wakes it.
+                    if tap is not None and not wake_screen():
+                        handle_tap(tap)
 
-        while not action_queue.empty():
-            action, payload = action_queue.get()
+            while not action_queue.empty():
+                action, payload = action_queue.get()
 
-            if action in ("short", "toggle_mode"):
-                # The press that wakes the screen only wakes it; one in the menu closes it.
-                if wake_screen() or menu_open or gallery_open:
-                    close_menu()
-                    close_gallery()
+                if action in ("short", "toggle_mode"):
+                    # The press that wakes the screen only wakes it; one in the menu closes it.
+                    if wake_screen() or menu_open or gallery_open:
+                        close_menu()
+                        close_gallery()
+                        pending_short_time = None
+                        short_press_count = 0
+                        continue
+
+                if action == "print_done":
+                    flash_message("PRINT SENT" if payload else "PRINT FAILED", seconds=1.0)
+                elif action == "shutdown":
                     pending_short_time = None
                     short_press_count = 0
-                    continue
+                    shutdown_pi()
+                elif action == "toggle_mode":
+                    pending_short_time = None
+                    short_press_count = 0
+                    toggle_mode()
+                elif action == "short":
+                    short_press_count += 1
+                    pending_short_time = payload
+                else:
+                    print(f"Unknown action: {action}")
 
-            if action == "print_done":
-                flash_message("PRINT SENT" if payload else "PRINT FAILED", seconds=1.0)
-            elif action == "shutdown":
+            if (
+                pending_short_time is not None
+                and time.monotonic() - pending_short_time > DOUBLE_CLICK_SECONDS
+            ):
+                count = short_press_count
                 pending_short_time = None
                 short_press_count = 0
-                shutdown_pi()
-            elif action == "toggle_mode":
-                pending_short_time = None
-                short_press_count = 0
-                toggle_mode()
-            elif action == "short":
-                short_press_count += 1
-                pending_short_time = payload
+                handle_short_presses(count)
+
+            if poll_battery() and not should_show_live_preview():
+                update_lcd()
+
+            tick_review()
+            tick_updates()
+            tick_auto_off()
+
+            if (
+                settings["sleep"] is not None
+                and not screen_asleep
+                and auto_off_banner is None
+                and not _print_busy.is_set()
+                and not in_review()
+                and time.monotonic() - last_activity > settings["sleep"]
+            ):
+                sleep_screen()
+
+            if gallery_open and time.monotonic() - last_activity > GALLERY_IDLE_SECONDS:
+                close_gallery()
+
+            if menu_open:
+                update_menu()
+            elif gallery_open:
+                update_gallery()
             else:
-                print(f"Unknown action: {action}")
-
-        if (
-            pending_short_time is not None
-            and time.monotonic() - pending_short_time > DOUBLE_CLICK_SECONDS
-        ):
-            count = short_press_count
-            pending_short_time = None
-            short_press_count = 0
-            handle_short_presses(count)
-
-        if poll_battery() and not should_show_live_preview():
-            update_lcd()
-
-        tick_review()
-        tick_updates()
-        tick_auto_off()
-
-        if (
-            settings["sleep"] is not None
-            and not screen_asleep
-            and auto_off_banner is None
-            and not _print_busy.is_set()
-            and not in_review()
-            and time.monotonic() - last_activity > settings["sleep"]
-        ):
-            sleep_screen()
-
-        if gallery_open and time.monotonic() - last_activity > GALLERY_IDLE_SECONDS:
-            close_gallery()
-
-        if menu_open:
-            update_menu()
-        elif gallery_open:
-            update_gallery()
-        else:
-            update_live_slot_preview()
-        watchdog_ping()
-        time.sleep(0.03)
-
+                update_live_slot_preview()
+            watchdog_ping()
+            time.sleep(0.03)
+        except Exception:
+            # One bad moment shouldn't end the event: log it and carry on. If errors keep
+            # coming, exit so the service starts a fresh app.
+            traceback.print_exc()
+            now = time.monotonic()
+            _loop_errors = [t for t in _loop_errors if now - t < 60] + [now]
+            if len(_loop_errors) >= 5:
+                print("Repeated errors; exiting so the service restarts the app.", flush=True)
+                raise
+            time.sleep(0.5)
 except KeyboardInterrupt:
     print("Exiting! Bye!")
 
