@@ -1,7 +1,5 @@
 # photobooth
 
-Code for Overtinker's portable photobooth.
-
 ## Hardware (Raspberry Pi 5 build)
 
 - Camera: IMX708 on CAM/DISP 0
