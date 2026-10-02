@@ -14,6 +14,8 @@ install -m 0644 photobooth.service photobooth-guard.service photobooth-guard.tim
 install -d /etc/systemd/journald.conf.d
 install -m 0644 photobooth-journald.conf /etc/systemd/journald.conf.d/50-photobooth.conf
 systemctl restart systemd-journald
+# Start writing to disk now; otherwise logs stay in memory until the next boot.
+journalctl --flush
 systemctl daemon-reload
 systemctl enable photobooth.service photobooth-guard.timer photobooth-update-recover.service
 # Automatic package-list updates write to the SD card at random times; not needed on a booth.

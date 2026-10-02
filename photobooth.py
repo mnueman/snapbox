@@ -3453,6 +3453,8 @@ try:
                 raise
             time.sleep(0.5)
 except KeyboardInterrupt:
+    # A normal stop (reboot, shutdown, update, Ctrl+C): keep a half-finished strip.
+    save_partial_strip_before_shutdown()
     print("Exiting! Bye!")
 
 finally:
