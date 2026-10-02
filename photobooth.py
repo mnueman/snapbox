@@ -148,6 +148,11 @@ BOOTH_SETTINGS = [
     ("review", "KEEP STRIP AUTOMATICALLY", [
         (10, "AFTER 10 SEC"), (20, "AFTER 20 SEC"), (30, "AFTER 30 SEC"), (60, "AFTER 1 MIN"),
     ], REVIEW_AUTO_KEEP_SECONDS),
+    # Saves the battery or power bank (and works on mains too).
+    ("auto_off", "AUTO SHUT DOWN WHEN IDLE", [
+        (None, "OFF"), (900, "AFTER 15 MIN"), (1800, "AFTER 30 MIN"), (3600, "AFTER 1 HOUR"),
+        (7200, "AFTER 2 HOURS"), (14400, "AFTER 4 HOURS"),
+    ], None),
 ]
 SETTING_DEFS = {key: (label, choices, default)
                 for key, label, choices, default in CAMERA_SETTINGS + BOOTH_SETTINGS}
@@ -1005,6 +1010,8 @@ def update_lcd(img=None, overlay_text=None, fast=False):
                 img = compose_display()
 
         img = img.copy()
+        if overlay_text is None and auto_off_banner is not None:
+            overlay_text = auto_off_banner
         if countdown_value is not None:
             _draw_countdown(img)
         if overlay_text is not None:
@@ -1104,10 +1111,11 @@ def sleep_screen():
     stop_camera()
 
 
-def wake_screen(camera=True):
+def wake_screen(camera=True, activity=True):
     """Turns the screen back on. Returns True if it was asleep."""
     global screen_asleep
-    note_activity()
+    if activity:
+        note_activity()
     if not screen_asleep:
         return False
     screen_asleep = False
@@ -1756,6 +1764,39 @@ def save_partial_strip_before_shutdown():
         delete_live_captures()
     except Exception as e:
         print(f"Could not save partial strip: {e}")
+
+
+AUTO_OFF_WARNING_SECONDS = 60
+auto_off_banner = None  # shown over every screen during the last minute
+
+
+def tick_auto_off():
+    """Shuts down after the chosen idle time (BOOTH tab), with a minute's warning on screen."""
+    global auto_off_banner
+    limit = settings["auto_off"]
+    if _print_busy.is_set() or update_state == "installing" or wifi_connecting:
+        note_activity()  # busy isn't idle
+    idle = time.monotonic() - last_activity
+    if limit is None or idle < limit - AUTO_OFF_WARNING_SECONDS:
+        if auto_off_banner is not None:
+            auto_off_banner = None
+            update_lcd()
+        return
+    if idle >= limit:
+        print(f"Idle for {limit // 60} min: shutting down automatically.")
+        auto_off_banner = None
+        save_partial_strip_before_shutdown()
+        # If the shutdown doesn't happen, try again after another full idle period.
+        note_activity()
+        shutdown_pi("Idle for a while:\nshutting down...")
+        return
+    text = f"SHUTTING DOWN IN {math.ceil(limit - idle)}s\nTap or press to keep it on"
+    if screen_asleep:
+        wake_screen(activity=False)
+    if text != auto_off_banner:
+        auto_off_banner = text
+        if not should_show_live_preview():
+            update_lcd()
 
 
 def poll_battery():
@@ -3037,7 +3078,9 @@ def render_menu(cam=None):
     else:
         keys = [k for k, _, _, _ in BOOTH_SETTINGS]
         # Leave room under the rows for the shut-down button and the help text.
-        rows_h = min(len(keys) * 82, h - bar_h - 2 - 68 - (len(HELP_LINES) * 22 + 12))
+        help_h = 0 if is_landscape() else len(HELP_LINES) * 22 + 12
+        # 68 = button row + its gap; also the gap after the last row and the bottom margin.
+        rows_h = min(len(keys) * 82, h - bar_h - 2 - 68 - 6 - pad - help_h)
         bottom = _draw_setting_rows(
             draw, (pad, bar_h + 2, w - pad, bar_h + 2 + rows_h), keys, buttons)
         confirming = time.monotonic() < _shutdown_confirm_until
@@ -3303,10 +3346,12 @@ try:
 
         tick_review()
         tick_updates()
+        tick_auto_off()
 
         if (
             settings["sleep"] is not None
             and not screen_asleep
+            and auto_off_banner is None
             and not _print_busy.is_set()
             and not in_review()
             and time.monotonic() - last_activity > settings["sleep"]
