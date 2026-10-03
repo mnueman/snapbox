@@ -14,9 +14,6 @@ install -m 0644 photobooth.service photobooth-guard.service photobooth-guard.tim
 install -d /etc/systemd/journald.conf.d
 install -m 0644 photobooth-journald.conf /etc/systemd/journald.conf.d/50-photobooth.conf
 systemctl restart systemd-journald
-install -d /etc/systemd/logind.conf.d
-install -m 0644 photobooth-logind.conf /etc/systemd/logind.conf.d/50-photobooth.conf
-systemctl reload systemd-logind || true
 # Start writing to disk now; otherwise logs stay in memory until the next boot.
 journalctl --flush
 systemctl daemon-reload
