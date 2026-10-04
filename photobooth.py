@@ -830,6 +830,7 @@ def should_show_live_preview():
         and not screen_asleep
         and not menu_open
         and not gallery_open
+        and _photo_show_img is None
         and mode == "creation"
         and not strip_is_full()
         and 0 <= current_slot < current_capacity()
@@ -1084,6 +1085,8 @@ def update_lcd(img=None, overlay_text=None, fast=False):
                 img = render_menu(_menu_last_cam)
             elif gallery_open:
                 img = render_gallery()
+            elif _photo_show_img is not None:
+                img = _photo_show_img
             else:
                 img = compose_display()
 
@@ -1094,11 +1097,10 @@ def update_lcd(img=None, overlay_text=None, fast=False):
             _draw_countdown(img)
         if overlay_text is not None:
             _draw_centered_banner(img, overlay_text)
-        elif not menu_open and not gallery_open:
+        elif not menu_open and not gallery_open and not fullscreen_view:
             if in_review() and review_started is not None:
                 _draw_review_hint(img, review_seconds_left())
-            _draw_gear_button(img)
-            _draw_gallery_button(img)
+            _draw_corner_buttons(img)
         _draw_battery_indicator(img)
 
         img = img.rotate(panel_rotation(), expand=True)
@@ -1225,7 +1227,8 @@ def save_preview():
 
     print(f"Preview updated: {path}")
 
-    update_lcd(preview)
+    if _photo_show_img is None:
+        update_lcd(preview)
 
 
 def save_finished_strip():
@@ -1328,7 +1331,7 @@ countdown_value = None
 
 def _draw_countdown(img):
     # Big number over the photo being taken, see-through enough to still pose.
-    box = _live_preview_slot_box
+    box = _fullscreen_box if fullscreen_view else _live_preview_slot_box
     if box is None:
         box = (0, 0, img.width, img.height)
     x, y, w, h = box
@@ -1339,20 +1342,87 @@ def _draw_countdown(img):
               stroke_fill=(0, 0, 0, 200), anchor="mm")
 
 
+# Taking a photo fills the screen: the live camera during the countdown, then the photo itself
+# for a few seconds, both cropped to the shape of the strip's photo slot.
+PHOTO_SHOW_SECONDS = 3
+fullscreen_view = False
+_fullscreen_box = None  # where the photo sits on screen while full screen
+_photo_show_img = None
+_photo_show_until = 0.0
+
+
+def _slot_aspect(index):
+    slots = current_frame_slots()
+    if 0 <= index < len(slots):
+        _, _, w, h = slots[index]
+        return (w + 2 * SLOT_BLEED) / (h + 2 * SLOT_BLEED)
+    return CAPTURE_W / CAPTURE_H
+
+
+def _fit_to_screen(img, aspect):
+    """img cropped to aspect, as large as the screen allows, centred on black."""
+    ui_w, ui_h = ui_size()
+    w, h = ui_w, int(ui_w / aspect)
+    if h > ui_h:
+        w, h = int(ui_h * aspect), ui_h
+    x, y = (ui_w - w) // 2, (ui_h - h) // 2
+    canvas = Image.new("RGB", (ui_w, ui_h), "black")
+    canvas.paste(center_crop_to_slot(img, w, h, resample=Image.BILINEAR), (x, y))
+    return canvas, (x, y, w, h)
+
+
+def _show_fullscreen_camera():
+    global _fullscreen_box
+    try:
+        cam = capture_preview_image()
+    except TimeoutError:
+        camera_failed("countdown preview")
+    except Exception as e:
+        print(f"Countdown preview capture failed: {e}")
+        return
+    canvas, _fullscreen_box = _fit_to_screen(cam, _slot_aspect(current_slot))
+    update_lcd(canvas, fast=True)
+
+
+def start_photo_show(photo, index):
+    global _photo_show_img, _photo_show_until, fullscreen_view, _fullscreen_box
+    _photo_show_img, _fullscreen_box = _fit_to_screen(photo, _slot_aspect(index))
+    _photo_show_until = time.monotonic() + PHOTO_SHOW_SECONDS
+    fullscreen_view = True
+    update_lcd()
+
+
+def end_photo_show():
+    global _photo_show_img, fullscreen_view
+    if _photo_show_img is None:
+        return
+    _photo_show_img = None
+    fullscreen_view = False
+    _invalidate_live_preview()
+    update_lcd()
+
+
+def tick_photo_show():
+    if _photo_show_img is not None and time.monotonic() >= _photo_show_until:
+        end_photo_show()
+
+
 def run_countdown():
-    global countdown_value
+    global countdown_value, fullscreen_view
     seconds = settings["countdown"]
     if not seconds or not should_show_live_preview():
         return
     end = time.monotonic() + seconds
+    fullscreen_view = True
     try:
         while (left := end - time.monotonic()) > 0:
             countdown_value = math.ceil(left)
-            update_live_slot_preview(force=True)
+            _show_fullscreen_camera()
             watchdog_ping()
             time.sleep(1.0 / LIVE_PREVIEW_FPS)
     finally:
         countdown_value = None
+        fullscreen_view = False
     # Presses made while counting down are not new photo requests.
     kept = []
     while not action_queue.empty():
@@ -1400,6 +1470,7 @@ def take_next_photo():
     live_photos[current_slot] = img
     live_capture_paths[current_slot] = capture_path
 
+    start_photo_show(img, current_slot)
     current_slot += 1
 
     save_preview()
@@ -1965,8 +2036,6 @@ MENU_DIM = (150, 150, 160)
 MENU_ACCENT = (255, 190, 40)
 MENU_DONE = (40, 150, 70)
 MENU_DANGER = (190, 45, 45)
-GEAR_SIZE = 44
-GEAR_HIT = 80  # generous tap area around the gear
 TAP_DEBOUNCE_SECONDS = 0.3
 SHUTDOWN_CONFIRM_SECONDS = 4
 
@@ -2021,14 +2090,60 @@ def _draw_gear(draw, cx, cy, r, color, bg):
     draw.ellipse((cx - rh, cy - rh, cx + rh, cy + rh), fill=bg)
 
 
-def _draw_gear_button(img):
+# Round buttons down the left of the main screen, big enough to hit on a small panel. In
+# portrait they sit in the black margin beside the strip.
+ICON_SIZE = 92
+ICON_GAP = 30
+ICON_MARGIN = 7
+
+
+def corner_buttons():
+    """[(kind, (x0, y0, x1, y1))] in UI coordinates: settings, review, and in browse mode the camera."""
+    kinds = ["menu", "gallery"] + (["camera"] if mode == "browse" else [])
+    buttons = []
+    for i, kind in enumerate(kinds):
+        top = ICON_MARGIN + i * (ICON_SIZE + ICON_GAP)
+        buttons.append((kind, (ICON_MARGIN, top, ICON_MARGIN + ICON_SIZE, top + ICON_SIZE)))
+    return buttons
+
+
+def _draw_photos_icon(draw, cx, cy, k, color):
+    # Two stacked photos, the front one with a mountain and a sun (k: scale from a 44 px button).
+    w = max(2, round(2 * k))
+    draw.rounded_rectangle((cx - 9 * k, cy - 12 * k, cx + 13 * k, cy + 6 * k), radius=2 * k,
+                           outline=color, width=w)
+    draw.rounded_rectangle((cx - 13 * k, cy - 7 * k, cx + 9 * k, cy + 11 * k), radius=2 * k,
+                           fill=(0, 0, 0, 255), outline=color, width=w)
+    draw.polygon([(cx - 10 * k, cy + 9 * k), (cx - 4 * k, cy + 1 * k), (cx + 1 * k, cy + 6 * k),
+                  (cx + 3 * k, cy + 4 * k), (cx + 7 * k, cy + 9 * k)], fill=color)
+    draw.ellipse((cx + 1 * k, cy - 4 * k, cx + 5 * k, cy), fill=color)
+
+
+def _draw_camera_icon(draw, cx, cy, k, color):
+    draw.rounded_rectangle((cx - 6 * k, cy - 13 * k, cx + 6 * k, cy - 6 * k), radius=2 * k,
+                           fill=color)
+    draw.rounded_rectangle((cx - 15 * k, cy - 9 * k, cx + 15 * k, cy + 12 * k), radius=4 * k,
+                           fill=color)
+    draw.ellipse((cx - 8 * k, cy - 6 * k, cx + 8 * k, cy + 10 * k), fill=(0, 0, 0, 255))
+    draw.ellipse((cx - 5 * k, cy - 3 * k, cx + 5 * k, cy + 7 * k), fill=color)
+
+
+def _draw_corner_buttons(img):
     if lcd is None:
         return
     draw = ImageDraw.Draw(img, "RGBA")
-    m = 8
-    draw.ellipse((m, m, m + GEAR_SIZE, m + GEAR_SIZE), fill=(0, 0, 0, 150))
-    c = m + GEAR_SIZE / 2
-    _draw_gear(draw, c, c, GEAR_SIZE * 0.36, (255, 255, 255, 230), (0, 0, 0, 255))
+    white = (255, 255, 255, 230)
+    for kind, (x0, y0, x1, y1) in corner_buttons():
+        # The camera (back to taking photos) stands out in green.
+        fill = (40, 150, 70, 230) if kind == "camera" else (0, 0, 0, 150)
+        draw.ellipse((x0, y0, x1, y1), fill=fill)
+        cx, cy, k = (x0 + x1) / 2, (y0 + y1) / 2, ICON_SIZE / 44
+        if kind == "menu":
+            _draw_gear(draw, cx, cy, ICON_SIZE * 0.36, white, (0, 0, 0, 255))
+        elif kind == "gallery":
+            _draw_photos_icon(draw, cx, cy, k, white)
+        else:
+            _draw_camera_icon(draw, cx, cy, k, white)
 
 
 menu_open = False
@@ -2623,7 +2738,6 @@ def render_wifi_tab(draw, area, buttons):
 # because "review" already means the end-of-strip KEEP / RETAKE screen.
 # ---------------------------------------------------------------------------
 
-GALLERY_BUTTON_TOP = 8 + GEAR_SIZE + 12
 GALLERY_IDLE_SECONDS = 60  # back to the camera after this long untouched
 DELETE_CONFIRM_SECONDS = 4
 SWIPE_MIN_PX = 50
@@ -2669,23 +2783,6 @@ def _size(path):
         return path.stat().st_size
     except OSError:
         return None
-
-
-def _draw_gallery_button(img):
-    if lcd is None:
-        return
-    draw = ImageDraw.Draw(img, "RGBA")
-    m, s, top = 8, GEAR_SIZE, GALLERY_BUTTON_TOP
-    draw.ellipse((m, top, m + s, top + s), fill=(0, 0, 0, 150))
-    # Two stacked photos, the front one with a mountain and a sun.
-    cx, cy = m + s / 2, top + s / 2
-    white = (255, 255, 255, 230)
-    draw.rounded_rectangle((cx - 9, cy - 12, cx + 13, cy + 6), radius=2, outline=white, width=2)
-    front = (cx - 13, cy - 7, cx + 9, cy + 11)
-    draw.rounded_rectangle(front, radius=2, fill=(0, 0, 0, 255), outline=white, width=2)
-    draw.polygon([(cx - 10, cy + 9), (cx - 4, cy + 1), (cx + 1, cy + 6), (cx + 3, cy + 4),
-                  (cx + 7, cy + 9)], fill=white)
-    draw.ellipse((cx + 1, cy - 4, cx + 5, cy), fill=white)
 
 
 def open_gallery():
@@ -3256,10 +3353,12 @@ def handle_tap(pos):
                 if menu_open:
                     update_menu(force=True)
                 return
-    elif x < GEAR_HIT and y < GALLERY_BUTTON_TOP - 6:
-        open_menu()
-    elif x < GEAR_HIT and y < GALLERY_BUTTON_TOP + GEAR_SIZE + 16:
-        open_gallery()
+    else:
+        pad = ICON_GAP // 2  # forgiving: half the gap around each button counts
+        for kind, (x0, y0, x1, y1) in corner_buttons():
+            if x0 - pad <= x <= x1 + pad and y0 - pad <= y <= y1 + pad:
+                {"menu": open_menu, "gallery": open_gallery, "camera": enter_creation_mode}[kind]()
+                return
 
 
 def handle_short_presses(count):
@@ -3357,7 +3456,7 @@ def tick_review():
         _review_shown_seconds = None
         return
 
-    if review_started is None or menu_open or gallery_open:
+    if review_started is None or menu_open or gallery_open or _photo_show_img is not None:
         # The countdown waits while the settings menu or the review screen is open.
         review_started = time.monotonic()
 
@@ -3389,6 +3488,8 @@ try:
                         handle_gallery_gesture(gesture)
                 else:
                     tap = next_tap(events)
+                    if tap is not None:
+                        end_photo_show()  # a tap skips the photo on show
                     # A tap on a sleeping screen only wakes it.
                     if tap is not None and not wake_screen():
                         handle_tap(tap)
@@ -3397,6 +3498,7 @@ try:
                 action, payload = action_queue.get()
 
                 if action in ("short", "toggle_mode"):
+                    end_photo_show()  # so does a press
                     # The press that wakes the screen only wakes it; one in the menu closes it.
                     if wake_screen() or menu_open or gallery_open:
                         close_menu()
@@ -3433,6 +3535,7 @@ try:
             if poll_battery() and not should_show_live_preview():
                 update_lcd()
 
+            tick_photo_show()
             tick_review()
             tick_updates()
             tick_auto_off()
