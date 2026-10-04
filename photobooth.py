@@ -195,7 +195,7 @@ def _fatal_screen(message, seconds=15):
         pygame.mouse.set_visible(False)
         sw, sh = screen.get_size()
         rotation = settings["rotation"]
-        w, h = (sw, sh) if rotation in (0, 180) else (sh, sw)
+        w, h = (max(sw, sh), min(sw, sh)) if rotation in (0, 180) else (min(sw, sh), max(sw, sh))
         img = Image.new("RGB", (w, h), "black")
         try:
             font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
@@ -203,7 +203,7 @@ def _fatal_screen(message, seconds=15):
             font = ImageFont.load_default()
         ImageDraw.Draw(img).multiline_text((w / 2, h / 2), message, font=font, fill="white",
                                            anchor="mm", align="center", spacing=10)
-        img = img.rotate(rotation, expand=True).resize((sw, sh))
+        img = img.rotate(to_panel_rotation(rotation, sw, sh), expand=True).resize((sw, sh))
         screen.blit(pygame.image.fromstring(img.tobytes(), img.size, "RGB"), (0, 0))
         pygame.display.flip()
         time.sleep(seconds)
@@ -699,6 +699,21 @@ def is_landscape():
     return screen_rotation in (0, 180)
 
 
+def to_panel_rotation(rotation, panel_w, panel_h):
+    """The SCREEN setting assumes a landscape panel (800x480). A panel that is natively
+    portrait (e.g. 480x640) needs an extra quarter turn so LANDSCAPE really is landscape."""
+    if panel_h > panel_w:
+        return {0: -90, 180: 90, -90: 180, 90: 0}[rotation]
+    return rotation
+
+
+def panel_rotation():
+    """How far (PIL degrees) to turn the UI to draw it on the panel."""
+    if lcd is None:
+        return screen_rotation
+    return to_panel_rotation(screen_rotation, *lcd.get_size())
+
+
 def ui_size():
     if is_landscape():
         return PORTRAIT_UI_H, PORTRAIT_UI_W
@@ -1086,7 +1101,7 @@ def update_lcd(img=None, overlay_text=None, fast=False):
             _draw_gallery_button(img)
         _draw_battery_indicator(img)
 
-        img = img.rotate(screen_rotation, expand=True)
+        img = img.rotate(panel_rotation(), expand=True)
 
         img_w, img_h = img.size
         scale = min(screen_w / img_w, screen_h / img_h)
@@ -1692,7 +1707,7 @@ def shutdown_pi(message="Shutting down..."):
 
             img = Image.new("RGB", ui_size(), "black")
             _draw_centered_banner(img, message)
-            img = img.rotate(screen_rotation, expand=True)
+            img = img.rotate(panel_rotation(), expand=True)
 
             img_w, img_h = img.size
             scale = min(screen_w / img_w, screen_h / img_h)
@@ -3198,11 +3213,12 @@ def screen_to_ui(px, py):
     ox, oy, scale = _lcd_xform
     rx, ry = (px - ox) / scale, (py - oy) / scale
     w, h = ui_size()
-    if screen_rotation == 0:
+    rotation = panel_rotation()
+    if rotation == 0:
         return rx, ry
-    if screen_rotation == 180:
+    if rotation == 180:
         return w - rx, h - ry
-    if screen_rotation == 90:
+    if rotation == 90:
         return w - ry, rx
     return ry, h - rx  # -90
 
