@@ -15,7 +15,7 @@ import traceback
 from gpiozero import Button, InputDevice
 from PIL import Image, ImageDraw, ImageFont
 from picamera2 import Picamera2
-from libcamera import controls
+from libcamera import controls, Transform
 import numpy as np
 import pygame
 
@@ -228,6 +228,9 @@ AWB_MODES = {
     "cloudy": controls.AwbModeEnum.Cloudy,
 }
 FOCUS_DIOPTRES = {"near": 1.5, "far": 0.3}  # 1 / distance in metres
+# The camera is mounted upside down in the box, so the sensor turns every frame 180 degrees
+# (preview and photos alike).
+CAMERA_TRANSFORM = Transform(hflip=True, vflip=True)
 
 # Colour looks. "sat" is the camera's saturation (so the live preview matches); "curve" is a tone
 # curve applied after capture; plus optional vignette and grain (film looks).
@@ -304,6 +307,7 @@ def _configure_camera():
             picam2.configure(picam2.create_still_configuration(
                 main={"size": (CAPTURE_W, CAPTURE_H)},
                 lores={"size": (PREVIEW_W, PREVIEW_H), "format": fmt},
+                transform=CAMERA_TRANSFORM,
                 controls=camera_controls,
             ))
             return fmt
