@@ -78,6 +78,8 @@ USE_LCD = True
 # 5 quick presses (or the settings menu) changes the rotation.
 PORTRAIT_UI_W = 480
 PORTRAIT_UI_H = 800
+# Used to turn the bezel margin (BOOTH tab, in mm) into pixels.
+SCREEN_DIAGONAL_INCHES = 2.8
 SCREEN_ROTATIONS = [-90, 90, 0, 180]  # PIL degrees counter-clockwise
 SCREEN_ROTATION_LABELS = {-90: "PORTRAIT", 90: "PORTRAIT (FLIPPED)", 0: "LANDSCAPE", 180: "LANDSCAPE (FLIPPED)"}
 SCREEN_ROTATION_FILE = BASE / "screen_rotation.txt"  # older builds; read once as a default
@@ -158,6 +160,11 @@ BOOTH_SETTINGS = [
     ("review", "KEEP STRIP AUTOMATICALLY", [
         (10, "AFTER 10 SEC"), (20, "AFTER 20 SEC"), (30, "AFTER 30 SEC"), (60, "AFTER 1 MIN"),
     ], REVIEW_AUTO_KEEP_SECONDS),
+    # A 3D-printed bezel can cover the left edge of the screen: shift everything right.
+    ("edge", "SHIFT SCREEN RIGHT (BEZEL)", [
+        (0, "NO SHIFT"), (1, "1 MM"), (2, "2 MM"), (3, "3 MM"), (4, "4 MM"), (5, "5 MM"),
+        (6, "6 MM"),
+    ], 2),
     # Saves the battery or power bank (and works on mains too).
     ("auto_off", "AUTO SHUT DOWN WHEN IDLE", [
         (None, "OFF"), (900, "AFTER 15 MIN"), (1800, "AFTER 30 MIN"), (3600, "AFTER 1 HOUR"),
@@ -433,6 +440,8 @@ def set_setting(key, value):
     print(f"Setting {key} = {value}")
     if key == "rotation":
         screen_rotation = value
+        _invalidate_live_preview()
+    elif key == "edge":
         _invalidate_live_preview()
     elif key in {k for k, _, _, _ in CAMERA_SETTINGS}:
         apply_camera_settings()
@@ -718,10 +727,30 @@ def panel_rotation():
     return to_panel_rotation(screen_rotation, *lcd.get_size())
 
 
+def full_ui_size():
+    """The whole panel, turned the way the SCREEN setting shows it. The UI is drawn at the
+    panel's real size (not scaled down), so text and buttons are as big as they can be."""
+    if lcd is None:
+        short, long = PORTRAIT_UI_W, PORTRAIT_UI_H
+    else:
+        short, long = sorted(lcd.get_size())
+    return (long, short) if is_landscape() else (short, long)
+
+
+def px_per_mm():
+    w, h = full_ui_size()
+    return math.hypot(w, h) / (SCREEN_DIAGONAL_INCHES * 25.4)
+
+
+def ui_inset():
+    """Blank strip on the viewer's left, where a 3D-printed bezel can cover the panel."""
+    return round(settings["edge"] * px_per_mm())
+
+
 def ui_size():
-    if is_landscape():
-        return PORTRAIT_UI_H, PORTRAIT_UI_W
-    return PORTRAIT_UI_W, PORTRAIT_UI_H
+    """The area the app draws in: the panel, minus the bezel strip on the left."""
+    w, h = full_ui_size()
+    return w - ui_inset(), h
 
 
 def strip_halves(slots):
@@ -749,7 +778,8 @@ def display_layout(slots=None):
     # Landscape: the strip cut in half between the middle photos, halves side by side,
     # so the frame's header and footer stay visible.
     halves = strip_halves(slots)
-    cell_w = ui_w // len(halves)
+    left = ICON_SIZE + 2 * ICON_MARGIN  # the round buttons' column
+    cell_w = (ui_w - left) // len(halves)
     half_h = max(b[3] - b[1] for b in halves)
     scale = min(
         (cell_w - 2 * LANDSCAPE_CELL_PAD) / STRIP_W,
@@ -760,7 +790,7 @@ def display_layout(slots=None):
     for col, half in enumerate(halves):
         dw = max(1, int((half[2] - half[0]) * scale))
         dh = max(1, int((half[3] - half[1]) * scale))
-        dx = col * cell_w + (cell_w - dw) // 2
+        dx = left + col * cell_w + (cell_w - dw) // 2
         # Left half hangs from the top, right half sits on the bottom: one strip, folded.
         dy = LANDSCAPE_CELL_PAD if col == 0 else ui_h - LANDSCAPE_CELL_PAD - dh
         layout.append((half, (dx, dy, dw, dh)))
@@ -1106,6 +1136,13 @@ def update_lcd(img=None, overlay_text=None, fast=False):
                 _draw_review_hint(img, review_seconds_left())
             _draw_corner_buttons(img)
         _draw_battery_indicator(img)
+
+        inset = ui_inset()
+        if inset:
+            # Shifted right: black under the bezel on the viewer's left.
+            full = Image.new("RGB", full_ui_size(), "black")
+            full.paste(img.convert("RGB"), (inset, 0))
+            img = full
 
         img = img.rotate(panel_rotation(), expand=True)
 
@@ -2237,14 +2274,50 @@ def _draw_setting_row(draw, box, key, buttons):
     _draw_text_centered(draw, (mid[0], split, mid[2], y1 - 4), text, value_font, MENU_TEXT)
 
 
-def _draw_setting_rows(draw, area, keys, buttons, max_row_h=76):
+MIN_ROW_H = 76  # ~7 mm on the 2.8" panel: easy to hit with a finger
+menu_pages = {}  # page shown per list of rows, e.g. {"camera": 1}
+
+
+def menu_page_step(page_id, step, pages):
+    menu_pages[page_id] = max(0, min(pages - 1, menu_pages.get(page_id, 0) + step))
+
+
+def _draw_pager(draw, box, page, pages, on_step, buttons):
+    """PREV / page x of y / NEXT along the bottom of a list."""
+    x0, y0, x1, y1 = box
+    gap = 6
+    half = (x1 - x0 - gap) * 2 // 5
+    dim = (34, 34, 40)
+    _draw_key(draw, (x0, y0, x0 + half, y1), "\u25c0 PREV", buttons, lambda: on_step(-1),
+              fill=MENU_ROW if page > 0 else dim,
+              text_fill=MENU_TEXT if page > 0 else (90, 90, 98), size=20)
+    _draw_key(draw, (x1 - half, y0, x1, y1), "NEXT \u25b6", buttons, lambda: on_step(1),
+              fill=MENU_ROW if page < pages - 1 else dim,
+              text_fill=MENU_TEXT if page < pages - 1 else (90, 90, 98), size=20)
+    _draw_text_centered(draw, (x0 + half, y0, x1 - half, y1), f"{page + 1}/{pages}",
+                        menu_font(16, True), MENU_DIM)
+
+
+def _draw_setting_rows(draw, area, keys, buttons, page_id):
+    """Rows at least MIN_ROW_H tall; split into pages when they don't all fit."""
     x0, y0, x1, y1 = area
     gap = 6
-    row_h = min(max_row_h, (y1 - y0 + gap) // len(keys) - gap)
-    for n, key in enumerate(keys):
+    if len(keys) * (MIN_ROW_H + gap) - gap <= y1 - y0:
+        per_page, pages, page, rows_bottom = len(keys), 1, 0, y1
+    else:
+        pager_h = MIN_ROW_H - 12
+        rows_bottom = y1 - pager_h - gap
+        per_page = max(1, (rows_bottom - y0 + gap) // (MIN_ROW_H + gap))
+        pages = -(-len(keys) // per_page)
+        page = max(0, min(pages - 1, menu_pages.get(page_id, 0)))
+        _draw_pager(draw, (x0, y1 - pager_h, x1, y1), page, pages,
+                    lambda d: menu_page_step(page_id, d, pages), buttons)
+    row_h = min(96, (rows_bottom - y0 + gap) // per_page - gap)
+    shown = keys[page * per_page:(page + 1) * per_page]
+    for n, key in enumerate(shown):
         top = y0 + n * (row_h + gap)
         _draw_setting_row(draw, (x0, top, x1, top + row_h), key, buttons)
-    return y0 + len(keys) * (row_h + gap)
+    return y0 + len(shown) * (row_h + gap)
 
 
 # ---------------------------------------------------------------------------
@@ -2571,122 +2644,149 @@ def _draw_lock(draw, x, y, color):
     draw.rectangle((x, y + 6, x + 14, y + 16), fill=color)
 
 
+def _draw_network_row(draw, box, net, buttons):
+    x0, top, x1, bottom = box
+    row_h = bottom - top
+    supported = wifi_supported(net)
+    draw.rounded_rectangle(box, radius=10, fill=(40, 90, 55) if net["in_use"] else MENU_ROW)
+    text_color = MENU_TEXT if supported else MENU_DIM
+    _draw_signal_bars(draw, x0 + 12, top + (row_h - 26) // 2, 26, net["signal"], text_color)
+    name_x = x0 + 54
+    right = x1 - 12
+    if net["security"]:
+        _draw_lock(draw, right - 14, top + (row_h - 16) // 2, text_color)
+        right -= 24
+    label = net["ssid"] if supported else f"{net['ssid']} (NOT SUPPORTED)"
+    font = _fit_font(draw, label, right - name_x, 22, bold=net["in_use"])
+    bbox = draw.textbbox((0, 0), label, font=font)
+    draw.text((name_x - bbox[0], top + (row_h - (bbox[3] - bbox[1])) // 2 - bbox[1]),
+              label, font=font, fill=text_color)
+    buttons.append((box, lambda net=net: wifi_choose(net)))
+
+
 def _render_wifi_list(draw, area, buttons):
     x0, y0, x1, y1 = area
+    gap = 6
     ssid, ip = wifi_current
     if wifi_connecting:
-        status, color = "CONNECTING...", MENU_ACCENT
+        status, name, color = "CONNECTING...", None, MENU_ACCENT
     elif ssid:
-        status, color = f"CONNECTED: {ssid}" + (f"  ({ip})" if ip else ""), (120, 220, 140)
+        status, name, color = "CONNECTED TO", ssid, (120, 220, 140)
     elif wifi_scanning:
-        status, color = "CHECKING...", MENU_DIM
+        status, name, color = "CHECKING...", None, MENU_DIM
     else:
-        status, color = "NOT CONNECTED", MENU_DIM
-    _draw_text_centered(draw, (x0, y0, x1, y0 + 28), status,
-                        _fit_font(draw, status, x1 - x0, 18), color)
-    y = y0 + 30
+        status, name, color = "NOT CONNECTED", None, MENU_DIM
+
+    # Landscape: status on the left, networks on the right. Portrait: stacked.
+    landscape = x1 - x0 > y1 - y0
+    if landscape:
+        sx1 = x0 + (x1 - x0) * 2 // 5
+        info, lst = (x0, y0, sx1, y1), (sx1 + 10, y0, x1, y1)
+    else:
+        info, lst = (x0, y0, x1, y1), None
+
+    ix0, iy0, ix1, iy1 = info
+    iw = ix1 - ix0
+    y = iy0
+    if landscape or not name:
+        _draw_text_centered(draw, (ix0, y, ix1, y + 26), status, _fit_font(draw, status, iw, 18), color)
+        y += 28
+        if name:
+            _draw_text_centered(draw, (ix0, y, ix1, y + 30), name, _fit_font(draw, name, iw, 24), color)
+            y += 34
+    else:
+        line = f"{status} {name}"
+        _draw_text_centered(draw, (ix0, y, ix1, y + 30), line, _fit_font(draw, line, iw, 20), color)
+        y += 34
     if ip and not wifi_connecting:
         # What to type on a computer on the same WiFi; the IP changes with the network.
-        ssh_box = (x0, y, x1, y + 52)
+        ssh_box = (ix0, y, ix1, y + 56)
         draw.rounded_rectangle(ssh_box, radius=10, fill=(34, 34, 40))
         cmd = f"ssh admin@{ip}"
-        alt = f"or  ssh admin@{socket.gethostname()}.local"
-        _draw_text_centered(draw, (x0, y + 3, x1, y + 29), cmd,
-                            _fit_font(draw, cmd, x1 - x0 - 16, 20), MENU_ACCENT)
-        _draw_text_centered(draw, (x0, y + 29, x1, y + 49), alt,
-                            _fit_font(draw, alt, x1 - x0 - 16, 14, bold=False), MENU_DIM)
-        y += 56
+        alt = f"or ssh admin@{socket.gethostname()}.local"
+        _draw_text_centered(draw, (ix0, y + 4, ix1, y + 32), cmd,
+                            _fit_font(draw, cmd, iw - 14, 20), MENU_ACCENT)
+        _draw_text_centered(draw, (ix0, y + 32, ix1, y + 52), alt,
+                            _fit_font(draw, alt, iw - 14, 14, bold=False), MENU_DIM)
+        y += 62
     if wifi_message:
         text, ok = wifi_message
-        _draw_text_centered(draw, (x0, y, x1, y + 26), text,
-                            _fit_font(draw, text, x1 - x0, 17), (120, 220, 140) if ok else (255, 110, 110))
-        y += 30
+        _draw_text_centered(draw, (ix0, y, ix1, y + 28), text, _fit_font(draw, text, iw, 18),
+                            (120, 220, 140) if ok else (255, 110, 110))
+        y += 32
 
-    bottom_h = 60
-    scan_box = (x0, y1 - bottom_h, x1, y1)
+    scan_h = 70
     busy = wifi_scanning or wifi_connecting
-    _draw_key(draw, scan_box, "SCANNING..." if wifi_scanning else "SCAN FOR NETWORKS",
-              buttons, wifi_scan, fill=(80, 80, 88) if busy else MENU_ACCENT,
-              text_fill=MENU_TEXT if busy else (0, 0, 0))
+    _draw_key(draw, (ix0, iy1 - scan_h, ix1, iy1), "SCANNING..." if wifi_scanning else "SCAN AGAIN"
+              if wifi_networks else "SCAN FOR WIFI", buttons, wifi_scan,
+              fill=(80, 80, 88) if busy else MENU_ACCENT,
+              text_fill=MENU_TEXT if busy else (0, 0, 0), size=22)
 
-    row_h, gap = (52 if y1 - y0 > 500 else 44), 6
-    list_bottom = y1 - bottom_h - gap
-    per_page = max(1, (list_bottom - y + gap) // (row_h + gap))
+    if lst is None:
+        lst = (x0, y, x1, y1 - scan_h - gap)
+    lx0, ly0, lx1, ly1 = lst
+    row_h = MIN_ROW_H - 6
     nets = wifi_networks
-    pages = max(1, (len(nets) + per_page - 1) // per_page)
-    page = min(wifi_page, pages - 1)
-    if pages > 1:
-        per_page = max(1, (list_bottom - y - row_h) // (row_h + gap))
-        pages = max(1, (len(nets) + per_page - 1) // per_page)
-        page = min(wifi_page, pages - 1)
+    per_page = max(1, (ly1 - ly0 + gap) // (row_h + gap))
+    pages, page = 1, 0
+    if len(nets) > per_page:
+        pager_h = row_h - 6
+        per_page = max(1, (ly1 - ly0 - pager_h) // (row_h + gap))
+        pages = -(-len(nets) // per_page)
+        page = max(0, min(pages - 1, wifi_page))
+        _draw_pager(draw, (lx0, ly1 - pager_h, lx1, ly1), page, pages, wifi_page_step, buttons)
     if not nets and not wifi_scanning:
-        _draw_text_centered(draw, (x0, y, x1, y + 40), "TAP SCAN TO LOOK FOR WIFI",
+        _draw_text_centered(draw, (lx0, ly0, lx1, ly0 + 40), "NO NETWORKS YET",
                             menu_font(18), MENU_DIM)
     for n, net in enumerate(nets[page * per_page:(page + 1) * per_page]):
-        top = y + n * (row_h + gap)
-        box = (x0, top, x1, top + row_h)
-        supported = wifi_supported(net)
-        draw.rounded_rectangle(box, radius=10, fill=(40, 90, 55) if net["in_use"] else MENU_ROW)
-        text_color = MENU_TEXT if supported else MENU_DIM
-        _draw_signal_bars(draw, x0 + 12, top + (row_h - 22) // 2, 22, net["signal"], text_color)
-        name_x = x0 + 52
-        right = x1 - 12
-        if net["security"]:
-            _draw_lock(draw, right - 14, top + (row_h - 16) // 2, text_color)
-            right -= 24
-        label = net["ssid"] if supported else f"{net['ssid']} (NOT SUPPORTED)"
-        font = _fit_font(draw, label, right - name_x, 20, bold=net["in_use"])
-        bbox = draw.textbbox((0, 0), label, font=font)
-        draw.text((name_x - bbox[0], top + (row_h - (bbox[3] - bbox[1])) // 2 - bbox[1]),
-                  label, font=font, fill=text_color)
-        buttons.append((box, lambda net=net: wifi_choose(net)))
-
-    if pages > 1:
-        top = list_bottom - row_h
-        half = (x1 - x0 - gap) // 2
-        _draw_key(draw, (x0, top, x0 + half, top + row_h), "< PREV", buttons,
-                  lambda: wifi_page_step(-1), fill=MENU_ROW if page > 0 else (34, 34, 40))
-        _draw_key(draw, (x1 - half, top, x1, top + row_h), "NEXT >", buttons,
-                  lambda: wifi_page_step(1), fill=MENU_ROW if page < pages - 1 else (34, 34, 40))
-        _draw_text_centered(draw, (x0 + half, top, x1 - half, top + row_h),
-                            f"{page + 1}/{pages}", menu_font(14), MENU_DIM)
+        top = ly0 + n * (row_h + gap)
+        _draw_network_row(draw, (lx0, top, lx1, top + row_h), net, buttons)
 
 
 def _render_wifi_keyboard(draw, area, buttons):
+    """Full screen: which network (+ saved password), the password row, then four key rows."""
     x0, y0, x1, y1 = area
+    w = x1 - x0
     gap = 5
-    title = f"PASSWORD FOR {wifi_target['ssid']}"
-    _draw_text_centered(draw, (x0, y0, x1, y0 + 26), title,
-                        _fit_font(draw, title, x1 - x0, 18), MENU_DIM)
-    y = y0 + 30
 
-    field_h = 50
-    show_w = 90
-    field = (x0, y, x1 - show_w - gap, y + field_h)
+    top_h = 52
+    title = f"WIFI PASSWORD: {wifi_target['ssid']}"
+    title_x1 = x1
+    if wifi_saved_uuid:
+        sw = min(240, w // 2)
+        _draw_key(draw, (x1 - sw, y0, x1, y0 + top_h), "USE SAVED PASSWORD", buttons,
+                  lambda: wifi_start_connect(wifi_target, None, wifi_saved_uuid),
+                  fill=(40, 90, 55), size=16)
+        title_x1 = x1 - sw - gap
+    _draw_text_centered(draw, (x0, y0, title_x1, y0 + top_h), title,
+                        _fit_font(draw, title, title_x1 - x0, 18), MENU_DIM)
+    y = y0 + top_h + gap
+
+    row_h = 62
+    cancel = (x0, y, x0 + int(w * 0.17), y + row_h)
+    connect = (x1 - int(w * 0.22), y, x1, y + row_h)
+    show = (connect[0] - gap - int(w * 0.14), y, connect[0] - gap, y + row_h)
+    field = (cancel[2] + gap, y, show[0] - gap, y + row_h)
+    _draw_key(draw, cancel, "CANCEL", buttons, wifi_cancel_keyboard, fill=(70, 70, 80), size=18)
+    ready = len(wifi_password) >= 8
+    _draw_key(draw, connect, "CONNECT" if ready else "8+ CHARS", buttons,
+              (lambda: wifi_start_connect(wifi_target, wifi_password)) if ready else (lambda: None),
+              fill=MENU_DONE if ready else (50, 50, 58), size=20 if ready else 15)
+    _draw_key(draw, show, "HIDE" if wifi_show_password else "SHOW", buttons, wifi_toggle_show,
+              size=16)
     draw.rounded_rectangle(field, radius=8, fill=(0, 0, 0), outline=MENU_ACCENT, width=2)
-    shown = wifi_password if wifi_show_password else "•" * len(wifi_password)
-    font = menu_font(22)
-    max_w = field[2] - field[0] - 24
+    shown = wifi_password if wifi_show_password else "\u2022" * len(wifi_password)
+    font = menu_font(24)
+    max_w = field[2] - field[0] - 20
     while shown and draw.textlength(shown + "|", font=font) > max_w:
         shown = shown[1:]  # keep the end (where you're typing) visible
     bbox = draw.textbbox((0, 0), shown + "|", font=font)
-    draw.text((field[0] + 12 - bbox[0], y + (field_h - (bbox[3] - bbox[1])) // 2 - bbox[1]),
+    draw.text((field[0] + 10 - bbox[0], y + (row_h - (bbox[3] - bbox[1])) // 2 - bbox[1]),
               shown + "|", font=font, fill=MENU_TEXT)
-    _draw_key(draw, (x1 - show_w, y, x1, y + field_h), "HIDE" if wifi_show_password else "SHOW",
-              buttons, wifi_toggle_show, size=18)
-    y += field_h + gap
+    y += row_h + gap
 
-    if wifi_saved_uuid:
-        sbox = (x0, y, x1, y + 44)
-        _draw_key(draw, sbox, "USE SAVED PASSWORD", buttons,
-                  lambda: wifi_start_connect(wifi_target, None, wifi_saved_uuid),
-                  fill=(40, 90, 55), size=18)
-        y += 44 + gap
-
-    action_h = 56
-    rows_bottom = y1 - action_h - gap
-    key_h = min(80, (rows_bottom - y - 3 * gap) // 4)
-    key_w = (x1 - x0 - 9 * gap) / 10
+    key_h = min(140, (y1 - y - 3 * gap) // 4)
+    key_w = (w - 9 * gap) / 10
     rows = WIFI_KB_ROWS[wifi_kb_page]
 
     def key_box(col, row, span=1.0, offset=0.0):
@@ -2698,9 +2798,9 @@ def _render_wifi_keyboard(draw, area, buttons):
         chars = rows[r]
         offset = (10 - len(chars)) / 2
         for c, ch in enumerate(chars):
-            _draw_key(draw, key_box(c, r, offset=offset), ch, buttons, lambda ch=ch: wifi_type(ch))
+            _draw_key(draw, key_box(c, r, offset=offset), ch, buttons,
+                      lambda ch=ch: wifi_type(ch), size=26)
 
-    # Third row: page switch, keys, backspace.
     label, target = WIFI_KB_SWITCH[wifi_kb_page]
     active = wifi_kb_page == "upper"
     _draw_key(draw, key_box(0, 2, span=1.5), label, buttons, lambda t=target: wifi_set_kb_page(t),
@@ -2709,24 +2809,15 @@ def _render_wifi_keyboard(draw, area, buttons):
     chars = rows[2]
     offset = 1.5 + (7 - len(chars)) / 2
     for c, ch in enumerate(chars):
-        _draw_key(draw, key_box(c, 2, offset=offset), ch, buttons, lambda ch=ch: wifi_type(ch))
-    _draw_key(draw, key_box(8.5, 2, span=1.5), "⌫", buttons, wifi_backspace,
-              fill=(70, 70, 80), size=24)
+        _draw_key(draw, key_box(c, 2, offset=offset), ch, buttons, lambda ch=ch: wifi_type(ch),
+                  size=26)
+    _draw_key(draw, key_box(8.5, 2, span=1.5), "\u232b", buttons, wifi_backspace,
+              fill=(70, 70, 80), size=28)
 
-    # Fourth row: letters/symbols toggle and space.
     letters = wifi_kb_page in ("lower", "upper")
     _draw_key(draw, key_box(0, 3, span=2), "123" if letters else "ABC", buttons,
-              lambda: wifi_set_kb_page("sym1" if letters else "lower"), fill=(70, 70, 80), size=18)
-    _draw_key(draw, key_box(2, 3, span=8), "SPACE", buttons, lambda: wifi_type(" "), size=16)
-
-    half = (x1 - x0 - gap) // 2
-    ready = len(wifi_password) >= 8
-    _draw_key(draw, (x0, y1 - action_h, x0 + half, y1), "CANCEL", buttons, wifi_cancel_keyboard,
-              fill=(70, 70, 80))
-    _draw_key(draw, (x1 - half, y1 - action_h, x1, y1),
-              "CONNECT" if ready else "8+ CHARACTERS", buttons,
-              (lambda: wifi_start_connect(wifi_target, wifi_password)) if ready else (lambda: None),
-              fill=MENU_DONE if ready else (50, 50, 58), size=20 if ready else 16)
+              lambda: wifi_set_kb_page("sym1" if letters else "lower"), fill=(70, 70, 80), size=20)
+    _draw_key(draw, key_box(2, 3, span=8), "SPACE", buttons, lambda: wifi_type(" "), size=18)
 
 
 def render_wifi_tab(draw, area, buttons):
@@ -2863,15 +2954,36 @@ def gallery_delete():
     flash_message("DELETED", seconds=0.6)
 
 
-def _gallery_thumb(path, w, h):
-    key = (path, _mtime(path), w, h)
+def _gallery_thumb(path, w, h, halves=False):
+    """The strip scaled to fit w x h; with halves, cut in two side by side like the main screen
+    (top half on the left, bottom half on the right) so the photos are much bigger."""
+    key = (path, _mtime(path), w, h, halves)
     thumb = _gallery_thumbs.get(key)
     if thumb is None:
         try:
-            img = Image.open(path)
-            img.draft("RGB", (w, h))  # JPEG decodes straight to a small size: fast
-            img = img.convert("RGB")
-            img.thumbnail((w, h), Image.BILINEAR)
+            src = Image.open(path)
+            slots = saved_strip_slots(src) if halves else None
+            if not halves:
+                src.draft("RGB", (w, h))  # JPEG decodes straight to a small size: fast
+                img = src.convert("RGB")
+                img.thumbnail((w, h), Image.BILINEAR)
+            else:
+                parts = strip_halves(slots) if slots else [
+                    (0, 0, STRIP_W, STRIP_H // 2), (0, STRIP_H // 2, STRIP_W, STRIP_H)]
+                gap = 10
+                part_h = max(b[3] - b[1] for b in parts)
+                scale = min((w - gap) / (2 * STRIP_W), h / part_h)
+                src.draft("RGB", (int(STRIP_W * scale * 2), int(STRIP_H * scale * 2)))
+                full = src.convert("RGB")
+                kx, ky = full.width / STRIP_W, full.height / STRIP_H
+                pw = int(STRIP_W * scale)
+                img = Image.new("RGB", (2 * pw + gap, int(part_h * scale)), "black")
+                for i, (a, b, c, d) in enumerate(parts):
+                    ph = max(1, int((d - b) * scale))
+                    piece = full.crop((int(a * kx), int(b * ky), int(c * kx), int(d * ky)))
+                    piece = piece.resize((pw, ph), Image.BILINEAR)
+                    # Folded like the main screen: left half at the top, right at the bottom.
+                    img.paste(piece, (i * (pw + gap), 0 if i == 0 else img.height - ph))
         except Exception as e:
             print(f"Could not open saved strip {path}: {e}")
             img = None
@@ -2896,77 +3008,87 @@ def render_gallery():
     draw = ImageDraw.Draw(img, "RGBA")
     buttons = []
     pad, gap = 8, 6
-    bar_h = 64
+    bar_h = 62
+    landscape = w > h
 
-    back = (pad, pad, pad + 110, bar_h - 6)
-    _draw_key(draw, back, "◀ BACK", buttons, close_gallery, fill=MENU_DONE, size=20)
+    back = (pad, pad, pad + 120, bar_h - 4)
+    _draw_key(draw, back, "\u25c0 BACK", buttons, close_gallery, fill=MENU_DONE, size=22)
     n = len(gallery_paths)
-    title_box = (back[2] + pad, pad, w - pad, bar_h - 6)
-    if n:
-        path = gallery_paths[gallery_index]
-        _draw_text_centered(draw, (title_box[0], title_box[1], title_box[2], title_box[1] + 26),
-                            f"STRIP {gallery_index + 1} OF {n}", menu_font(20, True), MENU_TEXT)
-        label = _strip_time_label(path)
-        _draw_text_centered(draw, (title_box[0], title_box[1] + 28, title_box[2], title_box[3]),
-                            label, _fit_font(draw, label, title_box[2] - title_box[0], 15, False),
-                            MENU_DIM)
-    else:
-        _draw_text_centered(draw, title_box, "REVIEW", menu_font(22, True), MENU_TEXT)
-
+    tx0, tx1 = back[2] + pad, w - pad
     text, level = storage_status()
     color = {"ok": MENU_DIM, "low": MENU_ACCENT, "full": (255, 90, 90)}[level]
     if level != "ok":
         text = ("STORAGE FULL: " if level == "full" else "STORAGE LOW: ") + text
-    _draw_text_centered(draw, (pad, bar_h, w - pad, bar_h + 24), text,
-                        _fit_font(draw, text, w - 2 * pad, 15, level != "ok"), color)
+    if n:
+        title = f"STRIP {gallery_index + 1} OF {n}  \u00b7  {_strip_time_label(gallery_paths[gallery_index])}"
+    else:
+        title = "REVIEW"
+    _draw_text_centered(draw, (tx0, pad, tx1, pad + 28), title,
+                        _fit_font(draw, title, tx1 - tx0, 20), MENU_TEXT)
+    _draw_text_centered(draw, (tx0, pad + 30, tx1, bar_h), text,
+                        _fit_font(draw, text, tx1 - tx0, 15, level != "ok"), color)
 
-    action_h = 64
-    area = (pad, bar_h + 28, w - pad, h - pad - action_h - gap)
+    action_h = 70
+    top, bottom = bar_h + gap, h - pad - action_h - gap
+    can_newer, can_older = gallery_index > 0, gallery_index < n - 1
+    dim = (30, 30, 36)
+
+    def arrow(box, label, step, enabled):
+        _draw_key(draw, box, label, buttons, lambda: gallery_step(step),
+                  fill=MENU_ROW if enabled else dim,
+                  text_fill=MENU_TEXT if enabled else (90, 90, 98), size=30)
+
+    if landscape:
+        # Big arrows down each side, the strip in two halves between them.
+        arrow_w = 70
+        arrow((pad, top, pad + arrow_w, bottom), "\u25c0", -1, can_newer)
+        arrow((w - pad - arrow_w, top, w - pad, bottom), "\u25b6", 1, can_older)
+        area = (pad + arrow_w + gap, top, w - pad - arrow_w - gap, bottom)
+        actions = (pad, h - pad - action_h, w - pad, h - pad)
+    else:
+        area = (pad, top, w - pad, bottom)
+        arrow_w = 70
+        arrow((pad, h - pad - action_h, pad + arrow_w, h - pad), "\u25c0", -1, can_newer)
+        arrow((w - pad - arrow_w, h - pad - action_h, w - pad, h - pad), "\u25b6", 1, can_older)
+        actions = (pad + arrow_w + gap, h - pad - action_h, w - pad - arrow_w - gap, h - pad)
+
     ax0, ay0, ax1, ay1 = area
+    aw, ah = ax1 - ax0, ay1 - ay0
     if not n:
         _draw_text_centered(draw, area, "NO SAVED STRIPS YET", menu_font(22, True), MENU_DIM)
     else:
-        aw, ah = ax1 - ax0, ay1 - ay0
-        cur = _gallery_thumb(gallery_paths[gallery_index], aw, ah)
-        if cur is not None:
-            cx, cy = (ax0 + ax1) // 2, (ay0 + ay1) // 2
-            # Neighbours peek in at the sides, dimmed, as a hint that you can swipe.
-            nh = int(ah * 0.8)
-            for step, side in ((-1, -1), (1, 1)):
-                i = gallery_index + step
-                if not 0 <= i < n:
-                    continue
-                nb = _gallery_thumb(gallery_paths[i], aw, nh)
-                if nb is None:
-                    continue
-                nx = cx + side * (cur.width // 2 + 16 + nb.width // 2) - nb.width // 2
-                ny = cy - nb.height // 2
-                img.paste(nb, (nx, ny))
-                draw.rectangle((nx, ny, nx + nb.width, ny + nb.height), fill=(0, 0, 0, 150))
-            img.paste(cur, (cx - cur.width // 2, cy - cur.height // 2))
-        else:
+        cur = _gallery_thumb(gallery_paths[gallery_index], aw, ah, halves=landscape)
+        if cur is None:
             _draw_text_centered(draw, area, "COULD NOT OPEN THIS STRIP", menu_font(18), MENU_DIM)
+        else:
+            cx, cy = (ax0 + ax1) // 2, (ay0 + ay1) // 2
+            if not landscape:
+                # Neighbours peek in at the sides, dimmed, as a hint that you can swipe.
+                nh = int(ah * 0.8)
+                for step, side in ((-1, -1), (1, 1)):
+                    i = gallery_index + step
+                    if not 0 <= i < n:
+                        continue
+                    nb = _gallery_thumb(gallery_paths[i], aw, nh)
+                    if nb is None:
+                        continue
+                    nx = cx + side * (cur.width // 2 + 16 + nb.width // 2) - nb.width // 2
+                    ny = cy - nb.height // 2
+                    img.paste(nb, (nx, ny))
+                    draw.rectangle((nx, ny, nx + nb.width, ny + nb.height), fill=(0, 0, 0, 150))
+            img.paste(cur, (cx - cur.width // 2, cy - cur.height // 2))
 
-    top = h - pad - action_h
-    arrow_w = 70
-    can_newer, can_older = gallery_index > 0, gallery_index < n - 1
-    _draw_key(draw, (pad, top, pad + arrow_w, h - pad), "◀", buttons,
-              lambda: gallery_step(-1), fill=MENU_ROW if can_newer else (30, 30, 36),
-              text_fill=MENU_TEXT if can_newer else (90, 90, 98), size=26)
-    _draw_key(draw, (w - pad - arrow_w, top, w - pad, h - pad), "▶", buttons,
-              lambda: gallery_step(1), fill=MENU_ROW if can_older else (30, 30, 36),
-              text_fill=MENU_TEXT if can_older else (90, 90, 98), size=26)
     if n:
-        mid0, mid1 = pad + arrow_w + gap, w - pad - arrow_w - gap
-        half = (mid1 - mid0 - gap) // 2
+        bx0, by0, bx1, by1 = actions
+        half = (bx1 - bx0 - gap) // 2
         printing = _print_busy.is_set()
-        _draw_key(draw, (mid0, top, mid0 + half, h - pad), "PRINTING..." if printing else "PRINT",
+        _draw_key(draw, (bx0, by0, bx0 + half, by1), "PRINTING..." if printing else "PRINT",
                   buttons, gallery_print, fill=(80, 80, 88) if printing else MENU_ACCENT,
-                  text_fill=MENU_TEXT if printing else (0, 0, 0), size=22)
+                  text_fill=MENU_TEXT if printing else (0, 0, 0), size=24)
         confirming = time.monotonic() < _gallery_delete_until
-        _draw_key(draw, (mid1 - half, top, mid1, h - pad),
+        _draw_key(draw, (bx1 - half, by0, bx1, by1),
                   "DELETE?\nTAP AGAIN" if confirming else "DELETE", buttons, gallery_delete,
-                  fill=(235, 60, 60) if confirming else MENU_DANGER, size=22)
+                  fill=(235, 60, 60) if confirming else MENU_DANGER, size=24)
 
     gallery_buttons = buttons
     return img
@@ -3159,11 +3281,10 @@ def tick_updates():
 def render_update_view(draw, area, buttons):
     x0, y0, x1, y1 = area
     w = x1 - x0
-    _draw_text_centered(draw, (x0, y0, x1, y0 + 34), "SOFTWARE UPDATE", menu_font(22, True), MENU_TEXT)
-    line = f"THIS BOOTH: {BOOTH_VERSION}"
-    _draw_text_centered(draw, (x0, y0 + 36, x1, y0 + 60), line, _fit_font(draw, line, w, 17, False),
-                        MENU_DIM)
-    y = y0 + 72
+    title = f"SOFTWARE UPDATE  \u00b7  THIS BOOTH: {BOOTH_VERSION}"
+    _draw_text_centered(draw, (x0, y0, x1, y0 + 30), title, _fit_font(draw, title, w, 18),
+                        MENU_TEXT)
+    y = y0 + 38
 
     lines, color = [], MENU_DIM
     if update_state == "checking":
@@ -3171,7 +3292,7 @@ def render_update_view(draw, area, buttons):
     elif update_state == "up_to_date":
         lines, color = ["UP TO DATE"], (120, 220, 140)
     elif update_state == "available" and update_info:
-        lines, color = ["Your creator has gifted", "you with an update!",
+        lines, color = ["Your creator has gifted you with an update!",
                         update_info["version"], update_info["subject"]], MENU_ACCENT
     elif update_state == "installing":
         lines, color = ["INSTALLING...", "THE BOOTH WILL RESTART"], MENU_ACCENT
@@ -3182,13 +3303,14 @@ def render_update_view(draw, area, buttons):
     else:
         lines = ["TAP CHECK FOR UPDATES"]
     for n, text in enumerate(lines):
-        size = 15 if n >= 2 else 20
-        _draw_text_centered(draw, (x0, y, x1, y + 28), text,
-                            _fit_font(draw, text, w, size, n < 2), color if n < 2 else MENU_DIM)
-        y += 30
+        first = n == 0
+        _draw_text_centered(draw, (x0, y, x1, y + 26), text,
+                            _fit_font(draw, text, w, 20 if first else 15, first),
+                            color if first else MENU_DIM)
+        y += 28
 
-    button_h, gap = 64, 8
-    bottom = y1 - 40
+    button_h, gap = 64, 6
+    bottom = y1 - 30
     back = (x0, bottom - button_h, x1, bottom)
     _draw_key(draw, back, "\u25c0 BACK", buttons, lambda: set_menu_tab("booth"), fill=MENU_ROW)
     busy = update_state in ("checking", "installing")
@@ -3200,7 +3322,7 @@ def render_update_view(draw, area, buttons):
         install = (x0, check[1] - gap - button_h, x1, check[1] - gap)
         _draw_key(draw, install, "INSTALL UPDATE", buttons, install_update, fill=MENU_DONE)
     note = "THE BOOTH RESTARTS WHILE UPDATING. PHOTOS AND SETTINGS ARE KEPT."
-    _draw_text_centered(draw, (x0, y1 - 32, x1, y1), note, _fit_font(draw, note, w, 13, False),
+    _draw_text_centered(draw, (x0, y1 - 24, x1, y1), note, _fit_font(draw, note, w, 13, False),
                         MENU_DIM)
 
 
@@ -3219,73 +3341,83 @@ def render_menu(cam=None):
     draw = ImageDraw.Draw(img)
     buttons = []
     pad = 8
-    bar_h = 64
+    bar_h = 70
+
+    if menu_tab == "wifi" and wifi_view == "keyboard" and wifi_target is not None:
+        # Typing gets the whole screen: no tab bar, the biggest keys possible.
+        _render_wifi_keyboard(draw, (pad, pad, w - pad, h - pad), buttons)
+        menu_buttons = buttons
+        return img
 
     tabs = (("camera", "CAMERA"), ("booth", "BOOTH"), ("wifi", "WIFI"))
-    done_w = 100 if w < 600 else 120
-    tab_w = min(160, (w - done_w - pad * (len(tabs) + 2)) // len(tabs))
+    done_w = 110
+    tab_w = min(170, (w - done_w - pad * (len(tabs) + 2)) // len(tabs))
     x = pad
     for tab, text in tabs:
-        box = (x, pad, x + tab_w, bar_h - 6)
+        box = (x, pad, x + tab_w, bar_h - 4)
         active = tab == menu_tab
         draw.rounded_rectangle(box, radius=10, fill=MENU_ACCENT if active else MENU_ROW)
-        _draw_text_centered(draw, box, text, _fit_font(draw, text, tab_w - 10, 20),
+        _draw_text_centered(draw, box, text, _fit_font(draw, text, tab_w - 10, 22),
                             (0, 0, 0) if active else MENU_TEXT)
         buttons.append((box, lambda t=tab: set_menu_tab(t)))
         x += tab_w + pad
-    done = (w - pad - done_w, pad, w - pad, bar_h - 6)
+    done = (w - pad - done_w, pad, w - pad, bar_h - 4)
     draw.rounded_rectangle(done, radius=10, fill=MENU_DONE)
-    _draw_text_centered(draw, done, "DONE", menu_font(20, True), MENU_TEXT)
+    _draw_text_centered(draw, done, "DONE", menu_font(22, True), MENU_TEXT)
     buttons.append((done, close_menu))
+    top = bar_h + 4
 
     if menu_tab == "camera":
         keys = [k for k, _, _, _ in CAMERA_SETTINGS]
         if is_landscape():
-            pw = w // 2 - 2 * pad
+            pw = w * 2 // 5 - 2 * pad
             ph = pw * PREVIEW_H // PREVIEW_W
-            pbox = (pad, bar_h + (h - bar_h - ph) // 2, pad + pw, 0)
-            rows = (w // 2, bar_h + 2, w - pad, h - pad)
+            pbox = (pad, top + (h - top - ph) // 2)
+            rows = (w * 2 // 5, top, w - pad, h - pad)
         else:
             pw = w - 2 * pad
             ph = pw * PREVIEW_H // PREVIEW_W
-            pbox = (pad, bar_h + 2, pad + pw, 0)
-            rows = (pad, bar_h + ph + 12, w - pad, h - pad)
-        px, py = pbox[0], pbox[1]
+            pbox = (pad, top)
+            rows = (pad, top + ph + 8, w - pad, h - pad)
+        px, py = pbox
         if cam is not None:
             img.paste(center_crop_to_slot(cam, pw, ph, resample=Image.BILINEAR), (px, py))
         else:
             draw.rectangle((px, py, px + pw, py + ph), fill=(0, 0, 0))
             _draw_text_centered(draw, (px, py, px + pw, py + ph), "CAMERA STARTING...",
                                 menu_font(18), MENU_DIM)
-        _draw_setting_rows(draw, rows, keys, buttons)
+        _draw_setting_rows(draw, rows, keys, buttons, "camera")
     elif menu_tab == "wifi":
-        render_wifi_tab(draw, (pad, bar_h + 2, w - pad, h - pad), buttons)
+        render_wifi_tab(draw, (pad, top, w - pad, h - pad), buttons)
     elif menu_tab == "update":
-        render_update_view(draw, (pad, bar_h + 2, w - pad, h - pad), buttons)
+        render_update_view(draw, (pad, top, w - pad, h - pad), buttons)
     else:
         keys = [k for k, _, _, _ in BOOTH_SETTINGS]
-        # Leave room under the rows for the shut-down button and the help text.
-        help_h = 0 if is_landscape() else len(HELP_LINES) * 22 + 12
-        # 68 = button row + its gap; also the gap after the last row and the bottom margin.
-        rows_h = min(len(keys) * 82, h - bar_h - 2 - 68 - 6 - pad - help_h)
-        bottom = _draw_setting_rows(
-            draw, (pad, bar_h + 2, w - pad, bar_h + 2 + rows_h), keys, buttons)
+        action_h = 70
+        action_top = h - pad - action_h
+        rows = (pad, top, w - pad, action_top - 6)
+        # The button reminder only when there's room left over after all the rows.
+        help_h = len(HELP_LINES) * 22 + 8
+        rows_need = len(keys) * (MIN_ROW_H + 6)
+        show_help = rows[3] - rows[1] - rows_need >= help_h
+        if show_help:
+            rows = (rows[0], rows[1], rows[2], rows[3] - help_h)
+        bottom = _draw_setting_rows(draw, rows, keys, buttons, "booth")
+        if show_help:
+            y = bottom + 4
+            help_font = _fit_font(draw, max(HELP_LINES, key=len), w - 2 * pad, 16, bold=False)
+            for line in HELP_LINES:
+                _draw_text_centered(draw, (pad, y, w - pad, y + 20), line, help_font, MENU_DIM)
+                y += 22
         confirming = time.monotonic() < _shutdown_confirm_until
         half = (w - 3 * pad) // 2
-        ubox = (pad, bottom + 4, pad + half, bottom + 4 + 64)
+        ubox = (pad, action_top, pad + half, action_top + action_h)
         _draw_key(draw, ubox, "UPDATE READY" if update_state == "available" else "UPDATES",
                   buttons, lambda: set_menu_tab("update"),
                   fill=MENU_DONE if update_state == "available" else MENU_ROW, size=22)
-        sbox = (w - pad - half, bottom + 4, w - pad, bottom + 4 + 64)
+        sbox = (w - pad - half, action_top, w - pad, action_top + action_h)
         _draw_key(draw, sbox, "TAP AGAIN TO\nSHUT DOWN" if confirming else "SHUT DOWN",
                   buttons, press_shutdown, fill=MENU_DANGER, size=22)
-        y = sbox[3] + 12
-        help_font = _fit_font(draw, max(HELP_LINES, key=len), w - 2 * pad, 16, bold=False)
-        for line in HELP_LINES:
-            if y + 20 > h:
-                break
-            _draw_text_centered(draw, (pad, y, w - pad, y + 20), line, help_font, MENU_DIM)
-            y += 22
 
     menu_buttons = buttons
     return img
@@ -3308,20 +3440,22 @@ def update_menu(force=False):
 
 
 def screen_to_ui(px, py):
-    """Maps a point on the panel to UI coordinates (undoes the rotation and scaling)."""
+    """Maps a point on the panel to UI coordinates (undoes the rotation, scaling and bezel shift)."""
     if _lcd_xform is None:
         return None
     ox, oy, scale = _lcd_xform
     rx, ry = (px - ox) / scale, (py - oy) / scale
-    w, h = ui_size()
+    w, h = full_ui_size()
     rotation = panel_rotation()
     if rotation == 0:
-        return rx, ry
-    if rotation == 180:
-        return w - rx, h - ry
-    if rotation == 90:
-        return w - ry, rx
-    return ry, h - rx  # -90
+        x, y = rx, ry
+    elif rotation == 180:
+        x, y = w - rx, h - ry
+    elif rotation == 90:
+        x, y = w - ry, rx
+    else:  # -90
+        x, y = ry, h - rx
+    return x - ui_inset(), y
 
 
 def next_tap(events):
