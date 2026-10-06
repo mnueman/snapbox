@@ -1,7 +1,7 @@
 """All custom photobooth strip frames.
 Generates frame11 (Deco Silver), the Atkinsons wedding set (frame12..frame19), the fun set
-(frame20..frame25), the mall booth set (frame26..frame31), the Army set (frame32..frame33, frame38..frame40) and
-the Hawaii set (frame34..frame37) (1200x3600 PNG with transparent photo openings + slot JSON).
+(frame20..frame25), the mall booth set (frame26..frame31), the Army set (frame32..frame36) and
+the Hawaii set (frame37..frame40) (1200x3600 PNG with transparent photo openings + slot JSON).
 The date stamp and vintage light effects are add-ons in the app, not frames.
 Usage (from the photobooth folder): python3 all_frames.py [frame numbers, default all]
 """
@@ -756,7 +756,7 @@ def plate(img, box, fill, edge, text, f, colour, spacing=10):
     d.rectangle(box, fill=rgba(fill), outline=rgba(edge), width=6)
     spaced_text(d, ((x0 + x1) / 2, (y0 + y1) / 2), text, f, rgba(colour), spacing)
 
-# ---------- 38: Army Woodland ----------
+# ---------- 34: Army Woodland ----------
 def army_woodland():
     slots = layout(top=420, bottom=460, gap=40)
     img = camo(WOODLAND_BASE, WOODLAND_LAYERS, seed=38)
@@ -772,7 +772,7 @@ def army_woodland():
     dog_tag(img, 790, fy + 300, 185, -10, ["U.S. ARMY", "BE ALL YOU", "CAN BE"])
     return img, slots
 
-# ---------- 39: Army Stars & Stripes ----------
+# ---------- 35: Army Stars & Stripes ----------
 def army_stars_stripes():
     NAVY, RED, WHITE = (26, 38, 82), (178, 34, 52), (255, 255, 255)
     slots = layout(top=520, bottom=330, gap=44, x0=110, w=980)
@@ -804,7 +804,7 @@ def army_stars_stripes():
     cut(img, slots, inset=0, radius=0)
     return img, slots
 
-# ---------- 40: Army Ammo Crate ----------
+# ---------- 36: Army Ammo Crate ----------
 def army_crate():
     OD, OD_DARK, STENCIL = (78, 86, 40), (52, 58, 26), (232, 200, 64)
     slots = layout(top=470, bottom=380, gap=50, x0=90, w=1020)
@@ -975,7 +975,7 @@ def sand_texture(img, top, seed, base=(232, 212, 168)):
         c = (150, 120, 80, 140) if rnd.random() < 0.6 else (255, 250, 235, 180)
         d.point((int(x), int(y)), fill=c)
 
-# ---------- 34: Hawaii Beach Day (realistic: sky, Diamond Head, sea, sand) ----------
+# ---------- 37: Hawaii Beach Day (realistic: sky, Diamond Head, sea, sand) ----------
 def beach_day():
     slots = layout(top=480, bottom=360, gap=40)
     horizon = 380
@@ -1037,7 +1037,7 @@ def beach_day():
     cut(img, slots, inset=6, radius=14)
     return img, slots
 
-# ---------- 35: Hawaii Sunset (realistic: sunset sky, sun on the water, palm silhouettes) ----------
+# ---------- 38: Hawaii Sunset (realistic: sunset sky, sun on the water, palm silhouettes) ----------
 def beach_sunset():
     slots = layout(top=330, bottom=520, gap=40)
     horizon = H - 250
@@ -1088,7 +1088,7 @@ def beach_sunset():
     d.text((CX, 160), "Aloha", font=title, fill=rgba((255, 228, 190)), anchor="mm")
     return img, slots
 
-# ---------- 36: Aloha Hibiscus (fun) ----------
+# ---------- 39: Aloha Hibiscus (fun) ----------
 def aloha_hibiscus():
     slots = layout(top=420, bottom=330, gap=44, x0=90, w=1020)
     img = vgrad((30, 196, 206), (14, 150, 180))
@@ -1118,7 +1118,7 @@ def aloha_hibiscus():
            anchor="mm", stroke_width=8, stroke_fill=rgba((14, 120, 150)))
     return img, slots
 
-# ---------- 37: Flip Flops (fun) ----------
+# ---------- 40: Flip Flops (fun) ----------
 def flip_flops():
     slots = layout(top=470, bottom=480, gap=48, x0=80, w=1040)
     img = Image.new("RGBA", (W, H))
@@ -1159,10 +1159,10 @@ DESIGNS = [(11, "Deco Silver", deco_silver), (12, "Deco Gold Ivory", deco_ivory)
            (26, "Mall Booth White", mall_white), (27, "Mall Booth Black", mall_black),
            (30, "Baby Pink", baby_pink), (31, "Baby Blue", baby_blue),
            (32, "Army Camo", army_camo), (33, "Army Black & Gold", army_gold),
-           (34, "Hawaii Beach Day", beach_day), (35, "Hawaii Sunset", beach_sunset),
-           (36, "Aloha Hibiscus", aloha_hibiscus), (37, "Flip Flops", flip_flops),
-           (38, "Army Woodland", army_woodland), (39, "Army Stars & Stripes", army_stars_stripes),
-           (40, "Army Ammo Crate", army_crate)]
+           (34, "Army Woodland", army_woodland), (35, "Army Stars & Stripes", army_stars_stripes),
+           (36, "Army Ammo Crate", army_crate),
+           (37, "Hawaii Beach Day", beach_day), (38, "Hawaii Sunset", beach_sunset),
+           (39, "Aloha Hibiscus", aloha_hibiscus), (40, "Flip Flops", flip_flops)]
 
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
