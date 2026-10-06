@@ -3326,6 +3326,45 @@ def _strip_time_label(path):
     return when.strftime("%b %-d, %Y  %-I:%M %p").upper()
 
 
+def _draw_pair_sheet(img, draw, area, first, second, arrow_buttons=None):
+    """MIX 2 STRIPS: the 4x6 sheet as it will print, the 1st pick fixed on the left and the
+    strip being swiped through on the right. With arrow_buttons, small arrows under the right
+    strip change it (when there's no room for the big ones)."""
+    ax0, ay0, ax1, ay1 = area
+    label_h, pad, gap = (46 if arrow_buttons is not None else 30), 8, 8
+    strip_h = ay1 - ay0 - label_h - 2 * pad
+    strip_w = strip_h * STRIP_W // STRIP_H
+    if 2 * strip_w + gap + 2 * pad > ax1 - ax0:
+        strip_w = (ax1 - ax0 - gap - 2 * pad) // 2
+        strip_h = strip_w * STRIP_H // STRIP_W
+    sheet_w = 2 * strip_w + gap + 2 * pad
+    sx = (ax0 + ax1 - sheet_w) // 2
+    sy = ay0 + (ay1 - ay0 - label_h - strip_h - 2 * pad) // 2
+    draw.rectangle((sx, sy, sx + sheet_w, sy + strip_h + 2 * pad), fill=(255, 255, 255))  # the paper
+    same = first == second
+    for n, (path, label, colour) in enumerate((
+            (first, "1ST (KEPT)", MENU_ACCENT),
+            (second, "SAME = 2 COPIES" if same else "\u25c0 2ND: SWIPE \u25b6", (90, 200, 255)))):
+        x = sx + pad + n * (strip_w + gap)
+        y = sy + pad
+        thumb = _gallery_thumb(path, strip_w, strip_h)
+        if thumb is None:
+            draw.rectangle((x, y, x + strip_w, y + strip_h), fill=(60, 60, 60))
+        else:
+            img.paste(thumb, (x + (strip_w - thumb.width) // 2, y + (strip_h - thumb.height) // 2))
+        draw.rectangle((x - 3, y - 3, x + strip_w + 2, y + strip_h + 2), outline=colour, width=3)
+        lbox = (x - gap, sy + strip_h + 2 * pad + 4, x + strip_w + gap, sy + strip_h + 2 * pad + label_h)
+        if n == 1 and arrow_buttons is not None:
+            mid = (lbox[0] + lbox[2]) // 2
+            for step, text, kx0, kx1 in ((-1, "\u25c0", lbox[0], mid - 3), (1, "\u25b6", mid + 3, lbox[2])):
+                enabled = 0 <= gallery_index + step < len(gallery_paths)
+                _draw_key(draw, (kx0, lbox[1], kx1, lbox[3]), text, arrow_buttons,
+                          lambda st=step: gallery_step(st), fill=MENU_ROW if enabled else (30, 30, 36),
+                          text_fill=colour if enabled else (90, 90, 98), size=22)
+        else:
+            _draw_text_centered(draw, lbox, label, _fit_font(draw, label, lbox[2] - lbox[0], 16), colour)
+
+
 def render_gallery():
     global gallery_buttons
     w, h = ui_size()
@@ -3345,8 +3384,8 @@ def render_gallery():
     if level != "ok":
         text = ("STORAGE FULL: " if level == "full" else "STORAGE LOW: ") + text
     if n and gallery_pair_first is not None:
-        title = "SWIPE TO THE 2ND STRIP, THEN PRINT"
-        text, color, level = f"1ST: {_strip_time_label(gallery_pair_first)}", MENU_ACCENT, "ok"
+        title = "MIX 2 STRIPS: THIS IS YOUR PRINT"
+        text, color, level = "SWIPE TO CHANGE THE STRIP ON THE RIGHT", MENU_ACCENT, "ok"
     elif n:
         title = f"STRIP {gallery_index + 1} OF {n}  \u00b7  {_strip_time_label(gallery_paths[gallery_index])}"
     else:
@@ -3366,7 +3405,19 @@ def render_gallery():
                   fill=MENU_ROW if enabled else dim,
                   text_fill=MENU_TEXT if enabled else (90, 90, 98), size=30)
 
-    if landscape:
+    pair_side = landscape and n and gallery_pair_first is not None
+    if pair_side:
+        # Mixing in landscape: CANCEL and PRINT down the sides, so the sheet gets the full height.
+        side_w = 132
+        printing = _print_busy.is_set()
+        _draw_key(draw, (pad, top, pad + side_w, h - pad), "CANCEL", buttons, gallery_pair_cancel,
+                  fill=(70, 70, 80), size=22)
+        _draw_key(draw, (w - pad - side_w, top, w - pad, h - pad),
+                  "PRINTING..." if printing else "PRINT\nTHESE 2", buttons, gallery_pair_print,
+                  fill=(80, 80, 88) if printing else MENU_ACCENT,
+                  text_fill=MENU_TEXT if printing else (0, 0, 0), size=22)
+        area = (pad + side_w + gap, top, w - pad - side_w - gap, h - pad)
+    elif landscape:
         # Big arrows down each side, the strip in two halves between them.
         arrow_w = 70
         arrow((pad, top, pad + arrow_w, bottom), "\u25c0", -1, can_newer)
@@ -3384,6 +3435,9 @@ def render_gallery():
     aw, ah = ax1 - ax0, ay1 - ay0
     if not n:
         _draw_text_centered(draw, area, "NO SAVED STRIPS YET", menu_font(22, True), MENU_DIM)
+    elif gallery_pair_first is not None:
+        _draw_pair_sheet(img, draw, area, gallery_pair_first, gallery_paths[gallery_index],
+                         buttons if pair_side else None)
     else:
         cur = _gallery_thumb(gallery_paths[gallery_index], aw, ah, halves=landscape)
         if cur is None:
@@ -3405,13 +3459,8 @@ def render_gallery():
                     img.paste(nb, (nx, ny))
                     draw.rectangle((nx, ny, nx + nb.width, ny + nb.height), fill=(0, 0, 0, 150))
             img.paste(cur, (cx - cur.width // 2, cy - cur.height // 2))
-            if gallery_pair_first is not None and gallery_paths[gallery_index] == gallery_pair_first:
-                # The left half of the sheet being made: printing it again gives two copies.
-                badge = (cx - 70, cy - 22, cx + 70, cy + 22)
-                draw.rounded_rectangle(badge, radius=10, fill=MENU_ACCENT)
-                _draw_text_centered(draw, badge, "1ST PICK", menu_font(20, True), (0, 0, 0))
 
-    if n:
+    if n and not pair_side:
         bx0, by0, bx1, by1 = actions
         printing = _print_busy.is_set()
         busy = dict(fill=(80, 80, 88), text_fill=MENU_TEXT)
