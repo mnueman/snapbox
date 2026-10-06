@@ -4,6 +4,7 @@ from queue import Queue
 import json
 import math
 import os
+import random
 import shutil
 import socket
 import time
@@ -13,7 +14,7 @@ import threading
 import traceback
 
 from gpiozero import Button, InputDevice
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 from picamera2 import Picamera2
 from libcamera import controls, Transform
 import numpy as np
@@ -136,8 +137,8 @@ CAMERA_SETTINGS = [
         ("auto", "AUTO"), ("near", "FIXED: CLOSE UP"), ("far", "FIXED: FARTHER AWAY"),
     ], "auto"),
     ("light", "LIGHTING", [
-        ("auto", "AUTO"), ("tungsten", "WARM LIGHT BULBS"), ("fluorescent", "OFFICE LIGHTS"),
-        ("indoor", "INDOOR"), ("daylight", "SUNNY"), ("cloudy", "CLOUDY"),
+        ("auto", "AUTO"), ("tungsten", "WARM LIGHT BULBS"), ("indoor", "INDOOR"),
+        ("fluorescent", "OFFICE LIGHTS"), ("daylight", "SUNNY"), ("cloudy", "CLOUDY / SHADE"),
     ], "auto"),
     ("zoom", "ZOOM", [
         (1.0, "WIDE"), (1.2, "A BIT CLOSER"), (1.4, "CLOSER"), (1.7, "CLOSEST"),
@@ -146,6 +147,17 @@ CAMERA_SETTINGS = [
         (True, "ON (LIKE A MIRROR)"), (False, "OFF"),
     ], True),
 ]
+# Vintage add-ons, drawn on every photo on top of any frame; they all stack.
+EFFECT_SETTINGS = [
+    ("stamp", "DATE STAMP", [(False, "OFF"), (True, "ON")], False),
+    ("leaks", "LIGHT LEAKS (WARM GLOW)", [(0, "OFF"), (1, "SUBTLE"), (2, "STRONG")], 0),
+    ("spots", "RED LIGHT SPOTS", [(0, "OFF"), (1, "SUBTLE"), (2, "STRONG")], 0),
+    ("lines", "LIGHT STREAKS & DUST", [(0, "OFF"), (1, "SUBTLE"), (2, "STRONG")], 0),
+]
+# Short names for the setting buttons along the full-screen preview.
+SETTING_SHORT = {"brightness": "BRIGHT", "colour": "COLOUR", "motion": "MOVE", "focus": "FOCUS",
+                 "light": "LIGHT", "zoom": "ZOOM", "mirror": "MIRROR", "stamp": "DATE",
+                 "leaks": "LEAKS", "spots": "SPOTS", "lines": "STREAKS"}
 BOOTH_SETTINGS = [
     ("rotation", "SCREEN", [
         (-90, "PORTRAIT"), (90, "PORTRAIT (FLIPPED)"), (0, "LANDSCAPE"), (180, "LANDSCAPE (FLIPPED)"),
@@ -172,7 +184,7 @@ BOOTH_SETTINGS = [
     ], None),
 ]
 SETTING_DEFS = {key: (label, choices, default)
-                for key, label, choices, default in CAMERA_SETTINGS + BOOTH_SETTINGS}
+                for key, label, choices, default in CAMERA_SETTINGS + EFFECT_SETTINGS + BOOTH_SETTINGS}
 
 
 def _load_settings():
@@ -226,14 +238,55 @@ except Exception as e:
     _fatal_screen("CAMERA NOT FOUND\n\nTurn the booth off and check\nthe camera cable is pushed in.\n\nTrying again...")
 
 
+# Each LIGHTING preset locks the white balance to one colour temperature (kelvin). libcamera's
+# own AWB modes only narrow the range auto white balance searches, and most of them overlap
+# AUTO, so in many rooms picking one changed nothing.
+LIGHT_KELVIN = {"tungsten": 2900, "indoor": 3600, "fluorescent": 4300, "daylight": 5600,
+                "cloudy": 7000}
 AWB_MODES = {
-    "auto": controls.AwbModeEnum.Auto,
     "tungsten": controls.AwbModeEnum.Tungsten,
     "fluorescent": controls.AwbModeEnum.Fluorescent,
     "indoor": controls.AwbModeEnum.Indoor,
     "daylight": controls.AwbModeEnum.Daylight,
     "cloudy": controls.AwbModeEnum.Cloudy,
 }
+
+
+def _load_ct_curve():
+    """The sensor's colour temperature curve [(kelvin, r, b)] from its libcamera tuning file:
+    r and b are the red/green and blue/green ratios of grey at that temperature."""
+    model = picam2.camera_properties.get("Model", "")
+    for platform in ("pisp", "vc4"):
+        path = Path(f"/usr/share/libcamera/ipa/rpi/{platform}/{model}.json")
+        try:
+            tuning = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        for algo in tuning.get("algorithms", []):
+            curve = algo.get("rpi.awb", {}).get("ct_curve")
+            if curve and len(curve) >= 6:
+                return [tuple(curve[i:i + 3]) for i in range(0, len(curve) - 2, 3)]
+    print(f"No colour temperature curve for camera {model!r}; LIGHTING uses AWB modes.")
+    return None
+
+
+def colour_gains(kelvin):
+    """(red gain, blue gain) that make grey come out grey under light of this temperature."""
+    curve = _ct_curve
+    if kelvin <= curve[0][0]:
+        _, r, b = curve[0]
+    elif kelvin >= curve[-1][0]:
+        _, r, b = curve[-1]
+    else:
+        for (k0, r0, b0), (k1, r1, b1) in zip(curve, curve[1:]):
+            if k0 <= kelvin <= k1:
+                t = (kelvin - k0) / (k1 - k0)
+                r, b = r0 + (r1 - r0) * t, b0 + (b1 - b0) * t
+                break
+    return 1.0 / r, 1.0 / b
+
+
+_ct_curve = _load_ct_curve()
 FOCUS_DIOPTRES = {"near": 1.5, "far": 0.3}  # 1 / distance in metres
 # The camera is mounted upside down in the box, so the sensor turns every frame 180 degrees
 # (preview and photos alike).
@@ -292,8 +345,17 @@ def camera_controls_from_settings():
         "AeExposureMode": controls.AeExposureModeEnum.Short,
         "ExposureValue": settings["brightness"],
         "Saturation": COLOUR_LOOKS[settings["colour"]]["sat"],
-        "AwbMode": AWB_MODES[settings["light"]],
     }
+    light = settings["light"]
+    if light == "auto":
+        c["AwbEnable"] = True
+        c["AwbMode"] = controls.AwbModeEnum.Auto
+    elif _ct_curve:
+        c["AwbEnable"] = False
+        c["ColourGains"] = colour_gains(LIGHT_KELVIN[light])
+    else:
+        c["AwbEnable"] = True
+        c["AwbMode"] = AWB_MODES[light]
     # The sensor size is only known once the camera is configured; until then it reads as 0.
     if cw and ch:
         c["ScalerCrop"] = (cx + (cw - zw) // 2, cy + (ch - zh) // 2, zw, zh)

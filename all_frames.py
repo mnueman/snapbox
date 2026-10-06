@@ -1,14 +1,15 @@
 """All custom photobooth strip frames.
-Generates frame11 (Deco Silver), the Atkinsons wedding set (frame12..frame19),
-and the fun set (frame20..frame25) (1200x3600 PNG with transparent photo openings + slot JSON).
-Usage (from the photobooth folder): python3 wedding_collection.py
+Generates frame11 (Deco Silver), the Atkinsons wedding set (frame12..frame19), the fun set
+(frame20..frame25), the mall booth set (frame26..frame31), the Army set (frame32..frame33) and
+the Hawaii set (frame34..frame37) (1200x3600 PNG with transparent photo openings + slot JSON).
+The date stamp and vintage light effects are add-ons in the app, not frames.
+Usage (from the photobooth folder): python3 all_frames.py [frame numbers, default all]
 """
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
-import datetime, json, math, os, random, urllib.request
+import json, math, os, random, sys, urllib.request
+import numpy as np
 
 NAME = "The   Atkinsons"
-# Date for the disposable-camera stamp frames. Change to the event date, e.g. "'27 06 14"
-DATE_STAMP = datetime.date.today().strftime("'%y %m %d")
 OUT = "frames"
 W, H = 1200, 3600
 CX = W // 2
@@ -17,6 +18,9 @@ FONT_URLS = {
     "Limelight.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/limelight/Limelight-Regular.ttf",
     "PoiretOne.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/poiretone/PoiretOne-Regular.ttf",
     "VT323.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/vt323/VT323-Regular.ttf",
+    "Pacifico.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/pacifico/Pacifico-Regular.ttf",
+    "Oswald.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/oswald/Oswald%5Bwght%5D.ttf",
+    "StardosStencil.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/stardosstencil/StardosStencil-Bold.ttf",
 }
 FONT_DIR = os.path.join(OUT, "fonts")
 
@@ -565,18 +569,10 @@ def cosmos():
     return img, slots
 
 # ================= MALL BOOTH SET (plain 90s/2000s strips) =================
-def plain_strip(bg, stamp=False):
+def plain_strip(bg):
     slots = layout(top=60, bottom=180, gap=40)
     img = Image.new("RGBA", (W, H), rgba(bg))
     cut(img, slots, inset=0, radius=0)
-    if stamp:
-        over = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        o = ImageDraw.Draw(over)
-        f = font("VT323.ttf", 64)
-        for x, y, w, h in slots:
-            o.text((x + w - 40, y + h - 36), DATE_STAMP, font=f, fill=(255, 140, 30, 255), anchor="rs")
-        img.alpha_composite(over.filter(ImageFilter.GaussianBlur(4)))
-        img.alpha_composite(over)
     return img, slots
 
 def mall_white():
@@ -585,17 +581,444 @@ def mall_white():
 def mall_black():
     return plain_strip((10, 10, 10))
 
-def stamp_white():
-    return plain_strip((255, 255, 255), stamp=True)
-
-def stamp_black():
-    return plain_strip((10, 10, 10), stamp=True)
-
 def baby_pink():
     return plain_strip((255, 209, 220))
 
 def baby_blue():
     return plain_strip((190, 222, 255))
+
+# ================= ARMY SET =================
+ARMY_GOLD, ARMY_BLACK, ARMY_WHITE = (255, 204, 1), (18, 18, 18), (255, 255, 255)
+# OCP (Operational Camouflage Pattern), the Army uniform: tan base with vertical blotches.
+OCP_BASE = (186, 172, 136)
+OCP_LAYERS = [((158, 140, 102), 46, 150, 230), ((116, 110, 78), 30, 120, 200),
+              ((100, 80, 57), 17, 95, 160), ((78, 77, 54), 10, 70, 120), ((216, 206, 176), 8, 55, 85)]
+
+def bold(name, size, weight=700):
+    f = font(name, size)
+    f.set_variation_by_axes([weight])
+    return f
+
+def smooth_noise(seed, cell_x, cell_y, blur, size=(W, H)):
+    """Soft random field (float array): random values on a coarse grid, smoothly enlarged."""
+    rnd = np.random.default_rng(seed)
+    w, h = size
+    gw, gh = w // cell_x + 3, h // cell_y + 3
+    grid = (rnd.random((gh, gw)) * 255).astype(np.uint8)
+    img = Image.fromarray(grid, "L").resize((gw * cell_x, gh * cell_y), Image.BICUBIC)
+    img = img.crop((cell_x, cell_y, cell_x + w, cell_y + h))
+    return np.asarray(img.filter(ImageFilter.GaussianBlur(blur)), np.float32)
+
+def camo(base, layers, seed, size=(W, H)):
+    img = Image.new("RGBA", size, rgba(base))
+    for k, (color, cover, cx, cy) in enumerate(layers):
+        n = (smooth_noise(seed + 11 * k, cx, cy, cx / 6, size) * 0.8
+             + smooth_noise(seed + 11 * k + 5, max(4, cx // 5), max(4, cy // 5), 1.5, size) * 0.2)
+        mask = Image.fromarray(((n > np.percentile(n, 100 - cover)) * 255).astype(np.uint8), "L")
+        img.paste(rgba(color), (0, 0) + size, mask)
+    return img
+
+def star_points(cx, cy, r, inner=0.382, rot=-90):
+    return [(cx + (r if i % 2 == 0 else r * inner) * math.cos(math.radians(rot + 36 * i)),
+             cy + (r if i % 2 == 0 else r * inner) * math.sin(math.radians(rot + 36 * i)))
+            for i in range(10)]
+
+def army_star(d, cx, cy, r):
+    """Gold star in a black box with a gold rule, the star's points reaching the box edges."""
+    half_w, top, bottom = r * 0.951, cy - r, cy + r * 0.809
+    d.rectangle([cx - half_w * 1.08, top - r * 0.06, cx + half_w * 1.08, bottom + r * 0.14],
+                fill=rgba(ARMY_BLACK))
+    d.rectangle([cx - half_w * 0.98, top + r * 0.03, cx + half_w * 0.98, bottom + r * 0.05],
+                outline=rgba(ARMY_GOLD), width=max(3, int(r * 0.05)))
+    d.polygon(star_points(cx, cy, r), fill=rgba(ARMY_WHITE))
+    d.polygon(star_points(cx, cy + r * 0.02, r * 0.9), fill=rgba(ARMY_BLACK))
+    d.polygon(star_points(cx, cy + r * 0.03, r * 0.82), fill=rgba(ARMY_GOLD))
+
+def spaced_text(d, xy, text, f, fill, spacing, anchor_y="mm", **kw):
+    """Text centred on xy with extra space between letters (uniform tapes and stencils)."""
+    widths = [d.textlength(ch, font=f) for ch in text]
+    x = xy[0] - (sum(widths) + spacing * (len(text) - 1)) / 2
+    for ch, w in zip(text, widths):
+        d.text((x, xy[1]), ch, font=f, fill=fill, anchor="l" + anchor_y[1], **kw)
+        x += w + spacing
+
+def tape(img, box, text, seed):
+    """Uniform name tape: OCP fabric strip, stitched edge, black block letters."""
+    x0, y0, x1, y1 = box
+    shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rectangle([x0 + 8, y0 + 12, x1 + 8, y1 + 12], fill=(0, 0, 0, 150))
+    img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(10)))
+    fabric = camo((200, 188, 152), [(c, cov, cx // 2, cy // 2) for c, cov, cx, cy in OCP_LAYERS[:3]],
+                  seed, size=(x1 - x0, y1 - y0))
+    img.alpha_composite(fabric, (x0, y0))
+    d = ImageDraw.Draw(img, "RGBA")
+    d.rectangle(box, outline=rgba((70, 64, 46)), width=6)
+    for x in range(x0 + 14, x1 - 14, 22):  # stitching
+        d.line([x, y0 + 13, x + 11, y0 + 13], fill=rgba((60, 54, 40)), width=3)
+        d.line([x, y1 - 13, x + 11, y1 - 13], fill=rgba((60, 54, 40)), width=3)
+    spaced_text(d, ((x0 + x1) / 2, (y0 + y1) / 2 + 4), text, bold("Oswald.ttf", int((y1 - y0) * 0.66)),
+                rgba((16, 16, 14)), 14)
+
+# ---------- 32: Army Camo ----------
+def army_camo():
+    slots = layout(top=470, bottom=330, gap=40)
+    img = camo(OCP_BASE, OCP_LAYERS, seed=32)
+    d = ImageDraw.Draw(img, "RGBA")
+    army_star(d, CX, 150, 110)
+    tape(img, (CX - 380, 300, CX + 380, 430), "U.S. ARMY", seed=7)
+    glow_lines(img, hole_rects(slots), (40, 38, 28), radius=10, width=4, blur=8)
+    img.putalpha(255)  # translucent drawing above must not leave see-through spots
+    cut(img, slots, inset=6, radius=8)
+    d = ImageDraw.Draw(img, "RGBA")
+    fy = slots[-1][1] + slots[-1][3]
+    plate = (CX - 470, fy + 95, CX + 470, fy + 245)
+    shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rectangle([plate[0] + 8, plate[1] + 12, plate[2] + 8, plate[3] + 12], fill=(0, 0, 0, 150))
+    img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(10)))
+    d = ImageDraw.Draw(img, "RGBA")
+    d.rectangle(plate, fill=rgba((62, 60, 42)), outline=rgba((36, 34, 24)), width=6)
+    spaced_text(d, (CX, fy + 172), "THIS WE'LL DEFEND", font("StardosStencil.ttf", 72),
+                rgba((222, 210, 176)), 8)
+    return img, slots
+
+# ---------- 33: Army Black & Gold ----------
+def army_gold():
+    slots = layout(top=520, bottom=330, gap=44)
+    img = Image.new("RGBA", (W, H), rgba(ARMY_BLACK))
+    d = ImageDraw.Draw(img, "RGBA")
+    for x in range(-H, W, 46):  # faint diagonal pinstripes
+        d.line([x, H, x + H, 0], fill=(40, 40, 40, 255), width=3)
+    # Camo bands top and bottom, edged in gold.
+    band = camo(OCP_BASE, OCP_LAYERS, seed=33)
+    img.paste(band.crop((0, 0, W, 34)), (0, 0))
+    img.paste(band.crop((0, H - 34, W, H)), (0, H - 34))
+    d.line([0, 36, W, 36], fill=rgba(ARMY_GOLD), width=6)
+    d.line([0, H - 37, W, H - 37], fill=rgba(ARMY_GOLD), width=6)
+    army_star(d, CX, 200, 120)
+    spaced_text(d, (CX, 420), "U.S. ARMY", bold("Oswald.ttf", 128), rgba(ARMY_WHITE), 18)
+    for x, y, w, h in slots:
+        d.rectangle([x - 4, y - 4, x + w + 3, y + h + 3], outline=rgba(ARMY_GOLD), width=6)
+    for (x, y, w, h), nxt in zip(slots, slots[1:]):
+        gy = (y + h + nxt[1]) / 2
+        d.line([90, gy, CX - 46, gy], fill=rgba(ARMY_GOLD), width=3)
+        d.line([CX + 46, gy, W - 90, gy], fill=rgba(ARMY_GOLD), width=3)
+        d.polygon(star_points(CX, gy + 2, 20), fill=rgba(ARMY_GOLD))
+    img.putalpha(255)  # translucent drawing above must not leave see-through spots
+    cut(img, slots, inset=0, radius=0)
+    d = ImageDraw.Draw(img, "RGBA")
+    fy = slots[-1][1] + slots[-1][3]
+    spaced_text(d, (CX, fy + 120), "BE ALL YOU CAN BE", bold("Oswald.ttf", 84, 600), rgba(ARMY_GOLD), 12)
+    for k in range(5):
+        d.polygon(star_points(CX + (k - 2) * 70, fy + 225, 20), fill=rgba(ARMY_WHITE))
+    return img, slots
+
+# ================= HAWAII SET =================
+def palm(d, bx, by, h, lean, color, frond_len=None, seed=0):
+    """Palm tree silhouette: a curved, tapering trunk and drooping fronds with leaflets."""
+    rnd = random.Random(seed)
+    pts = [(bx + lean * t * t, by - h * t) for t in (i / 24 for i in range(25))]
+    for i in range(24):
+        d.line([pts[i], pts[i + 1]], fill=color, width=max(3, int(h * 0.055 * (1 - 0.45 * i / 24))))
+        if i % 2 == 0:  # trunk rings
+            x, y = pts[i]
+            w = h * 0.03 * (1 - 0.45 * i / 24)
+            d.line([x - w, y, x + w, y - 4], fill=color, width=3)
+    tx, ty = pts[-1]
+    L = frond_len or h * 0.5
+    for deg in (-172, -140, -112, -82, -52, -22, 8, 165, 196):
+        a = math.radians(deg + rnd.uniform(-8, 8))
+        ln = L * rnd.uniform(0.8, 1.1)
+        spine = [(tx + math.cos(a) * ln * s, ty + math.sin(a) * ln * s * 0.55 + ln * 0.42 * s * s)
+                 for s in (j / 16 for j in range(17))]
+        d.line(spine, fill=color, width=max(3, int(ln * 0.035)), joint="curve")
+        for j in range(2, 17):
+            x, y = spine[j]
+            px, py = spine[j - 1]
+            ang = math.atan2(y - py, x - px)
+            leaflet = ln * 0.2 * (1 - j / 19)
+            for side in (-1, 1):
+                b = ang + side * 1.1 + 0.35
+                d.line([(x, y), (x + math.cos(b) * leaflet, y + math.sin(b) * leaflet + leaflet * 0.5)],
+                       fill=color, width=max(2, int(ln * 0.022)))
+
+def starfish(d, cx, cy, r, fill, dots, rot=-90):
+    d.polygon(star_points(cx, cy, r, inner=0.45, rot=rot), fill=fill)
+    for k in range(5):
+        a = math.radians(rot + 72 * k)
+        for t in (0.25, 0.45, 0.65):
+            x, y = cx + r * t * math.cos(a), cy + r * t * math.sin(a)
+            s = r * 0.05
+            d.ellipse([x - s, y - s, x + s, y + s], fill=dots)
+
+def shell(d, cx, cy, r, fill, rib, rot=0):
+    """Scallop shell: a ribbed fan on a little hinge."""
+    d.pieslice([cx - r, cy - r, cx + r, cy + r], 200 + rot, 340 + rot, fill=fill)
+    for k in range(8):
+        a = math.radians(205 + rot + k * 130 / 7)
+        d.line([(cx, cy), (cx + r * 0.95 * math.cos(a), cy + r * 0.95 * math.sin(a))], fill=rib, width=max(2, int(r * 0.05)))
+    d.polygon([(cx - r * 0.25, cy + r * 0.05), (cx + r * 0.25, cy + r * 0.05), (cx + r * 0.12, cy - r * 0.15),
+               (cx - r * 0.12, cy - r * 0.15)], fill=fill)
+
+def hibiscus(d, cx, cy, r, petal, dark, stamen=(255, 220, 90), angle=0):
+    for k in range(5):
+        a = math.radians(angle + k * 72)
+        leaf(d, cx + r * 0.52 * math.cos(a), cy + r * 0.52 * math.sin(a), r * 1.08, r * 0.98, angle + k * 72, petal)
+    for k in range(5):  # veins
+        a = math.radians(angle + k * 72)
+        d.line([(cx, cy), (cx + r * 0.75 * math.cos(a), cy + r * 0.75 * math.sin(a))], fill=dark, width=max(2, int(r * 0.04)))
+    d.ellipse([cx - r * 0.24, cy - r * 0.24, cx + r * 0.24, cy + r * 0.24], fill=dark)
+    a = math.radians(angle + 36)
+    ex, ey = cx + r * 0.95 * math.cos(a), cy + r * 0.95 * math.sin(a)
+    d.line([(cx, cy), (ex, ey)], fill=dark, width=max(3, int(r * 0.07)))
+    for k in range(6):
+        b = a + (k - 2.5) * 0.35
+        x, y = ex + r * 0.1 * math.cos(b), ey + r * 0.1 * math.sin(b)
+        s = r * 0.05
+        d.ellipse([x - s, y - s, x + s, y + s], fill=stamen)
+
+def monstera(img, cx, cy, size, angle, color, vein):
+    """Split monstera leaf, drawn on its own layer so the slits can be cut out."""
+    c = size
+    layer = Image.new("RGBA", (2 * size, 2 * size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    d.ellipse([c - size * 0.8, c - size * 0.72, c + size * 0.8, c + size * 0.78], fill=color)
+    d.polygon([(c, c - size * 0.22), (c - size * 0.16, c - size * 0.8), (c + size * 0.16, c - size * 0.8)], fill=(0, 0, 0, 0))
+    for side in (-1, 1):
+        for k in range(5):
+            y = c + size * (-0.42 + k * 0.27)
+            d.line([(c + side * size * 0.3, y + size * 0.04), (c + side * size * 0.9, y - size * 0.14)],
+                   fill=(0, 0, 0, 0), width=max(4, size // 13))
+    d.line([(c, c - size * 0.22), (c, c + size * 0.76)], fill=vein, width=max(3, size // 28))
+    layer = layer.rotate(angle, resample=Image.BICUBIC)
+    img.alpha_composite(layer, (int(cx - c), int(cy - c)))
+
+def flipflop(img, cx, cy, s, sole, strap, angle):
+    c = int(s * 1.5)
+    layer = Image.new("RGBA", (2 * c, 2 * c), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    for off, col in ((s * 0.05, tuple(int(v * 0.7) for v in sole[:3]) + (255,)), (0, sole)):
+        d.ellipse([c - s * 0.42, c - s + off, c + s * 0.42, c - s * 0.05 + off], fill=col)
+        d.ellipse([c - s * 0.34, c + s * 0.05 + off, c + s * 0.34, c + s * 0.95 + off], fill=col)
+        d.polygon([(c - s * 0.4, c - s * 0.45 + off), (c + s * 0.4, c - s * 0.45 + off),
+                   (c + s * 0.3, c + s * 0.5 + off), (c - s * 0.3, c + s * 0.5 + off)], fill=col)
+    post = (c, c - s * 0.62)
+    for side in (-1, 1):
+        d.line([post, (c + side * s * 0.38, c + s * 0.08)], fill=strap, width=int(s * 0.13))
+    d.ellipse([c - s * 0.08, c - s * 0.7, c + s * 0.08, c - s * 0.54], fill=strap)
+    layer = layer.rotate(angle, resample=Image.BICUBIC)
+    shadow = Image.new("RGBA", layer.size, (0, 0, 0, 0))
+    shadow.putalpha(layer.getchannel("A").point(lambda v: v * 0.35))
+    img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(10)), (cx - c + 14, cy - c + 18))
+    img.alpha_composite(layer, (cx - c, cy - c))
+
+def sunglasses(d, cx, cy, s, frame, lens):
+    for side in (-1, 1):
+        x = cx + side * s * 0.55
+        d.rounded_rectangle([x - s * 0.45, cy - s * 0.32, x + s * 0.45, cy + s * 0.34], radius=s * 0.22, fill=frame)
+        d.rounded_rectangle([x - s * 0.37, cy - s * 0.24, x + s * 0.37, cy + s * 0.26], radius=s * 0.17, fill=lens)
+        d.line([x - s * 0.22, cy - s * 0.12, x - s * 0.05, cy - s * 0.2], fill=(255, 255, 255, 200), width=max(2, int(s * 0.06)))
+        d.line([x + side * s * 0.45, cy - s * 0.2, x + side * s * 0.75, cy - s * 0.3], fill=frame, width=max(3, int(s * 0.08)))
+    d.arc([cx - s * 0.16, cy - s * 0.2, cx + s * 0.16, cy + s * 0.08], 200, 340, fill=frame, width=max(3, int(s * 0.08)))
+
+def beach_ball(d, cx, cy, r):
+    cols = [(230, 50, 50), (255, 255, 255), (40, 120, 230), (255, 255, 255), (255, 200, 30), (255, 255, 255)]
+    for k, col in enumerate(cols):
+        d.pieslice([cx - r, cy - r, cx + r, cy + r], k * 60 - 90, k * 60 - 30, fill=rgba(col))
+    d.ellipse([cx - r * 0.2, cy - r * 0.2, cx + r * 0.2, cy + r * 0.2], fill=rgba((255, 255, 255)))
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(0, 0, 0, 60), width=3)
+    d.chord([cx - r * 0.75, cy - r * 0.85, cx - r * 0.1, cy - r * 0.35], 180, 360, fill=(255, 255, 255, 90))
+
+def wave_line(d, y, amp, period, phase, fill, width, x0=0, x1=W):
+    pts = [(x, y + amp * math.sin(2 * math.pi * x / period + phase)) for x in range(x0, x1 + 1, 8)]
+    d.line(pts, fill=fill, width=width, joint="curve")
+
+def sand_texture(img, top, seed, base=(232, 212, 168)):
+    rnd = np.random.default_rng(seed)
+    h = H - top
+    n = rnd.normal(0, 9, (h, W, 1)).astype(np.float32)
+    arr = np.clip(np.array(base, np.float32)[None, None, :] + n, 0, 255).astype(np.uint8)
+    img.paste(Image.fromarray(arr, "RGB").convert("RGBA"), (0, top))
+    d = ImageDraw.Draw(img, "RGBA")
+    for _ in range(int(W * h / 900)):
+        x, y = rnd.integers(0, W), top + rnd.integers(0, h)
+        c = (150, 120, 80, 140) if rnd.random() < 0.6 else (255, 250, 235, 180)
+        d.point((int(x), int(y)), fill=c)
+
+# ---------- 34: Hawaii Beach Day (realistic: sky, Diamond Head, sea, sand) ----------
+def beach_day():
+    slots = layout(top=480, bottom=360, gap=40)
+    horizon = 380
+    img = vgrad((52, 128, 214), (178, 218, 245))
+    d = ImageDraw.Draw(img, "RGBA")
+    sea = vgrad((18, 92, 150), (40, 190, 196))
+    img.paste(sea.crop((0, horizon, W, H)), (0, horizon))
+    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.ellipse([80, 40, 300, 260], fill=(255, 250, 220, 255))
+    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(40)))
+    d.ellipse([150, 110, 230, 190], fill=rgba((255, 253, 235)))
+    clouds = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    cd = ImageDraw.Draw(clouds)
+    rnd = random.Random(34)
+    for cx, cy in ((520, 120), (860, 70), (1080, 200)):
+        for _ in range(7):
+            w, h = rnd.randint(70, 150), rnd.randint(30, 60)
+            ox, oy = rnd.randint(-110, 110), rnd.randint(-20, 20)
+            cd.ellipse([cx + ox - w, cy + oy - h, cx + ox + w, cy + oy + h], fill=(255, 255, 255, 200))
+    img.alpha_composite(clouds.filter(ImageFilter.GaussianBlur(14)))
+    d = ImageDraw.Draw(img, "RGBA")
+    # Diamond Head on the horizon, hazy with distance.
+    ridge = [(560, horizon), (640, 330), (700, 300), (760, 262), (830, 250), (900, 270), (960, 236),
+             (1020, 252), (1090, 300), (1160, 330), (1200, 336), (1200, horizon)]
+    d.polygon(ridge, fill=rgba((96, 128, 118)))
+    d.polygon([(x, y + 14) for x, y in ridge[1:-1]] + [(1200, horizon), (640, horizon)], fill=rgba((84, 114, 104)))
+    d.line([0, horizon, W, horizon], fill=rgba((30, 100, 150)), width=3)
+    # Sparkles and wave streaks on the water, busier towards the shore.
+    rnd = random.Random(340)
+    for _ in range(900):
+        y = rnd.uniform(horizon + 6, H - 330)
+        t = (y - horizon) / (H - horizon)
+        ln = rnd.uniform(8, 40) * (0.4 + 2.5 * t)
+        x = rnd.uniform(-20, W)
+        d.line([x, y, x + ln, y], fill=(255, 255, 255, int(rnd.uniform(60, 160))), width=max(1, int(1 + 3 * t)))
+    # Shore: wet sand, dry sand, foam.
+    shore = H - 300
+    sand_texture(img, shore, 34)
+    d = ImageDraw.Draw(img, "RGBA")
+    wet = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    wd = ImageDraw.Draw(wet)
+    pts = [(x, shore + 70 + 18 * math.sin(x / 110)) for x in range(0, W + 1, 10)]
+    wd.polygon([(0, shore)] + pts + [(W, shore)], fill=(150, 120, 80, 110))
+    img.alpha_composite(wet.filter(ImageFilter.GaussianBlur(6)))
+    d = ImageDraw.Draw(img, "RGBA")
+    for k, a in ((0, 255), (1, 170), (2, 110)):
+        wave_line(d, shore - 6 + 20 * k, 10, 180 + 40 * k, k * 1.7, (255, 255, 255, a), 14 - 3 * k)
+    starfish(d, 230, H - 110, 52, rgba((236, 120, 62)), rgba((255, 200, 150)), rot=-80)
+    shell(d, 960, H - 90, 46, rgba((250, 228, 208)), rgba((210, 160, 130)), rot=10)
+    shell(d, 1050, H - 150, 30, rgba((245, 210, 190)), rgba((200, 150, 120)), rot=-20)
+    palm(d, 40, horizon + 90, 360, 130, rgba((24, 52, 34)), seed=1)
+    palm(d, 1190, horizon + 90, 300, -110, rgba((24, 52, 34)), seed=2)
+    title = font("GreatVibes.ttf", 190)
+    d.text((CX + 5, 255), "Hawaii", font=title, fill=(0, 40, 80, 120), anchor="mm")
+    d.text((CX, 250), "Hawaii", font=title, fill=rgba((255, 255, 255)), anchor="mm")
+    glow_lines(img, hole_rects(slots), (255, 255, 255), radius=18, width=4, blur=10)
+    img.putalpha(255)  # translucent drawing above must not leave see-through spots
+    cut(img, slots, inset=6, radius=14)
+    return img, slots
+
+# ---------- 35: Hawaii Sunset (realistic: sunset sky, sun on the water, palm silhouettes) ----------
+def beach_sunset():
+    slots = layout(top=330, bottom=520, gap=40)
+    horizon = H - 250
+    img = Image.new("RGBA", (W, H))
+    d = ImageDraw.Draw(img, "RGBA")
+    stops = [(0, (34, 26, 84)), (0.35, (112, 48, 128)), (0.62, (214, 82, 108)),
+             (0.85, (250, 146, 74)), (1.0, (255, 214, 130))]
+    for y in range(horizon):
+        t = y / horizon
+        for (t0, c0), (t1, c1) in zip(stops, stops[1:]):
+            if t <= t1:
+                k = (t - t0) / (t1 - t0)
+                d.line([0, y, W, y], fill=tuple(int(a + (b - a) * k) for a, b in zip(c0, c1)) + (255,))
+                break
+    rnd = random.Random(35)
+    for _ in range(120):  # first stars in the deep blue
+        x, y = rnd.randint(0, W), rnd.randint(0, 700)
+        s = rnd.choice([1, 1, 2])
+        d.ellipse([x - s, y - s, x + s, y + s], fill=(255, 255, 255, rnd.randint(90, 220)))
+    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.ellipse([CX - 330, horizon - 330, CX + 330, horizon + 330], fill=(255, 190, 90, 200))
+    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(70)))
+    d = ImageDraw.Draw(img, "RGBA")
+    d.ellipse([CX - 150, horizon - 150, CX + 150, horizon + 150], fill=rgba((255, 236, 170)))
+    sea = vgrad((60, 36, 82), (24, 18, 46))
+    img.paste(sea.crop((0, horizon, W, H)), (0, horizon))
+    d = ImageDraw.Draw(img, "RGBA")
+    for k in range(26):  # the sun's path on the water
+        y = horizon + 8 + k * 9
+        half = 150 * (1 - k / 30) * rnd.uniform(0.6, 1.0)
+        off = rnd.uniform(-20, 20)
+        d.line([CX - half + off, y, CX + half + off, y], fill=(255, 196, 110, int(220 * (1 - k / 32))), width=4)
+    for x, y, s in ((300, H - 470, 22), (360, H - 500, 16), (860, H - 520, 18)):  # birds
+        d.arc([x - s, y - s / 2, x, y + s / 2], 200, 340, fill=rgba((40, 20, 50)), width=4)
+        d.arc([x, y - s / 2, x + s, y + s / 2], 200, 340, fill=rgba((40, 20, 50)), width=4)
+    dark = rgba((22, 12, 30))
+    d.polygon([(0, H), (0, horizon + 40), (260, horizon + 90), (420, H)], fill=dark)
+    d.polygon([(W, H), (W, horizon + 60), (900, horizon + 110), (760, H)], fill=dark)
+    palm(d, 110, horizon + 120, 330, 90, dark, frond_len=200, seed=5)
+    palm(d, 40, horizon + 140, 240, 40, dark, frond_len=150, seed=6)
+    palm(d, 1110, horizon + 130, 300, -90, dark, frond_len=190, seed=7)
+    glow_lines(img, hole_rects(slots), (255, 214, 160), radius=18, width=3, blur=12)
+    img.putalpha(255)  # translucent drawing above must not leave see-through spots
+    cut(img, slots, inset=6, radius=14)
+    d = ImageDraw.Draw(img, "RGBA")
+    title = font("GreatVibes.ttf", 170)
+    d.text((CX, 160), "Aloha", font=title, fill=rgba((255, 228, 190)), anchor="mm")
+    return img, slots
+
+# ---------- 36: Aloha Hibiscus (fun) ----------
+def aloha_hibiscus():
+    slots = layout(top=420, bottom=330, gap=44, x0=90, w=1020)
+    img = vgrad((30, 196, 206), (14, 150, 180))
+    rnd = random.Random(36)
+    greens = [(26, 140, 74, 255), (40, 170, 90, 255), (18, 112, 62, 255)]
+    spots = [(0, 0), (W, 0), (0, H), (W, H), (0, H // 3), (W, H // 3), (0, 2 * H // 3), (W, 2 * H // 3),
+             (CX, H - 30), (CX - 300, 30), (CX + 320, 40)]
+    for x, y in spots:
+        monstera(img, x + rnd.randint(-40, 40), y + rnd.randint(-40, 40), rnd.randint(150, 230),
+                 rnd.randint(0, 359), rnd.choice(greens), (10, 80, 44, 255))
+    d = ImageDraw.Draw(img, "RGBA")
+    pinks = [((255, 80, 120), (170, 20, 60)), ((255, 60, 60), (150, 10, 30)),
+             ((255, 200, 60), (210, 90, 30)), ((255, 130, 170), (190, 40, 90))]
+    for x, y in spots + [(0, H // 6), (W, H // 2), (0, H // 2), (W, 5 * H // 6)]:
+        petal, dark = rnd.choice(pinks)
+        hibiscus(d, x + rnd.randint(-30, 60) * (1 if x < CX else -1), y + rnd.randint(-60, 60),
+                 rnd.randint(60, 95), rgba(petal), rgba(dark), angle=rnd.randint(0, 72))
+    glow_lines(img, hole_rects(slots), (255, 255, 255), radius=26, width=6, blur=8)
+    img.putalpha(255)  # translucent drawing above must not leave see-through spots
+    cut(img, slots, inset=6, radius=22)
+    d = ImageDraw.Draw(img, "RGBA")
+    title = font("Pacifico.ttf", 170)
+    d.text((CX, 200), "Aloha!", font=title, fill=rgba((255, 255, 255)), anchor="mm",
+           stroke_width=12, stroke_fill=rgba((214, 40, 90)))
+    fy = slots[-1][1] + slots[-1][3]
+    d.text((CX, fy + 160), "from Hawaii", font=font("Pacifico.ttf", 84), fill=rgba((255, 255, 255)),
+           anchor="mm", stroke_width=8, stroke_fill=rgba((14, 120, 150)))
+    return img, slots
+
+# ---------- 37: Flip Flops (fun) ----------
+def flip_flops():
+    slots = layout(top=470, bottom=480, gap=48, x0=80, w=1040)
+    img = Image.new("RGBA", (W, H))
+    sand_texture(img, 0, 37, base=(240, 220, 176))
+    d = ImageDraw.Draw(img, "RGBA")
+    for x, y, w, h in slots:  # white instant-photo borders with a soft shadow
+        sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(sh).rectangle([x - 14, y - 4, x + w + 26, y + h + 30], fill=(80, 60, 30, 110))
+        img.alpha_composite(sh.filter(ImageFilter.GaussianBlur(12)))
+        d.rectangle([x - 20, y - 20, x + w + 19, y + h + 19], fill=rgba((255, 255, 255)))
+    rnd = random.Random(37)
+    for (x, y, w, h), nxt in zip(slots, slots[1:]):  # little treasures between the photos
+        gy = (y + h + nxt[1]) // 2
+        if rnd.random() < 0.5:
+            starfish(d, rnd.choice([40, W - 40]), gy, 30, rgba((240, 120, 70)), rgba((255, 200, 160)), rot=rnd.randint(0, 72))
+        else:
+            shell(d, rnd.choice([40, W - 40]), gy + 10, 26, rgba((255, 230, 214)), rgba((210, 160, 130)), rot=rnd.randint(-30, 30))
+    beach_ball(d, 170, 170, 115)
+    sunglasses(d, 1000, 120, 120, rgba((30, 30, 34)), rgba((40, 150, 190)))
+    title = font("Pacifico.ttf", 120)
+    d.text((CX + 60, 300), "Life's a Beach", font=title, fill=rgba((255, 110, 90)), anchor="mm",
+           stroke_width=8, stroke_fill=rgba((255, 255, 255)))
+    img.putalpha(255)  # translucent drawing above must not leave see-through spots
+    cut(img, slots, inset=0, radius=0)
+    fy = slots[-1][1] + slots[-1][3]
+    flipflop(img, 470, fy + 250, 150, rgba((255, 110, 90)), rgba((30, 170, 190)), angle=12)
+    flipflop(img, 730, fy + 230, 150, rgba((255, 110, 90)), rgba((30, 170, 190)), angle=-8)
+    d = ImageDraw.Draw(img, "RGBA")
+    starfish(d, 170, fy + 300, 70, rgba((240, 120, 70)), rgba((255, 200, 160)), rot=-60)
+    shell(d, 1030, fy + 330, 60, rgba((255, 228, 210)), rgba((210, 160, 130)), rot=8)
+    return img, slots
 
 DESIGNS = [(11, "Deco Silver", deco_silver), (12, "Deco Gold Ivory", deco_ivory), (13, "Deco Gold Black", deco_black),
            (14, "Black Tie", black_tie), (15, "The Gown", the_gown), (16, "Garden Party", garden),
@@ -603,12 +1026,17 @@ DESIGNS = [(11, "Deco Silver", deco_silver), (12, "Deco Gold Ivory", deco_ivory)
            (20, "Seventies", seventies), (21, "Synthwave", synthwave), (22, "Pop Dots", pop_dots),
            (23, "Memphis", memphis), (24, "Checkerboard", checker), (25, "Cosmos", cosmos),
            (26, "Mall Booth White", mall_white), (27, "Mall Booth Black", mall_black),
-           (28, "Date Stamp White", stamp_white), (29, "Date Stamp Black", stamp_black),
-           (30, "Baby Pink", baby_pink), (31, "Baby Blue", baby_blue)]
+           (30, "Baby Pink", baby_pink), (31, "Baby Blue", baby_blue),
+           (32, "Army Camo", army_camo), (33, "Army Black & Gold", army_gold),
+           (34, "Hawaii Beach Day", beach_day), (35, "Hawaii Sunset", beach_sunset),
+           (36, "Aloha Hibiscus", aloha_hibiscus), (37, "Flip Flops", flip_flops)]
 
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
+    only = {int(a) for a in sys.argv[1:]}
     for n, label, fn in DESIGNS:
+        if only and n not in only:
+            continue
         img, slots = fn()
         save(img, slots, n)
         print(f"frame{n}: {label}")
