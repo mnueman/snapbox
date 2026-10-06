@@ -1,6 +1,6 @@
 """All custom photobooth strip frames.
 Generates frame11 (Deco Silver), the Atkinsons wedding set (frame12..frame19), the fun set
-(frame20..frame25), the mall booth set (frame26..frame31), the Army set (frame32..frame33) and
+(frame20..frame25), the mall booth set (frame26..frame31), the Army set (frame32..frame33, frame38..frame40) and
 the Hawaii set (frame34..frame37) (1200x3600 PNG with transparent photo openings + slot JSON).
 The date stamp and vintage light effects are add-ons in the app, not frames.
 Usage (from the photobooth folder): python3 all_frames.py [frame numbers, default all]
@@ -712,6 +712,137 @@ def army_gold():
         d.polygon(star_points(CX + (k - 2) * 70, fy + 225, 20), fill=rgba(ARMY_WHITE))
     return img, slots
 
+# Classic M81 woodland: khaki base, big green and brown shapes, black branches.
+WOODLAND_BASE = (178, 162, 118)
+WOODLAND_LAYERS = [((92, 106, 60), 42, 200, 150), ((114, 84, 54), 30, 170, 130), ((34, 34, 30), 15, 110, 80)]
+
+def dog_tag(img, cx, cy, s, angle, lines):
+    """A stamped steel dog tag: rounded, notched, a hole at one end, raised letters."""
+    w, h = int(s * 1.9), int(s * 1.12)
+    layer = Image.new("RGBA", (w + 40, h + 40), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer, "RGBA")
+    box = (20, 20, 20 + w, 20 + h)
+    d.rounded_rectangle(box, radius=int(s * 0.32), fill=(186, 190, 196, 255), outline=(110, 114, 120, 255), width=4)
+    d.rounded_rectangle((box[0] + 8, box[1] + 8, box[2] - 8, box[3] - 8), radius=int(s * 0.26),
+                        outline=(214, 218, 224, 255), width=3)
+    d.ellipse((box[0] + 14, box[1] + h / 2 - 10, box[0] + 34, box[1] + h / 2 + 10), fill=(0, 0, 0, 0),
+              outline=(110, 114, 120, 255), width=3)
+    f = bold("Oswald.ttf", int(h * 0.2), 600)
+    for i, text in enumerate(lines):
+        y = box[1] + h * (0.28 + 0.24 * i)
+        d.text((box[0] + 52 + 2, y + 2), text, font=f, fill=(235, 238, 242, 255), anchor="lm")
+        d.text((box[0] + 52, y), text, font=f, fill=(90, 94, 100, 255), anchor="lm")
+    layer = layer.rotate(angle, resample=Image.BICUBIC, expand=True)
+    shadow = Image.new("RGBA", layer.size, (0, 0, 0, 0))
+    shadow.putalpha(layer.getchannel("A").point(lambda v: v * 0.45))
+    img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(8)), (int(cx - layer.width / 2 + 10), int(cy - layer.height / 2 + 12)))
+    img.alpha_composite(layer, (int(cx - layer.width / 2), int(cy - layer.height / 2)))
+
+def ball_chain(d, pts, r=7):
+    """Beads along a polyline, like the chain dog tags hang on."""
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        n = max(1, int(math.hypot(x1 - x0, y1 - y0) / (r * 2.3)))
+        for k in range(n):
+            x, y = x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n
+            d.ellipse((x - r, y - r, x + r, y + r), fill=(150, 154, 160, 255), outline=(90, 94, 100, 255), width=2)
+            d.ellipse((x - r * 0.4, y - r * 0.6, x + r * 0.1, y - r * 0.1), fill=(230, 232, 236, 255))
+
+def plate(img, box, fill, edge, text, f, colour, spacing=10):
+    x0, y0, x1, y1 = box
+    shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rectangle([x0 + 8, y0 + 12, x1 + 8, y1 + 12], fill=(0, 0, 0, 150))
+    img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(10)))
+    d = ImageDraw.Draw(img, "RGBA")
+    d.rectangle(box, fill=rgba(fill), outline=rgba(edge), width=6)
+    spaced_text(d, ((x0 + x1) / 2, (y0 + y1) / 2), text, f, rgba(colour), spacing)
+
+# ---------- 38: Army Woodland ----------
+def army_woodland():
+    slots = layout(top=420, bottom=460, gap=40)
+    img = camo(WOODLAND_BASE, WOODLAND_LAYERS, seed=38)
+    plate(img, (CX - 420, 120, CX + 420, 300), (40, 44, 30), (20, 22, 14), "U.S. ARMY",
+          font("StardosStencil.ttf", 140), (226, 214, 170), 16)
+    glow_lines(img, hole_rects(slots), (24, 26, 18), radius=10, width=4, blur=8)
+    img.putalpha(255)  # translucent drawing above must not leave see-through spots
+    cut(img, slots, inset=6, radius=8)
+    d = ImageDraw.Draw(img, "RGBA")
+    fy = slots[-1][1] + slots[-1][3]
+    ball_chain(d, [(140, fy + 30), (300, fy + 150), (500, fy + 225), (700, fy + 225), (900, fy + 150), (1060, fy + 30)])
+    dog_tag(img, 430, fy + 290, 185, 8, ["U.S. ARMY", "HOOAH!", "ARMY STRONG"])
+    dog_tag(img, 790, fy + 300, 185, -10, ["U.S. ARMY", "BE ALL YOU", "CAN BE"])
+    return img, slots
+
+# ---------- 39: Army Stars & Stripes ----------
+def army_stars_stripes():
+    NAVY, RED, WHITE = (26, 38, 82), (178, 34, 52), (255, 255, 255)
+    slots = layout(top=520, bottom=330, gap=44, x0=110, w=980)
+    img = Image.new("RGBA", (W, H), rgba(WHITE))
+    d = ImageDraw.Draw(img, "RGBA")
+    stripe = W / 13
+    for k in range(0, 13, 2):
+        d.rectangle((k * stripe, 0, (k + 1) * stripe, H), fill=rgba(RED))
+    d.rectangle((0, 0, W, 470), fill=rgba(NAVY))
+    for row in range(5):  # field of stars
+        for col in range(11):
+            x = 55 + col * 109 + (54 if row % 2 else 0)
+            y = 40 + row * 86
+            if x < W - 30 and not (CX - 200 < x < CX + 200) and not (CX - 400 < x < CX + 400 and y > 300):
+                d.polygon(star_points(x, y, 20), fill=rgba(WHITE))
+    army_star(d, CX, 175, 120)
+    spaced_text(d, (CX, 395), "U.S. ARMY", bold("Oswald.ttf", 110), rgba(WHITE), 16)
+    d.line((0, 470, W, 470), fill=rgba(ARMY_GOLD), width=8)
+    for x, y, w, h in slots:
+        d.rectangle([x - 14, y - 14, x + w + 13, y + h + 13], fill=rgba(NAVY))
+        d.rectangle([x - 6, y - 6, x + w + 5, y + h + 5], outline=rgba(ARMY_GOLD), width=4)
+    fy = slots[-1][1] + slots[-1][3]
+    d.rectangle((0, fy + 60, W, H), fill=rgba(NAVY))
+    d.line((0, fy + 60, W, fy + 60), fill=rgba(ARMY_GOLD), width=8)
+    spaced_text(d, (CX, fy + 175), "HOOAH!", bold("Oswald.ttf", 130), rgba(WHITE), 20)
+    for sx in (150, W - 150):
+        d.polygon(star_points(sx, fy + 180, 40), fill=rgba(ARMY_GOLD))
+    img.putalpha(255)
+    cut(img, slots, inset=0, radius=0)
+    return img, slots
+
+# ---------- 40: Army Ammo Crate ----------
+def army_crate():
+    OD, OD_DARK, STENCIL = (78, 86, 40), (52, 58, 26), (232, 200, 64)
+    slots = layout(top=470, bottom=380, gap=50, x0=90, w=1020)
+    rnd = np.random.default_rng(40)
+    # Painted wood: OD paint with grain streaks running along the planks.
+    grain = rnd.normal(0, 1, (H // 8, W)).astype(np.float32)
+    grain = np.asarray(Image.fromarray(((grain * 25) + 128).clip(0, 255).astype(np.uint8), "L")
+                       .resize((W, H), Image.BILINEAR).filter(ImageFilter.GaussianBlur(1.2)), np.float32) - 128
+    arr = np.array(OD, np.float32)[None, None, :] + grain[..., None] * 0.35
+    img = Image.fromarray(arr.clip(0, 255).astype(np.uint8), "RGB").convert("RGBA")
+    d = ImageDraw.Draw(img, "RGBA")
+    for y in range(0, H, 300):  # plank seams
+        d.line((0, y, W, y), fill=rgba(OD_DARK), width=8)
+        d.line((0, y + 5, W, y + 5), fill=(255, 255, 255, 30), width=2)
+    STEEL = (120, 124, 116)
+    for cx, cy in ((0, 0), (W, 0), (0, H), (W, H)):  # corner brackets with rivets
+        sx, sy = (1 if cx == 0 else -1), (1 if cy == 0 else -1)
+        pts = [(cx, cy), (cx + sx * 190, cy), (cx + sx * 190, cy + sy * 60), (cx + sx * 60, cy + sy * 60),
+               (cx + sx * 60, cy + sy * 190), (cx, cy + sy * 190)]
+        d.polygon(pts, fill=rgba(STEEL), outline=rgba((70, 72, 66)))
+        for rx, ry in ((cx + sx * 30, cy + sy * 30), (cx + sx * 140, cy + sy * 30), (cx + sx * 30, cy + sy * 140)):
+            d.ellipse((rx - 11, ry - 11, rx + 11, ry + 11), fill=rgba((160, 164, 156)), outline=rgba((60, 62, 56)), width=2)
+    sten = font("StardosStencil.ttf", 64)
+    spaced_text(d, (CX, 120), "PROPERTY OF", sten, rgba(STENCIL), 10)
+    spaced_text(d, (CX, 280), "U.S. ARMY", font("StardosStencil.ttf", 190), rgba(STENCIL), 18)
+    spaced_text(d, (CX, 410), "1 EA  ·  PHOTO STRIP  ·  CAL. 4X6", font("StardosStencil.ttf", 44), rgba(STENCIL), 4)
+    for x, y, w, h in slots:
+        d.rectangle([x - 16, y - 16, x + w + 15, y + h + 15], fill=rgba(OD_DARK))
+    fy = slots[-1][1] + slots[-1][3]
+    spaced_text(d, (CX, fy + 120), "HANDLE WITH CARE", font("StardosStencil.ttf", 84), rgba(STENCIL), 10)
+    spaced_text(d, (CX, fy + 230), "THIS SIDE UP", font("StardosStencil.ttf", 56), rgba(STENCIL), 8)
+    for ax in (CX - 300, CX + 300):  # stencilled up arrows
+        d.polygon([(ax, fy + 196), (ax - 26, fy + 226), (ax - 9, fy + 226), (ax - 9, fy + 262),
+                   (ax + 9, fy + 262), (ax + 9, fy + 226), (ax + 26, fy + 226)], fill=rgba(STENCIL))
+    img.putalpha(255)
+    cut(img, slots, inset=0, radius=0)
+    return img, slots
+
 # ================= HAWAII SET =================
 def palm(d, bx, by, h, lean, color, frond_len=None, seed=0):
     """Palm tree silhouette: a curved, tapering trunk and drooping fronds with leaflets."""
@@ -1029,7 +1160,9 @@ DESIGNS = [(11, "Deco Silver", deco_silver), (12, "Deco Gold Ivory", deco_ivory)
            (30, "Baby Pink", baby_pink), (31, "Baby Blue", baby_blue),
            (32, "Army Camo", army_camo), (33, "Army Black & Gold", army_gold),
            (34, "Hawaii Beach Day", beach_day), (35, "Hawaii Sunset", beach_sunset),
-           (36, "Aloha Hibiscus", aloha_hibiscus), (37, "Flip Flops", flip_flops)]
+           (36, "Aloha Hibiscus", aloha_hibiscus), (37, "Flip Flops", flip_flops),
+           (38, "Army Woodland", army_woodland), (39, "Army Stars & Stripes", army_stars_stripes),
+           (40, "Army Ammo Crate", army_crate)]
 
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
