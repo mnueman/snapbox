@@ -739,7 +739,7 @@ def _fitted_slot_image(photo, bleed_w, bleed_h):
     return fitted
 
 
-def compose_single_strip(strip_photos, frame_index=None, include_frame=True):
+def compose_single_strip(strip_photos, frame_index=None, include_frame=True, fx=None):
     strip = Image.new("RGBA", (STRIP_W, STRIP_H), "white")
 
     if frame_index is None:
@@ -759,7 +759,7 @@ def compose_single_strip(strip_photos, frame_index=None, include_frame=True):
         right = min(STRIP_W, x + w + SLOT_BLEED)
         bottom = min(STRIP_H, y + h + SLOT_BLEED)
 
-        fitted = apply_effects(_fitted_slot_image(photo, right - left, bottom - top), i)
+        fitted = apply_effects(_fitted_slot_image(photo, right - left, bottom - top), i, fx)
         strip.alpha_composite(fitted, (left, top))
 
     if include_frame:
@@ -1249,19 +1249,29 @@ def _render_effects(w, h, seed, opts, text, bw):
     return screen, overlay
 
 
-def apply_effects(img, index):
-    """img (a photo fitted to slot `index`) with the EFFECTS add-ons drawn on."""
-    if not effects_on():
+def current_fx():
+    """The add-ons for the strip being made, saved with it so re-framing redraws the same ones."""
+    return {"seed": strip_seed, "opts": [settings[k] for k in EFFECT_KEYS], "stamp": stamp_text(),
+            "bw": COLOUR_LOOKS.get(settings["colour"], {}).get("sat", 1.0) == 0}
+
+
+def apply_effects(img, index, fx=None):
+    """img (a photo fitted to slot `index`) with the EFFECTS add-ons drawn on: the current
+    settings, or `fx` (from current_fx) for a saved strip."""
+    if fx is None:
+        if not effects_on():
+            return img
+        fx = current_fx()
+    opts = tuple(fx["opts"])
+    if not any(opts):
         return img
-    opts = tuple(settings[k] for k in EFFECT_KEYS)
-    text = stamp_text()
-    bw = COLOUR_LOOKS.get(settings["colour"], {}).get("sat", 1.0) == 0
-    key = (img.size, strip_seed, index, opts, text, bw)
+    seed, text, bw = fx["seed"], fx["stamp"], fx["bw"]
+    key = (img.size, seed, index, opts, text, bw)
     layers = _effect_cache.get(key)
     if layers is None:
         if len(_effect_cache) >= 12:
             del _effect_cache[next(iter(_effect_cache))]
-        layers = _effect_cache[key] = _render_effects(*img.size, strip_seed * 8 + index, opts, text, bw)
+        layers = _effect_cache[key] = _render_effects(*img.size, seed * 8 + index, opts, text, bw)
     screen, overlay = layers
     mode = img.mode
     out = img.convert("RGB")
@@ -1541,15 +1551,49 @@ def save_preview():
         update_lcd(preview)
 
 
+# A strip's photos (colour look applied, no frame) are kept here so its frame can be changed
+# later in REVIEW. Long side capped: plenty for a slot, about 0.3 MB each.
+PHOTOS_DIR = ARCHIVE_DIR / "photos"
+KEPT_PHOTO_MAX = 1600
+
+
+def strip_photos_dir(strip_path):
+    return PHOTOS_DIR / Path(strip_path).stem
+
+
+def strip_meta(slots, frame_index, fx):
+    """What goes in a strip JPEG's comment: its layout, and enough to re-frame it."""
+    return json.dumps({"slots": slots, "frame": frames[frame_index].name if frames else None,
+                       "fx": fx}).encode()
+
+
+def save_strip_photos(strip_path, photos):
+    folder = strip_photos_dir(strip_path)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        for i, photo in enumerate(photos):
+            if photo is None:
+                continue
+            small = photo.copy()
+            small.thumbnail((KEPT_PHOTO_MAX, KEPT_PHOTO_MAX), Image.BILINEAR)
+            write_file_durably(folder / f"photo{i}.jpg",
+                               lambda f, im=small: im.save(f, format="JPEG", quality=92))
+    except OSError as e:
+        # The strip still saves; it just can't be re-framed later.
+        print(f"Could not keep the photos of {Path(strip_path).name}: {e}")
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def save_finished_strip():
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     jpg_archive_path = ARCHIVE_DIR / f"strip_{timestamp}.jpg"
 
     strip = compose_single_strip(live_photos)
-    slots_json = json.dumps({"slots": current_frame_slots()[:len(live_photos)]})
+    save_strip_photos(jpg_archive_path, live_photos)
+    meta = strip_meta(current_frame_slots()[:len(live_photos)], current_frame_index, current_fx())
     # Durable before returning: the raw captures are deleted right after this.
     write_file_durably(jpg_archive_path, lambda f: strip.convert("RGB").save(
-        f, format="JPEG", quality=95, comment=slots_json.encode()))
+        f, format="JPEG", quality=95, comment=meta))
 
     print("")
     print("FINISHED STRIP SAVED")
@@ -3144,6 +3188,7 @@ gallery_index = 0
 gallery_buttons = []
 _gallery_delete_until = 0.0
 gallery_pair_first = None  # MIX 2 STRIPS: the strip chosen for the left half of the sheet
+gallery_reframe = None  # CHANGE FRAME: {"path", "photos", "fx", "choices", "pos", "views"}
 _gallery_drawn = None
 _gallery_thumbs = {}
 _gesture_down = None
@@ -3161,7 +3206,9 @@ def storage_status():
     free = storage_free_bytes()
     if free is None:
         return "STORAGE UNKNOWN", "ok"
-    sizes = [_size(p) for p in gallery_paths[:20]]
+    # A strip's kept photos (for CHANGE FRAME) count too.
+    sizes = [(_size(p) or 0) + sum(_size(f) or 0 for f in strip_photos_dir(p).glob("*.jpg"))
+             for p in gallery_paths[:20]]
     sizes = [s for s in sizes if s]
     per_strip = sum(sizes) / len(sizes) if sizes else 1_000_000
     usable = max(0, free - STORAGE_FULL_BYTES)
@@ -3190,6 +3237,7 @@ def open_gallery():
     gallery_index = 0
     _gallery_delete_until = 0.0
     gallery_pair_first = None
+    _end_reframe()
     _gallery_drawn = None
     stop_camera()  # nothing reads it here; a camera left streaming unread can stall
     update_gallery(force=True)
@@ -3201,6 +3249,7 @@ def close_gallery(redraw=True):
         return
     print("Review screen closed.")
     gallery_open = False
+    _end_reframe()
     _gesture_down = None
     _gallery_thumbs.clear()
     if mode == "browse":
@@ -3223,6 +3272,92 @@ def gallery_step(step):
 def gallery_print():
     if gallery_paths:
         start_print(gallery_paths[gallery_index])
+
+
+def can_reframe(path):
+    return (strip_photos_dir(path) / "photo0.jpg").exists()
+
+
+def _forget_slot_cache(photos):
+    ids = {id(p) for p in photos if p is not None}
+    for key in [k for k in _slot_cache if k[0] in ids]:
+        del _slot_cache[key]
+
+
+def _end_reframe():
+    global gallery_reframe
+    if gallery_reframe is not None:
+        _forget_slot_cache(gallery_reframe["photos"])
+        gallery_reframe = None
+
+
+def gallery_reframe_start():
+    """CHANGE FRAME: rebuild this strip from its kept photos with any frame that fits them."""
+    global gallery_reframe
+    if not gallery_paths or not can_reframe(gallery_paths[gallery_index]):
+        return
+    path = gallery_paths[gallery_index]
+    try:
+        with Image.open(path) as saved:
+            meta = json.loads(saved.info.get("comment", b"") or b"null") or {}
+    except Exception as e:
+        print(f"Could not read strip {path}: {e}")
+        return
+    count = len(meta.get("slots") or DEFAULT_SLOTS)
+    photos = []
+    for i in range(count):
+        try:
+            photos.append(Image.open(strip_photos_dir(path) / f"photo{i}.jpg").convert("RGB"))
+        except Exception:
+            photos.append(None)
+    choices = indices_for_capacity(count)
+    if not choices or not any(photos):
+        flash_message("NO FRAMES FIT THIS STRIP", seconds=1.0)
+        return
+    names = [frames[i].name for i in choices]
+    pos = names.index(meta["frame"]) if meta.get("frame") in names else 0
+    fx = meta.get("fx") or {"seed": 0, "opts": [], "stamp": "", "bw": False}
+    gallery_reframe = {"path": path, "photos": photos, "fx": fx, "choices": choices, "pos": pos,
+                       "start": pos, "views": {}}
+    print(f"Changing the frame of {path.name}")
+
+
+def reframe_step(step):
+    r = gallery_reframe
+    r["pos"] = (r["pos"] + step) % len(r["choices"])
+
+
+def _reframe_strip(frame_index):
+    r = gallery_reframe
+    strip = compose_single_strip(r["photos"], frame_index, fx=r["fx"]).convert("RGB")
+    _forget_slot_cache(r["photos"])  # a different size per frame: don't let them pile up
+    return strip
+
+
+def gallery_reframe_save():
+    """Rewrites the strip with the chosen frame. The kept photos stay, so it can change again."""
+    r = gallery_reframe
+    path, frame_index = r["path"], r["choices"][r["pos"]]
+    if r["pos"] != r["start"]:
+        try:
+            old = path.stat()
+            strip = _reframe_strip(frame_index)
+            meta = strip_meta(frame_slots(frame_index)[:len(r["photos"])], frame_index, r["fx"])
+            write_file_durably(path, lambda f: strip.save(f, format="JPEG", quality=95, comment=meta))
+            os.utime(path, ns=(old.st_atime_ns, old.st_mtime_ns))  # keeps its place in the list
+        except OSError as e:
+            print(f"Could not save the new frame: {e}")
+            flash_message("COULD NOT SAVE\nStorage full?", seconds=1.5)
+            return
+        for key in [k for k in _gallery_thumbs if k[0] == path]:
+            del _gallery_thumbs[key]
+        print(f"Changed the frame of {path.name} to {frames[frame_index].name}")
+    _end_reframe()
+    flash_message("FRAME CHANGED", seconds=0.6)
+
+
+def gallery_reframe_cancel():
+    _end_reframe()
 
 
 def gallery_pair_start():
@@ -3270,6 +3405,7 @@ def gallery_delete():
         flash_message("COULD NOT DELETE", seconds=1.0)
         return
     print(f"Deleted strip: {path}")
+    shutil.rmtree(strip_photos_dir(path), ignore_errors=True)
     if gallery_pair_first == path:
         gallery_pair_first = None
     for key in [k for k in _gallery_thumbs if k[0] == path]:
@@ -3277,6 +3413,50 @@ def gallery_delete():
     gallery_paths = browsable_paths()
     gallery_index = min(gallery_index, max(0, len(gallery_paths) - 1))
     flash_message("DELETED", seconds=0.6)
+
+
+def _strip_parts(slots):
+    return strip_halves(slots) if slots else [
+        (0, 0, STRIP_W, STRIP_H // 2), (0, STRIP_H // 2, STRIP_W, STRIP_H)]
+
+
+def _fold_scale(slots, w, h, gap=10):
+    part_h = max(b[3] - b[1] for b in _strip_parts(slots))
+    return min((w - gap) / (2 * STRIP_W), h / part_h)
+
+
+def _fold_strip(full, slots, w, h, gap=10):
+    """A strip (any size) cut in two between its middle photos, halves side by side in w x h."""
+    parts = _strip_parts(slots)
+    scale = _fold_scale(slots, w, h, gap)
+    part_h = max(b[3] - b[1] for b in parts)
+    kx, ky = full.width / STRIP_W, full.height / STRIP_H
+    pw = int(STRIP_W * scale)
+    img = Image.new("RGB", (2 * pw + gap, int(part_h * scale)), "black")
+    for i, (a, b, c, d) in enumerate(parts):
+        ph = max(1, int((d - b) * scale))
+        piece = full.crop((int(a * kx), int(b * ky), int(c * kx), int(d * ky)))
+        piece = piece.resize((pw, ph), Image.BILINEAR)
+        # Folded like the main screen: left half at the top, right at the bottom.
+        img.paste(piece, (i * (pw + gap), 0 if i == 0 else img.height - ph))
+    return img
+
+
+def _reframe_view(w, h, halves):
+    """The strip with the frame being tried, scaled for the screen (cached per frame)."""
+    r = gallery_reframe
+    frame_index = r["choices"][r["pos"]]
+    key = (frame_index, w, h, halves)
+    if key not in r["views"]:
+        if len(r["views"]) > 6:
+            r["views"].clear()
+        strip = _reframe_strip(frame_index)
+        if halves:
+            r["views"][key] = _fold_strip(strip, frame_slots(frame_index), w, h)
+        else:
+            strip.thumbnail((w, h), Image.BILINEAR)
+            r["views"][key] = strip
+    return r["views"][key]
 
 
 def _gallery_thumb(path, w, h, halves=False):
@@ -3293,22 +3473,9 @@ def _gallery_thumb(path, w, h, halves=False):
                 img = src.convert("RGB")
                 img.thumbnail((w, h), Image.BILINEAR)
             else:
-                parts = strip_halves(slots) if slots else [
-                    (0, 0, STRIP_W, STRIP_H // 2), (0, STRIP_H // 2, STRIP_W, STRIP_H)]
-                gap = 10
-                part_h = max(b[3] - b[1] for b in parts)
-                scale = min((w - gap) / (2 * STRIP_W), h / part_h)
+                scale = _fold_scale(slots, w, h)
                 src.draft("RGB", (int(STRIP_W * scale * 2), int(STRIP_H * scale * 2)))
-                full = src.convert("RGB")
-                kx, ky = full.width / STRIP_W, full.height / STRIP_H
-                pw = int(STRIP_W * scale)
-                img = Image.new("RGB", (2 * pw + gap, int(part_h * scale)), "black")
-                for i, (a, b, c, d) in enumerate(parts):
-                    ph = max(1, int((d - b) * scale))
-                    piece = full.crop((int(a * kx), int(b * ky), int(c * kx), int(d * ky)))
-                    piece = piece.resize((pw, ph), Image.BILINEAR)
-                    # Folded like the main screen: left half at the top, right at the bottom.
-                    img.paste(piece, (i * (pw + gap), 0 if i == 0 else img.height - ph))
+                img = _fold_strip(src.convert("RGB"), slots, w, h)
         except Exception as e:
             print(f"Could not open saved strip {path}: {e}")
             img = None
@@ -3383,7 +3550,10 @@ def render_gallery():
     color = {"ok": MENU_DIM, "low": MENU_ACCENT, "full": (255, 90, 90)}[level]
     if level != "ok":
         text = ("STORAGE FULL: " if level == "full" else "STORAGE LOW: ") + text
-    if n and gallery_pair_first is not None:
+    if n and gallery_reframe is not None:
+        title = f"CHANGE FRAME  \u00b7  {gallery_reframe['pos'] + 1} OF {len(gallery_reframe['choices'])}"
+        text, color, level = "SWIPE OR TAP \u25c0 \u25b6 TO TRY FRAMES, THEN SAVE", MENU_ACCENT, "ok"
+    elif n and gallery_pair_first is not None:
         title = "MIX 2 STRIPS: THIS IS YOUR PRINT"
         text, color, level = "SWIPE TO CHANGE THE STRIP ON THE RIGHT", MENU_ACCENT, "ok"
     elif n:
@@ -3395,13 +3565,19 @@ def render_gallery():
     _draw_text_centered(draw, (tx0, pad + 30, tx1, bar_h), text,
                         _fit_font(draw, text, tx1 - tx0, 15, level != "ok"), color)
 
-    action_h = 70
+    # Portrait has room for two rows of buttons under the strip.
+    four_buttons = n and gallery_reframe is None and gallery_pair_first is None
+    action_h = 2 * 62 + gap if four_buttons and not landscape else 70
     top, bottom = bar_h + gap, h - pad - action_h - gap
-    can_newer, can_older = gallery_index > 0, gallery_index < n - 1
+    if gallery_reframe is not None:
+        can_newer = can_older = len(gallery_reframe["choices"]) > 1
+    else:
+        can_newer, can_older = gallery_index > 0, gallery_index < n - 1
     dim = (30, 30, 36)
 
     def arrow(box, label, step, enabled):
-        _draw_key(draw, box, label, buttons, lambda: gallery_step(step),
+        _draw_key(draw, box, label, buttons,
+                  lambda: (reframe_step if gallery_reframe is not None else gallery_step)(step),
                   fill=MENU_ROW if enabled else dim,
                   text_fill=MENU_TEXT if enabled else (90, 90, 98), size=30)
 
@@ -3438,6 +3614,9 @@ def render_gallery():
     elif gallery_pair_first is not None:
         _draw_pair_sheet(img, draw, area, gallery_pair_first, gallery_paths[gallery_index],
                          buttons if pair_side else None)
+    elif gallery_reframe is not None:
+        cur = _reframe_view(aw, ah, landscape)
+        img.paste(cur, ((ax0 + ax1 - cur.width) // 2, (ay0 + ay1 - cur.height) // 2))
     else:
         cur = _gallery_thumb(gallery_paths[gallery_index], aw, ah, halves=landscape)
         if cur is None:
@@ -3465,7 +3644,13 @@ def render_gallery():
         printing = _print_busy.is_set()
         busy = dict(fill=(80, 80, 88), text_fill=MENU_TEXT)
         go = dict(fill=MENU_ACCENT, text_fill=(0, 0, 0))
-        if gallery_pair_first is not None:
+        if gallery_reframe is not None:
+            half = (bx1 - bx0 - gap) // 2
+            _draw_key(draw, (bx0, by0, bx0 + half, by1), "CANCEL", buttons, gallery_reframe_cancel,
+                      fill=(70, 70, 80), size=22)
+            _draw_key(draw, (bx1 - half, by0, bx1, by1), "SAVE\nTHIS FRAME", buttons,
+                      gallery_reframe_save, fill=MENU_DONE, size=22)
+        elif gallery_pair_first is not None:
             half = (bx1 - bx0 - gap) // 2
             _draw_key(draw, (bx0, by0, bx0 + half, by1), "CANCEL", buttons, gallery_pair_cancel,
                       fill=(70, 70, 80), size=22)
@@ -3474,16 +3659,25 @@ def render_gallery():
                       size=22, **(busy if printing else go))
         else:
             # Each print is one 4x6 sheet holding two strips: this one twice, or two different.
-            third = (bx1 - bx0 - 2 * gap) // 3
-            _draw_key(draw, (bx0, by0, bx0 + third, by1),
-                      "PRINTING..." if printing else "PRINT\n2 COPIES", buttons, gallery_print,
-                      size=22, **(busy if printing else go))
-            _draw_key(draw, (bx0 + third + gap, by0, bx1 - third - gap, by1), "MIX\n2 STRIPS",
-                      buttons, gallery_pair_start, fill=(40, 120, 160), size=22)
+            # CHANGE FRAME needs the strip's kept photos (strips saved before this version had none).
             confirming = time.monotonic() < _gallery_delete_until
-            _draw_key(draw, (bx1 - third, by0, bx1, by1),
-                      "DELETE?\nTAP AGAIN" if confirming else "DELETE", buttons, gallery_delete,
-                      fill=(235, 60, 60) if confirming else MENU_DANGER, size=22)
+            reframable = can_reframe(gallery_paths[gallery_index])
+            keys = [
+                ("PRINTING..." if printing else "PRINT\n2 COPIES", gallery_print, busy if printing else go),
+                ("MIX\n2 STRIPS", gallery_pair_start, dict(fill=(40, 120, 160))),
+                ("CHANGE\nFRAME", gallery_reframe_start,
+                 dict(fill=(110, 70, 160)) if reframable else dict(fill=(40, 40, 46), text_fill=(90, 90, 98))),
+                ("DELETE?\nTAP AGAIN" if confirming else "DELETE", gallery_delete,
+                 dict(fill=(235, 60, 60) if confirming else MENU_DANGER)),
+            ]
+            cols = 4 if landscape else 2
+            rows = len(keys) // cols
+            kw = (bx1 - bx0 - gap * (cols - 1)) / cols
+            kh = (by1 - by0 - gap * (rows - 1)) / rows
+            for k, (label, action, style) in enumerate(keys):
+                x, y = bx0 + (k % cols) * (kw + gap), by0 + (k // cols) * (kh + gap)
+                _draw_key(draw, (int(x), int(y), int(x + kw), int(y + kh)), label, buttons, action,
+                          size=20, **style)
 
     gallery_buttons = buttons
     return img
@@ -3492,7 +3686,8 @@ def render_gallery():
 def update_gallery(force=False):
     global _gallery_drawn
     state = (gallery_index, tuple(gallery_paths), time.monotonic() < _gallery_delete_until,
-             _print_busy.is_set(), screen_rotation, gallery_pair_first)
+             _print_busy.is_set(), screen_rotation, gallery_pair_first,
+             gallery_reframe and gallery_reframe["pos"])
     if force or state != _gallery_drawn:
         _gallery_drawn = state
         update_lcd()
@@ -3531,8 +3726,8 @@ def next_gestures(events):
 def handle_gallery_gesture(gesture):
     kind, value = gesture
     if kind == "swipe":
-        # Finger moves left: the next (older) strip slides in from the right.
-        gallery_step(1 if value < 0 else -1)
+        # Finger moves left: the next (older) strip, or the next frame, slides in from the right.
+        (reframe_step if gallery_reframe is not None else gallery_step)(1 if value < 0 else -1)
     else:
         x, y = value
         for (x0, y0, x1, y1), action in gallery_buttons:

@@ -74,7 +74,10 @@ underneath: tap a setting's name (or swipe) to pick which. Tap DONE or press the
 Tap the photo button under the gear to open REVIEW. Swipe left/right (or use ◀ ▶) through saved strips,
 newest first. Every print is one 4x6 sheet (Canon SELPHY CP1500) holding two strips side by side.
 PRINT 2 COPIES prints the strip on screen twice. MIX 2 STRIPS picks the strip on screen for the left half:
-swipe to another and tap PRINT THESE 2. DELETE asks for a second tap within 4 seconds before it
+swipe to another and tap PRINT THESE 2; the screen shows the sheet as it will print. CHANGE FRAME rebuilds
+the strip with another frame (swipe to try them, SAVE THIS FRAME to keep one): each strip's photos are kept
+in `strips/archive/photos/` for this (about 1 MB a strip; strips saved before this feature can't be
+re-framed). DELETE asks for a second tap within 4 seconds before it
 deletes, so a stray tap can't remove a photo. The top shows free storage and roughly how many more strips
 fit. BACK, any button press, or a minute untouched returns to the camera.
 
