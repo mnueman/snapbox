@@ -503,7 +503,7 @@ def set_setting(key, value):
     if key == "rotation":
         screen_rotation = value
         _invalidate_live_preview()
-    elif key == "edge":
+    elif key == "edge" or key in EFFECT_KEYS:
         _invalidate_live_preview()
     elif key in {k for k, _, _, _ in CAMERA_SETTINGS}:
         apply_camera_settings()
@@ -759,7 +759,7 @@ def compose_single_strip(strip_photos, frame_index=None, include_frame=True):
         right = min(STRIP_W, x + w + SLOT_BLEED)
         bottom = min(STRIP_H, y + h + SLOT_BLEED)
 
-        fitted = _fitted_slot_image(photo, right - left, bottom - top)
+        fitted = apply_effects(_fitted_slot_image(photo, right - left, bottom - top), i)
         strip.alpha_composite(fitted, (left, top))
 
     if include_frame:
@@ -1066,6 +1066,213 @@ def apply_colour_look(img, name=None):
     return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8), "RGB")
 
 
+# ---------------------------------------------------------------------------
+# Vintage add-ons (EFFECTS tab): date stamp, light leaks, red light spots, streaks and dust.
+# Drawn on each photo after it is fitted to its slot, under the frame, so they work with every
+# frame and stack. Every size is relative to the photo and every random choice comes from the
+# photo's seed, so the small live preview and the full-size strip get the same effect.
+# ---------------------------------------------------------------------------
+
+EFFECT_KEYS = [k for k, _, _, _ in EFFECT_SETTINGS]
+STAMP_COLOUR = (255, 138, 28)
+# Seven-segment digits, like the date imprint of a 90s film camera.
+SEGMENTS = {"0": "abcdef", "1": "bc", "2": "abdeg", "3": "abcdg", "4": "bcfg", "5": "acdfg",
+            "6": "acdefg", "7": "abc", "8": "abcdefg", "9": "abcdfg"}
+strip_seed = random.randrange(1 << 30)  # new for every strip: each strip's leaks differ
+_effect_cache = {}
+
+
+def effects_on():
+    return any(settings[k] for k in EFFECT_KEYS)
+
+
+def stamp_text():
+    return datetime.now().strftime("%m %d '%y")  # 10 06 '26
+
+
+def _seg_poly(x0, y0, x1, y1, t):
+    """One segment as a hexagon from (x0, y0) to (x1, y1), pointed at both ends."""
+    if y0 == y1:
+        pts = [(x0, y0), (x0 + t / 2, y0 - t / 2), (x1 - t / 2, y0 - t / 2), (x1, y0),
+               (x1 - t / 2, y0 + t / 2), (x0 + t / 2, y0 + t / 2)]
+    else:
+        pts = [(x0, y0), (x0 + t / 2, y0 + t / 2), (x0 + t / 2, y1 - t / 2), (x0, y1),
+               (x0 - t / 2, y1 - t / 2), (x0 - t / 2, y0 + t / 2)]
+    return pts
+
+
+def _draw_stamp(draw, right, bottom, digit_h, text, fill):
+    """Seven-segment date, right-aligned at (right, bottom), leaning like the real thing."""
+    dw, t = digit_h * 0.52, digit_h * 0.13
+    gap, space, g = digit_h * 0.16, digit_h * 0.34, t * 0.18
+    widths = [dw if ch.isdigit() else space if ch == " " else t * 1.4 for ch in text]
+    x = right - sum(widths) - gap * (len(text) - 1)
+    top = bottom - digit_h
+    slant = 0.12
+
+    def lean(pts):
+        return [(px + slant * (bottom - py), py) for px, py in pts]
+
+    for ch, w in zip(text, widths):
+        if ch in SEGMENTS:
+            mid = top + digit_h / 2
+            rows = {"a": top + t / 2, "g": mid, "d": bottom - t / 2}
+            for seg in SEGMENTS[ch]:
+                if seg in rows:
+                    y = rows[seg]
+                    pts = _seg_poly(x + g + t / 2, y, x + w - g - t / 2, y, t)
+                else:
+                    sx = x + t / 2 if seg in "fe" else x + w - t / 2
+                    y0, y1 = (top + t / 2 + g, mid - g) if seg in "fb" else (mid + g, bottom - t / 2 - g)
+                    pts = _seg_poly(sx, y0, sx, y1, t)
+                draw.polygon(lean(pts), fill=fill)
+        elif ch == "'":
+            draw.polygon(lean([(x + t * 0.5, top), (x + t * 1.4, top), (x + t * 0.8, top + digit_h * 0.3),
+                               (x + t * 0.1, top + digit_h * 0.3)]), fill=fill)
+        x += w + gap
+
+
+def _render_effects(w, h, seed, opts, text, bw):
+    """(screen layer RGB or None, overlay RGBA or None) for a w x h photo."""
+    stamp, leaks, spots, lines = opts
+    rnd = random.Random(seed)
+    m = min(w, h)
+    screen = None
+    # Soft light is drawn small and blurred, then enlarged: fast, and smooth anyway.
+    sw, sh = max(16, w // 6), max(16, h // 6)
+    sm = min(sw, sh)
+
+    def soft_layer():
+        return Image.new("RGB", (sw, sh), "black")
+
+    if leaks:
+        k = (0.55, 1.0)[leaks - 1]
+        layer = soft_layer()
+        d = ImageDraw.Draw(layer)
+        side = rnd.choice(["left", "right", "top", "bottom", "corner"])
+        palette = [(255, 92, 20), (255, 44, 30), (255, 168, 40), (255, 214, 120)]
+        for _ in range(rnd.randint(3, 5)):
+            r = sm * rnd.uniform(0.25, 0.6)
+            if side == "left":
+                cx, cy = rnd.uniform(-0.15, 0.12) * sw, rnd.uniform(0, 1) * sh
+            elif side == "right":
+                cx, cy = rnd.uniform(0.88, 1.15) * sw, rnd.uniform(0, 1) * sh
+            elif side == "top":
+                cx, cy = rnd.uniform(0, 1) * sw, rnd.uniform(-0.2, 0.12) * sh
+            elif side == "bottom":
+                cx, cy = rnd.uniform(0, 1) * sw, rnd.uniform(0.88, 1.2) * sh
+            else:
+                cx, cy = rnd.uniform(-0.1, 0.3) * sw, rnd.uniform(-0.1, 0.3) * sh
+            c = tuple(int(v * k * rnd.uniform(0.7, 1.0)) for v in rnd.choice(palette))
+            d.ellipse((cx - r * 1.3, cy - r, cx + r * 1.3, cy + r), fill=c)
+        # The classic burnt band along the edge the film was exposed from.
+        band = sm * rnd.uniform(0.06, 0.14)
+        c = tuple(int(v * k) for v in (255, 70, 20))
+        box = {"left": (0, 0, band, sh), "right": (sw - band, 0, sw, sh), "top": (0, 0, sw, band),
+               "bottom": (0, sh - band, sw, sh), "corner": (0, 0, band, sh)}[side]
+        d.rectangle(box, fill=c)
+        screen = layer.filter(ImageFilter.GaussianBlur(sm * 0.14))
+
+    if spots:
+        k = (0.6, 1.0)[spots - 1]
+        layer = soft_layer()
+        d = ImageDraw.Draw(layer)
+        for i in range(rnd.randint(1, 2) + spots - 1):
+            cx, cy = rnd.uniform(0.1, 0.9) * sw, rnd.uniform(0.1, 0.9) * sh
+            r = sm * rnd.uniform(0.07, 0.17)
+            red = tuple(int(v * k) for v in rnd.choice([(255, 30, 20), (255, 60, 30), (230, 20, 40)]))
+            d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=red)
+        glow = layer.filter(ImageFilter.GaussianBlur(sm * 0.05))
+        # A thin ring, like the red circle a strobe leaves on the lens.
+        rings = soft_layer()
+        rd = ImageDraw.Draw(rings)
+        cx, cy = rnd.uniform(0.2, 0.8) * sw, rnd.uniform(0.2, 0.8) * sh
+        r = sm * rnd.uniform(0.18, 0.3)
+        rd.ellipse((cx - r, cy - r, cx + r, cy + r), outline=tuple(int(v * k) for v in (255, 50, 30)),
+                   width=max(1, int(sm * 0.02)))
+        glow = ImageChops.add(glow, rings.filter(ImageFilter.GaussianBlur(sm * 0.008)))
+        screen = glow if screen is None else ImageChops.screen(screen, glow)
+
+    if screen is not None:
+        screen = screen.resize((w, h), Image.BILINEAR)
+
+    overlay = None
+    if lines:
+        k = (0.6, 1.0)[lines - 1]
+        streaks = Image.new("RGB", (w, h), "black")
+        sd = ImageDraw.Draw(streaks)
+        for _ in range(rnd.randint(1, 2) + lines - 1):
+            x = rnd.uniform(0.05, 0.95) * w
+            top, bottom = (0, h) if rnd.random() < 0.6 else sorted(rnd.uniform(0, 1) * h for _ in range(2))
+            c = tuple(int(v * k * rnd.uniform(0.6, 1.0)) for v in (255, 200, 150))
+            sd.line((x, top, x + rnd.uniform(-0.02, 0.02) * w, bottom), fill=c,
+                    width=max(1, int(m * rnd.uniform(0.004, 0.012))))
+        streaks = streaks.filter(ImageFilter.GaussianBlur(max(0.5, m * 0.003)))
+        screen = streaks if screen is None else ImageChops.screen(screen, streaks)
+        overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        od = ImageDraw.Draw(overlay)
+        for _ in range(int(40 * k)):  # dust: little dark and light specks
+            x, y = rnd.uniform(0, w), rnd.uniform(0, h)
+            r = m * rnd.uniform(0.001, 0.004)
+            c = (20, 16, 12, rnd.randint(90, 200)) if rnd.random() < 0.6 else (255, 250, 240, rnd.randint(70, 160))
+            od.ellipse((x - r, y - r, x + r, y + r), fill=c)
+        for _ in range(int(5 * k)):  # hairs and fine scratches
+            x, y = rnd.uniform(0, w), rnd.uniform(0, h)
+            pts = [(x, y)]
+            ang = rnd.uniform(0, 2 * math.pi)
+            for _ in range(5):
+                ang += rnd.uniform(-0.7, 0.7)
+                step = m * rnd.uniform(0.01, 0.025)
+                x, y = x + step * math.cos(ang), y + step * math.sin(ang)
+                pts.append((x, y))
+            od.line(pts, fill=(25, 20, 15, rnd.randint(70, 150)), width=max(1, int(m * 0.0025)))
+        for _ in range(int(2 * k)):  # long vertical scratches in the emulsion
+            x = rnd.uniform(0, w)
+            od.line((x, 0, x + rnd.uniform(-0.01, 0.01) * w, h), fill=(255, 255, 255, rnd.randint(40, 90)),
+                    width=max(1, int(m * 0.0015)))
+
+    if screen is not None and bw:
+        screen = screen.convert("L").convert("RGB")  # light on black and white film is grey
+
+    if stamp:
+        if overlay is None:
+            overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        digit_h = max(8, h * 0.075)
+        right, bottom = w - max(w, h) * 0.06, h - h * 0.08
+        lit = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        _draw_stamp(ImageDraw.Draw(lit), right, bottom, digit_h, text, STAMP_COLOUR + (255,))
+        glow = lit.filter(ImageFilter.GaussianBlur(max(1, digit_h * 0.18)))
+        overlay.alpha_composite(glow)
+        overlay.alpha_composite(glow)
+        lit.putalpha(lit.getchannel("A").point(lambda v: v * 0.85))
+        overlay.alpha_composite(lit)
+    return screen, overlay
+
+
+def apply_effects(img, index):
+    """img (a photo fitted to slot `index`) with the EFFECTS add-ons drawn on."""
+    if not effects_on():
+        return img
+    opts = tuple(settings[k] for k in EFFECT_KEYS)
+    text = stamp_text()
+    bw = COLOUR_LOOKS.get(settings["colour"], {}).get("sat", 1.0) == 0
+    key = (img.size, strip_seed, index, opts, text, bw)
+    layers = _effect_cache.get(key)
+    if layers is None:
+        if len(_effect_cache) >= 12:
+            del _effect_cache[next(iter(_effect_cache))]
+        layers = _effect_cache[key] = _render_effects(*img.size, strip_seed * 8 + index, opts, text, bw)
+    screen, overlay = layers
+    mode = img.mode
+    out = img.convert("RGB")
+    if screen is not None:
+        out = ImageChops.screen(out, screen)
+    if overlay is not None:
+        out = out.convert("RGBA")
+        out.alpha_composite(overlay)
+    return out.convert(mode) if out.mode != mode else out
+
+
 def capture_preview_image():
     if LORES_FORMAT == "YUV420":
         lores = picam2.capture_array("lores", wait=CAMERA_TIMEOUT_SECONDS)
@@ -1101,7 +1308,7 @@ def update_live_slot_preview(overlay_text=None, force=False):
         return False
 
     sx, sy, sw, sh = _live_preview_slot_box
-    fitted = center_crop_to_slot(cam, sw, sh, resample=Image.BILINEAR)
+    fitted = apply_effects(center_crop_to_slot(cam, sw, sh, resample=Image.BILINEAR), current_slot)
 
     canvas = _live_preview_photos.copy()
     canvas.paste(fitted, (sx, sy))
@@ -1358,12 +1565,13 @@ def delete_live_captures():
 
 
 def clear_live_strip():
-    global live_photos, live_capture_paths, current_slot
+    global live_photos, live_capture_paths, current_slot, strip_seed
 
     capacity = current_capacity()
     live_photos = [None] * capacity
     live_capture_paths = [None] * capacity
     current_slot = 0
+    strip_seed = random.randrange(1 << 30)
     _clear_photo_cache()
 
 
@@ -1462,15 +1670,19 @@ def _slot_aspect(index):
     return CAPTURE_W / CAPTURE_H
 
 
-def _fit_to_screen(img, aspect):
-    """img cropped to aspect, as large as the screen allows, centred on black."""
+def _fit_to_screen(img, aspect, effects_index=None):
+    """img cropped to aspect, as large as the screen allows, centred on black; with
+    effects_index, the EFFECTS add-ons that photo slot gets are drawn on too."""
     ui_w, ui_h = ui_size()
     w, h = ui_w, int(ui_w / aspect)
     if h > ui_h:
         w, h = int(ui_h * aspect), ui_h
     x, y = (ui_w - w) // 2, (ui_h - h) // 2
     canvas = Image.new("RGB", (ui_w, ui_h), "black")
-    canvas.paste(center_crop_to_slot(img, w, h, resample=Image.BILINEAR), (x, y))
+    fitted = center_crop_to_slot(img, w, h, resample=Image.BILINEAR)
+    if effects_index is not None:
+        fitted = apply_effects(fitted, effects_index)
+    canvas.paste(fitted, (x, y))
     return canvas, (x, y, w, h)
 
 
@@ -1483,13 +1695,13 @@ def _show_fullscreen_camera():
     except Exception as e:
         print(f"Countdown preview capture failed: {e}")
         return
-    canvas, _fullscreen_box = _fit_to_screen(cam, _slot_aspect(current_slot))
+    canvas, _fullscreen_box = _fit_to_screen(cam, _slot_aspect(current_slot), current_slot)
     update_lcd(canvas, fast=True)
 
 
 def start_photo_show(photo, index):
     global _photo_show_img, _photo_show_until, fullscreen_view, _fullscreen_box
-    _photo_show_img, _fullscreen_box = _fit_to_screen(photo, _slot_aspect(index))
+    _photo_show_img, _fullscreen_box = _fit_to_screen(photo, _slot_aspect(index), index)
     _photo_show_until = time.monotonic() + PHOTO_SHOW_SECONDS
     fullscreen_view = True
     update_lcd()
@@ -1658,7 +1870,7 @@ def browse_step(step):
     save_preview()
 
 
-def next_frame_same_capacity():
+def next_frame_same_capacity(step=1):
     global current_frame_index
 
     if not frames:
@@ -1673,7 +1885,7 @@ def next_frame_same_capacity():
 
     try:
         pos = group.index(current_frame_index)
-        current_frame_index = group[(pos + 1) % len(group)]
+        current_frame_index = group[(pos + step) % len(group)]
     except ValueError:
         current_frame_index = group[0]
 
@@ -1729,10 +1941,11 @@ def load_strip_image(path):
     return strip
 
 
-def make_duplicate_print(strip_img):
+def make_pair_print(left_img, right_img):
+    """Two 2x6 strips side by side fill one 4x6 sheet (Canon SELPHY CP1500 postcard)."""
     print_img = Image.new("RGB", (PRINT_W, PRINT_H), "white")
-    print_img.paste(strip_img, (0, 0))
-    print_img.paste(strip_img, (STRIP_W, 0))
+    print_img.paste(left_img, (0, 0))
+    print_img.paste(right_img, (STRIP_W, 0))
     return print_img
 
 
@@ -1824,17 +2037,17 @@ def send_to_printer(path):
 _print_busy = threading.Event()
 
 
-def _build_and_send_print(path):
-    strip = load_strip_image(path)
-    if strip is None:
+def _build_and_send_print(paths):
+    strips = [load_strip_image(p) for p in paths]
+    if any(strip is None for strip in strips):
         return False
 
     fd, tmp = tempfile.mkstemp(prefix="print_", suffix=".jpg")
     os.close(fd)
     tmp_path = Path(tmp)
     try:
-        make_duplicate_print(strip).save(tmp_path, quality=95)
-        print(f"Built duplicate print: {tmp_path}")
+        make_pair_print(*strips).save(tmp_path, quality=95)
+        print(f"Built print: {' + '.join(Path(p).name for p in paths)} -> {tmp_path}")
         return send_to_printer(tmp_path)
     finally:
         try:
@@ -1843,11 +2056,11 @@ def _build_and_send_print(path):
             pass
 
 
-def _print_worker(path):
+def _print_worker(paths):
     # Runs off the UI thread; reports back via action_queue, never touches pygame.
     ok = False
     try:
-        ok = _build_and_send_print(path)
+        ok = _build_and_send_print(paths)
     except Exception as e:
         print(f"Print failed: {e}")
     finally:
@@ -1860,14 +2073,15 @@ def print_current_browsed_item():
         start_print(browse_strips[browse_index])
 
 
-def start_print(path):
+def start_print(path, other=None):
+    """Prints one 4x6 sheet: the strip twice, or with `other` beside it."""
     if _print_busy.is_set():
         print("Print already in progress; ignoring.")
         flash_message("ALREADY PRINTING", seconds=0.8)
         return
 
     _print_busy.set()
-    threading.Thread(target=_print_worker, args=(path,), daemon=True).start()
+    threading.Thread(target=_print_worker, args=((path, other or path),), daemon=True).start()
     flash_message("PRINTING...", seconds=0.6)
 
 
@@ -2139,7 +2353,6 @@ MENU_DIM = (150, 150, 160)
 MENU_ACCENT = (255, 190, 40)
 MENU_DONE = (40, 150, 70)
 MENU_DANGER = (190, 45, 45)
-TAP_DEBOUNCE_SECONDS = 0.3
 SHUTDOWN_CONFIRM_SECONDS = 4
 
 _fonts = {}
@@ -2251,43 +2464,67 @@ def _draw_corner_buttons(img):
 
 menu_open = False
 menu_tab = "camera"
+PREVIEW_TABS = {"camera": CAMERA_SETTINGS, "effects": EFFECT_SETTINGS}
+menu_fullscreen = False  # CAMERA / EFFECTS: live preview as big as possible, one setting below
+menu_focus = {"camera": "brightness", "effects": "stamp"}  # setting shown under the big preview
 menu_buttons = []  # [((x0, y0, x1, y1) in UI coords, callback)]
 _menu_last_cam = None
 _menu_last_ts = 0.0
 _shutdown_confirm_until = 0.0
 _lcd_xform = None  # (x, y, scale) of the last frame drawn on the panel
-_last_tap_ts = 0.0
 
 
 def open_menu():
-    global menu_open, menu_tab, _menu_last_cam
+    global menu_open, menu_tab, _menu_last_cam, menu_fullscreen
     print("Settings menu opened.")
     menu_open = True
     menu_tab = "camera"
+    menu_fullscreen = False
     _menu_last_cam = None
     update_menu(force=True)
 
 
 def close_menu(redraw=True):
-    global menu_open
+    global menu_open, menu_fullscreen
     if not menu_open:
         return
     print("Settings menu closed.")
     menu_open = False
+    menu_fullscreen = False
     _invalidate_live_preview()
     if redraw:
         update_lcd()
 
 
 def set_menu_tab(tab):
-    global menu_tab, wifi_view
+    global menu_tab, wifi_view, menu_fullscreen
     if tab == "wifi" and menu_tab != "wifi":
         wifi_view = "list"
         wifi_scan()
     menu_tab = tab
+    menu_fullscreen = False
+
+
+def set_menu_fullscreen(on):
+    global menu_fullscreen
+    menu_fullscreen = on
+
+
+def set_menu_focus(key):
+    menu_focus[menu_tab] = key
+
+
+def menu_focus_step(step):
+    """Swipe on the full-screen preview: the next or previous setting."""
+    keys = [k for k, _, _, _ in PREVIEW_TABS[menu_tab]]
+    i = keys.index(menu_focus[menu_tab]) if menu_focus[menu_tab] in keys else 0
+    menu_focus[menu_tab] = keys[(i + step) % len(keys)]
 
 
 def step_setting(key, step):
+    for tab, defs in PREVIEW_TABS.items():
+        if key in {k for k, _, _, _ in defs}:
+            menu_focus[tab] = key  # the full-screen preview opens on the last one changed
     choices = [v for v, _ in SETTING_DEFS[key][1]]
     i = choices.index(settings[key]) + step
     if 0 <= i < len(choices):
@@ -2310,7 +2547,7 @@ def _draw_setting_row(draw, box, key, buttons):
     i = values.index(settings[key])
     text = choices[i][1]
     h = y1 - y0
-    arrow_w = min(72, h + 12)
+    arrow_w = min(72, h + 12, (x1 - x0) // 5)
 
     draw.rounded_rectangle(box, radius=10, fill=MENU_ROW)
     for direction, ax0, enabled in (
@@ -2906,6 +3143,7 @@ gallery_paths = []
 gallery_index = 0
 gallery_buttons = []
 _gallery_delete_until = 0.0
+gallery_pair_first = None  # MIX 2 STRIPS: the strip chosen for the left half of the sheet
 _gallery_drawn = None
 _gallery_thumbs = {}
 _gesture_down = None
@@ -2944,12 +3182,14 @@ def _size(path):
 
 def open_gallery():
     global gallery_open, gallery_paths, gallery_index, _gallery_delete_until, _gallery_drawn
+    global gallery_pair_first
     close_menu(redraw=False)
     print("Review screen opened.")
     gallery_open = True
     gallery_paths = browsable_paths()
     gallery_index = 0
     _gallery_delete_until = 0.0
+    gallery_pair_first = None
     _gallery_drawn = None
     stop_camera()  # nothing reads it here; a camera left streaming unread can stall
     update_gallery(force=True)
@@ -2985,8 +3225,29 @@ def gallery_print():
         start_print(gallery_paths[gallery_index])
 
 
+def gallery_pair_start():
+    """MIX 2 STRIPS: this strip goes on the left; swipe to the one for the right."""
+    global gallery_pair_first
+    if gallery_paths:
+        gallery_pair_first = gallery_paths[gallery_index]
+        if len(gallery_paths) > 1:
+            gallery_step(1 if gallery_index < len(gallery_paths) - 1 else -1)
+
+
+def gallery_pair_cancel():
+    global gallery_pair_first
+    gallery_pair_first = None
+
+
+def gallery_pair_print():
+    global gallery_pair_first
+    if gallery_paths and gallery_pair_first is not None:
+        start_print(gallery_pair_first, gallery_paths[gallery_index])
+        gallery_pair_first = None
+
+
 def gallery_delete():
-    global gallery_paths, gallery_index, _gallery_delete_until
+    global gallery_paths, gallery_index, _gallery_delete_until, gallery_pair_first
     if not gallery_paths:
         return
     now = time.monotonic()
@@ -3009,6 +3270,8 @@ def gallery_delete():
         flash_message("COULD NOT DELETE", seconds=1.0)
         return
     print(f"Deleted strip: {path}")
+    if gallery_pair_first == path:
+        gallery_pair_first = None
     for key in [k for k in _gallery_thumbs if k[0] == path]:
         del _gallery_thumbs[key]
     gallery_paths = browsable_paths()
@@ -3081,7 +3344,10 @@ def render_gallery():
     color = {"ok": MENU_DIM, "low": MENU_ACCENT, "full": (255, 90, 90)}[level]
     if level != "ok":
         text = ("STORAGE FULL: " if level == "full" else "STORAGE LOW: ") + text
-    if n:
+    if n and gallery_pair_first is not None:
+        title = "SWIPE TO THE 2ND STRIP, THEN PRINT"
+        text, color, level = f"1ST: {_strip_time_label(gallery_pair_first)}", MENU_ACCENT, "ok"
+    elif n:
         title = f"STRIP {gallery_index + 1} OF {n}  \u00b7  {_strip_time_label(gallery_paths[gallery_index])}"
     else:
         title = "REVIEW"
@@ -3139,18 +3405,36 @@ def render_gallery():
                     img.paste(nb, (nx, ny))
                     draw.rectangle((nx, ny, nx + nb.width, ny + nb.height), fill=(0, 0, 0, 150))
             img.paste(cur, (cx - cur.width // 2, cy - cur.height // 2))
+            if gallery_pair_first is not None and gallery_paths[gallery_index] == gallery_pair_first:
+                # The left half of the sheet being made: printing it again gives two copies.
+                badge = (cx - 70, cy - 22, cx + 70, cy + 22)
+                draw.rounded_rectangle(badge, radius=10, fill=MENU_ACCENT)
+                _draw_text_centered(draw, badge, "1ST PICK", menu_font(20, True), (0, 0, 0))
 
     if n:
         bx0, by0, bx1, by1 = actions
-        half = (bx1 - bx0 - gap) // 2
         printing = _print_busy.is_set()
-        _draw_key(draw, (bx0, by0, bx0 + half, by1), "PRINTING..." if printing else "PRINT",
-                  buttons, gallery_print, fill=(80, 80, 88) if printing else MENU_ACCENT,
-                  text_fill=MENU_TEXT if printing else (0, 0, 0), size=24)
-        confirming = time.monotonic() < _gallery_delete_until
-        _draw_key(draw, (bx1 - half, by0, bx1, by1),
-                  "DELETE?\nTAP AGAIN" if confirming else "DELETE", buttons, gallery_delete,
-                  fill=(235, 60, 60) if confirming else MENU_DANGER, size=24)
+        busy = dict(fill=(80, 80, 88), text_fill=MENU_TEXT)
+        go = dict(fill=MENU_ACCENT, text_fill=(0, 0, 0))
+        if gallery_pair_first is not None:
+            half = (bx1 - bx0 - gap) // 2
+            _draw_key(draw, (bx0, by0, bx0 + half, by1), "CANCEL", buttons, gallery_pair_cancel,
+                      fill=(70, 70, 80), size=22)
+            _draw_key(draw, (bx1 - half, by0, bx1, by1),
+                      "PRINTING..." if printing else "PRINT\nTHESE 2", buttons, gallery_pair_print,
+                      size=22, **(busy if printing else go))
+        else:
+            # Each print is one 4x6 sheet holding two strips: this one twice, or two different.
+            third = (bx1 - bx0 - 2 * gap) // 3
+            _draw_key(draw, (bx0, by0, bx0 + third, by1),
+                      "PRINTING..." if printing else "PRINT\n2 COPIES", buttons, gallery_print,
+                      size=22, **(busy if printing else go))
+            _draw_key(draw, (bx0 + third + gap, by0, bx1 - third - gap, by1), "MIX\n2 STRIPS",
+                      buttons, gallery_pair_start, fill=(40, 120, 160), size=22)
+            confirming = time.monotonic() < _gallery_delete_until
+            _draw_key(draw, (bx1 - third, by0, bx1, by1),
+                      "DELETE?\nTAP AGAIN" if confirming else "DELETE", buttons, gallery_delete,
+                      fill=(235, 60, 60) if confirming else MENU_DANGER, size=22)
 
     gallery_buttons = buttons
     return img
@@ -3159,15 +3443,17 @@ def render_gallery():
 def update_gallery(force=False):
     global _gallery_drawn
     state = (gallery_index, tuple(gallery_paths), time.monotonic() < _gallery_delete_until,
-             _print_busy.is_set(), screen_rotation)
+             _print_busy.is_set(), screen_rotation, gallery_pair_first)
     if force or state != _gallery_drawn:
         _gallery_drawn = state
         update_lcd()
 
 
-def next_gallery_gesture(events):
-    """Returns ("tap", (x, y)) or ("swipe", dx) in screen coordinates, acting on release."""
+def next_gestures(events):
+    """[("tap", (x, y)) or ("swipe", dx)] in UI coordinates, each counted when the finger lifts.
+    Every touch in the batch counts: none is dropped for coming soon after another."""
     global _gesture_down
+    gestures = []
     for event in events:
         if event.type in (pygame.FINGERDOWN, pygame.FINGERUP):
             screen_w, screen_h = lcd.get_size()
@@ -3187,9 +3473,10 @@ def next_gallery_gesture(events):
             start, _gesture_down = _gesture_down, None
             dx, dy = point[0] - start[0], point[1] - start[1]
             if abs(dx) >= SWIPE_MIN_PX and abs(dx) > abs(dy):
-                return ("swipe", dx)
-            return ("tap", start)
-    return None
+                gestures.append(("swipe", dx))
+            else:
+                gestures.append(("tap", start))
+    return gestures
 
 
 def handle_gallery_gesture(gesture):
@@ -3388,6 +3675,82 @@ def render_update_view(draw, area, buttons):
                         MENU_DIM)
 
 
+def _preview_slot_index():
+    return max(0, min(current_slot, current_capacity() - 1))
+
+
+def _draw_menu_preview(img, draw, box, cam, buttons=None):
+    """The live camera in box, cropped like the next photo and with its EFFECTS add-ons."""
+    x0, y0, x1, y1 = box
+    pw, ph = x1 - x0, y1 - y0
+    if cam is not None:
+        index = _preview_slot_index()
+        img.paste(apply_effects(center_crop_to_slot(cam, pw, ph, resample=Image.BILINEAR), index),
+                  (x0, y0))
+    else:
+        draw.rectangle(box, fill=(0, 0, 0))
+        _draw_text_centered(draw, box, "CAMERA STARTING...", menu_font(18), MENU_DIM)
+    if buttons is not None:
+        buttons.append((box, lambda: set_menu_fullscreen(True)))
+
+
+def _fit_box(area, aspect):
+    """The biggest box of this aspect in area, centred across and at the top."""
+    x0, y0, x1, y1 = area
+    w, h = x1 - x0, int((x1 - x0) / aspect)
+    if h > y1 - y0:
+        w, h = int((y1 - y0) * aspect), y1 - y0
+    left = x0 + (x1 - x0 - w) // 2
+    return (left, y0, left + w, y0 + h)
+
+
+def render_preview_tab(img, draw, top, cam, buttons):
+    """CAMERA / EFFECTS: the live preview as big as fits beside (or above) the settings."""
+    w, h = ui_size()
+    pad, gap = 8, 6
+    keys = [k for k, _, _, _ in PREVIEW_TABS[menu_tab]]
+    aspect = _slot_aspect(_preview_slot_index())
+    if is_landscape():
+        full_h = 60
+        left_w = int(w * 0.58)
+        box = _fit_box((pad, top, left_w, h - pad - full_h - gap), aspect)
+        _draw_menu_preview(img, draw, box, cam, buttons)
+        _draw_key(draw, (box[0], box[3] + gap, box[2], box[3] + gap + full_h), "FULL SCREEN PREVIEW",
+                  buttons, lambda: set_menu_fullscreen(True), size=18)
+        rows = (left_w + pad, top, w - pad, h - pad)
+    else:
+        box = _fit_box((pad, top, w - pad, top + (h - top) // 2), aspect)
+        _draw_menu_preview(img, draw, box, cam, buttons)
+        rows = (pad, box[3] + gap + 2, w - pad, h - pad)
+    _draw_setting_rows(draw, rows, keys, buttons, menu_tab)
+
+
+def render_fullscreen_preview(img, draw, cam, buttons):
+    """The preview filling the screen above one setting: tap the names to pick which one."""
+    w, h = ui_size()
+    pad, gap = 6, 5
+    chip_h, row_h = 52, 76
+    keys = [k for k, _, _, _ in PREVIEW_TABS[menu_tab]]
+    focus = menu_focus[menu_tab] if menu_focus[menu_tab] in keys else keys[0]
+    row_top = h - pad - row_h
+    chip_top = row_top - gap - chip_h
+    box = _fit_box((0, 0, w, chip_top - gap), _slot_aspect(_preview_slot_index()))
+    _draw_menu_preview(img, draw, box, cam)
+    labels = [("\u25c0 BACK", None)] + [(SETTING_SHORT.get(k, k.upper()), k) for k in keys]
+    chip_w = (w - 2 * pad - gap * (len(labels) - 1)) / len(labels)
+    for n, (label, key) in enumerate(labels):
+        x = pad + n * (chip_w + gap)
+        cbox = (int(x), chip_top, int(x + chip_w), chip_top + chip_h)
+        if key is None:
+            _draw_key(draw, cbox, label, buttons, lambda: set_menu_fullscreen(False), fill=MENU_DONE, size=16)
+        else:
+            active = key == focus
+            _draw_key(draw, cbox, label, buttons, lambda k=key: set_menu_focus(k),
+                      fill=MENU_ACCENT if active else MENU_ROW,
+                      text_fill=(0, 0, 0) if active else MENU_TEXT, size=16)
+    _draw_setting_row(draw, (pad, row_top, w - pad, row_top + row_h), focus, buttons)
+
+
 HELP_LINES = [
     "BUTTON: 1 press = photo   2 = next frame",
     "3 = 3 or 4 photos   hold 1 sec = browse",
@@ -3410,9 +3773,13 @@ def render_menu(cam=None):
         _render_wifi_keyboard(draw, (pad, pad, w - pad, h - pad), buttons)
         menu_buttons = buttons
         return img
+    if menu_fullscreen and menu_tab in PREVIEW_TABS:
+        render_fullscreen_preview(img, draw, cam, buttons)
+        menu_buttons = buttons
+        return img
 
-    tabs = (("camera", "CAMERA"), ("booth", "BOOTH"), ("wifi", "WIFI"))
-    done_w = 110
+    tabs = (("camera", "CAMERA"), ("effects", "EFFECTS"), ("booth", "BOOTH"), ("wifi", "WIFI"))
+    done_w = 100 if is_landscape() else 80
     tab_w = min(170, (w - done_w - pad * (len(tabs) + 2)) // len(tabs))
     x = pad
     for tab, text in tabs:
@@ -3429,26 +3796,8 @@ def render_menu(cam=None):
     buttons.append((done, close_menu))
     top = bar_h + 4
 
-    if menu_tab == "camera":
-        keys = [k for k, _, _, _ in CAMERA_SETTINGS]
-        if is_landscape():
-            pw = w * 2 // 5 - 2 * pad
-            ph = pw * PREVIEW_H // PREVIEW_W
-            pbox = (pad, top + (h - top - ph) // 2)
-            rows = (w * 2 // 5, top, w - pad, h - pad)
-        else:
-            pw = w - 2 * pad
-            ph = pw * PREVIEW_H // PREVIEW_W
-            pbox = (pad, top)
-            rows = (pad, top + ph + 8, w - pad, h - pad)
-        px, py = pbox
-        if cam is not None:
-            img.paste(center_crop_to_slot(cam, pw, ph, resample=Image.BILINEAR), (px, py))
-        else:
-            draw.rectangle((px, py, px + pw, py + ph), fill=(0, 0, 0))
-            _draw_text_centered(draw, (px, py, px + pw, py + ph), "CAMERA STARTING...",
-                                menu_font(18), MENU_DIM)
-        _draw_setting_rows(draw, rows, keys, buttons, "camera")
+    if menu_tab in PREVIEW_TABS:
+        render_preview_tab(img, draw, top, cam, buttons)
     elif menu_tab == "wifi":
         render_wifi_tab(draw, (pad, top, w - pad, h - pad), buttons)
     elif menu_tab == "update":
@@ -3491,7 +3840,7 @@ def update_menu(force=False):
     if not force and now - _menu_last_ts < 1.0 / LIVE_PREVIEW_FPS:
         return
     _menu_last_ts = now
-    if menu_tab == "camera" and camera_running:
+    if menu_tab in PREVIEW_TABS and camera_running:
         try:
             _menu_last_cam = capture_preview_image()
         except TimeoutError:
@@ -3520,32 +3869,9 @@ def screen_to_ui(px, py):
     return x - ui_inset(), y
 
 
-def next_tap(events):
-    """Returns the panel position of a new tap in these events, or None."""
-    global _last_tap_ts
-    screen_w, screen_h = lcd.get_size()
-    for event in events:
-        if event.type == pygame.FINGERDOWN:
-            pos = (event.x * screen_w, event.y * screen_h)
-        elif event.type == pygame.MOUSEBUTTONDOWN:
-            pos = event.pos
-        else:
-            continue
-        # A touch can arrive as both a finger and a mouse event; count it once.
-        now = time.monotonic()
-        if now - _last_tap_ts < TAP_DEBOUNCE_SECONDS:
-            continue
-        _last_tap_ts = now
-        return pos
-    return None
-
-
-def handle_tap(pos):
-    point = screen_to_ui(*pos)
-    if point is None:
-        return
+def handle_tap(point):
     x, y = point
-    print(f"Tap at panel {pos[0]:.0f},{pos[1]:.0f} -> screen {x:.0f},{y:.0f}")
+    print(f"Tap at {x:.0f},{y:.0f}")
     if menu_open:
         for (x0, y0, x1, y1), action in menu_buttons:
             if x0 <= x <= x1 and y0 <= y <= y1:
@@ -3559,6 +3885,20 @@ def handle_tap(pos):
             if x0 - pad <= x <= x1 + pad and y0 - pad <= y <= y1 + pad:
                 {"menu": open_menu, "gallery": open_gallery, "camera": enter_creation_mode}[kind]()
                 return
+
+
+def handle_swipe(dx):
+    """Finger moves left: the next one slides in from the right."""
+    step = 1 if dx < 0 else -1
+    print(f"Swipe {'left' if step > 0 else 'right'}")
+    if menu_open:
+        if menu_fullscreen and menu_tab in PREVIEW_TABS:
+            menu_focus_step(step)
+            update_menu(force=True)
+    elif mode == "browse":
+        browse_step(step)
+    else:
+        next_frame_same_capacity(step)
 
 
 def handle_short_presses(count):
@@ -3679,20 +4019,19 @@ try:
     while True:
         try:
             if lcd is not None:
-                events = pygame.event.get()
-                if gallery_open:
-                    # Swipes need the release, so the review screen acts on touch-up.
-                    gesture = next_gallery_gesture(events)
-                    if gesture is not None:
+                # Touches act when the finger lifts, so a swipe isn't also a tap.
+                for kind, value in next_gestures(pygame.event.get()):
+                    if gallery_open:
                         wake_screen(camera=False)
-                        handle_gallery_gesture(gesture)
-                else:
-                    tap = next_tap(events)
-                    if tap is not None:
-                        end_photo_show()  # a tap skips the photo on show
-                    # A tap on a sleeping screen only wakes it.
-                    if tap is not None and not wake_screen():
-                        handle_tap(tap)
+                        handle_gallery_gesture((kind, value))
+                        continue
+                    end_photo_show()  # a touch skips the photo on show
+                    if wake_screen():
+                        continue  # a touch on a sleeping screen only wakes it
+                    if kind == "tap":
+                        handle_tap(value)
+                    else:
+                        handle_swipe(value)
 
             while not action_queue.empty():
                 action, payload = action_queue.get()

@@ -36,15 +36,25 @@ Raw captures in `captures/` are deleted once their strip is saved to `strips/arc
 | 5 short | Rotate screen: portrait / flipped / landscape (strip cut in half, side by side) / flipped — saved | Same |
 | Super long press (6s+) | Shut down | Shut down |
 
+On the touchscreen, swipe left/right on the main screen to change the frame design (create mode) or the
+strip shown (browse mode).
+
 ## Settings menu
 
 Tap the gear in the top-left corner of the screen. Use the ◀ ▶ arrows to change a setting; changes save
-automatically (`settings.json`) and the camera tab shows a live preview. Tap DONE or press the button to close.
+automatically (`settings.json`) and the camera and effects tabs show a live preview, cropped like the next
+photo. Tap the preview (or FULL SCREEN PREVIEW) to make it as big as the screen allows, with one setting
+underneath: tap a setting's name (or swipe) to pick which. Tap DONE or press the button to close.
 
 - Camera tab: brightness, colour look, movement (sharper vs brighter), focus, lighting type, zoom, mirror preview.
+  Each lighting type locks the white balance to one colour temperature (warm bulbs 2900 K, indoor 3600 K,
+  office 4300 K, sunny 5600 K, cloudy/shade 7000 K); AUTO lets the camera decide.
   Colour looks: normal, vivid, warm, cool, soft & dreamy, black & white, noir, sepia, film (warm), film (B&W),
   film: portrait, film: golden, film: cool green, instant photo, 70s faded, cross-processed. The live preview
   shows the look; film looks add grain and a vignette.
+- Effects tab: vintage add-ons that go on every photo with any frame, and stack: DATE STAMP (today's date in
+  orange seven-segment digits, like a 90s film camera), LIGHT LEAKS (warm glow from an edge), RED LIGHT SPOTS
+  (red orbs and a strobe ring) and LIGHT STREAKS & DUST. Each strip gets its own random leaks and spots.
 - Booth tab: screen orientation, screen-off time, countdown before each photo (off / 3 / 5 / 10 s), review auto-keep
   time, auto shut down when idle (off / 15 / 30 min / 1 / 2 / 4 h), UPDATES, Shut down (tap twice), and a reminder
   of the button presses.
@@ -62,7 +72,9 @@ automatically (`settings.json`) and the camera tab shows a live preview. Tap DON
 ## Reviewing saved strips (photo button)
 
 Tap the photo button under the gear to open REVIEW. Swipe left/right (or use ◀ ▶) through saved strips,
-newest first. PRINT prints the strip on screen; DELETE asks for a second tap within 4 seconds before it
+newest first. Every print is one 4x6 sheet (Canon SELPHY CP1500) holding two strips side by side.
+PRINT 2 COPIES prints the strip on screen twice. MIX 2 STRIPS picks the strip on screen for the left half:
+swipe to another and tap PRINT THESE 2. DELETE asks for a second tap within 4 seconds before it
 deletes, so a stray tap can't remove a photo. The top shows free storage and roughly how many more strips
 fit. BACK, any button press, or a minute untouched returns to the camera.
 
