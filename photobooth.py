@@ -2753,6 +2753,10 @@ wifi_saved_uuid = None  # saved profile for wifi_target, if the Pi already knows
 wifi_password = ""
 wifi_kb_page = "lower"
 wifi_show_password = True
+wifi_radio = None  # True/False: WiFi switched on or off (NetworkManager remembers it across reboots)
+wifi_radio_busy = False
+_wifi_off_confirm_until = 0.0
+WIFI_OFF_CONFIRM_SECONDS = 4
 
 
 def _nmcli(args, timeout=20):
@@ -2896,8 +2900,20 @@ def _wifi_connect(net, password, saved_uuid):
     return False, message
 
 
+def _wifi_radio_on():
+    result = _nmcli(["radio", "wifi"])
+    return result.stdout.strip() != "disabled"
+
+
 def _wifi_scan_worker():
-    global wifi_networks, wifi_scanning, wifi_message, wifi_current, wifi_page
+    global wifi_networks, wifi_scanning, wifi_message, wifi_current, wifi_page, wifi_radio
+    try:
+        wifi_radio = _wifi_radio_on()
+    except Exception as e:
+        print(f"WiFi radio check failed: {e}")
+    if wifi_radio is False:
+        wifi_networks, wifi_current, wifi_scanning = [], (None, None), False
+        return
     try:
         wifi_networks = _scan_wifi()
         wifi_page = 0
@@ -2944,6 +2960,43 @@ def wifi_scan():
     if wifi_connecting:
         return
     _wifi_scan_start()
+
+
+def _wifi_radio_worker(on):
+    global wifi_radio, wifi_radio_busy, wifi_message
+    try:
+        result = _nmcli(["radio", "wifi", "on" if on else "off"])
+        if result.returncode == 0:
+            wifi_radio = on
+            wifi_message = ("WIFI IS ON", True) if on else None
+            print(f"WiFi switched {'on' if on else 'off'}.")
+        else:
+            err = (result.stderr or result.stdout).strip()
+            print(f"WiFi switch failed: {err}")
+            # Needs system/photobooth-wifi.rules from this version (installed by install.sh).
+            wifi_message = ("NOT ALLOWED: RUN SYSTEM/INSTALL.SH" if "authoriz" in err.lower() or
+                            "not allowed" in err.lower() else "COULDN'T SWITCH WIFI", False)
+    except Exception as e:
+        print(f"WiFi switch failed: {e}")
+        wifi_message = ("COULDN'T SWITCH WIFI", False)
+    wifi_radio_busy = False
+    if on and wifi_radio:
+        time.sleep(4)  # give it a moment to come up and rejoin a saved network
+        _wifi_scan_start()
+
+
+def wifi_toggle_radio():
+    """WiFi off takes a second tap: it also stops SSH and updates."""
+    global wifi_radio_busy, _wifi_off_confirm_until
+    if wifi_radio_busy or wifi_connecting:
+        return
+    turn_on = wifi_radio is False
+    if not turn_on and time.monotonic() >= _wifi_off_confirm_until:
+        _wifi_off_confirm_until = time.monotonic() + WIFI_OFF_CONFIRM_SECONDS
+        return
+    _wifi_off_confirm_until = 0.0
+    wifi_radio_busy = True
+    threading.Thread(target=_wifi_radio_worker, args=(turn_on,), daemon=True).start()
 
 
 def wifi_choose(net):
@@ -3080,7 +3133,9 @@ def _render_wifi_list(draw, area, buttons):
     x0, y0, x1, y1 = area
     gap = 6
     ssid, ip = wifi_current
-    if wifi_connecting:
+    if wifi_radio is False:
+        status, name, color = "WIFI IS OFF", None, MENU_DIM
+    elif wifi_connecting:
         status, name, color = "CONNECTING...", None, MENU_ACCENT
     elif ssid:
         status, name, color = "CONNECTED TO", ssid, (120, 220, 140)
@@ -3127,15 +3182,29 @@ def _render_wifi_list(draw, area, buttons):
                             (120, 220, 140) if ok else (255, 110, 110))
         y += 32
 
-    scan_h = 70
+    scan_h, radio_h = 70, 60
+    radio_top = iy1 - radio_h
+    if wifi_radio is False:
+        _draw_key(draw, (ix0, radio_top, ix1, iy1), "TURNING ON..." if wifi_radio_busy else "TURN WIFI ON",
+                  buttons, wifi_toggle_radio, fill=MENU_DONE, size=20)
+        lx0, ly0, lx1, ly1 = lst if lst is not None else (x0, y, x1, radio_top - gap)
+        _draw_text_centered(draw, (lx0, ly0, lx1, ly0 + 40), "NO WIFI: SSH AND UPDATES ARE OFF TOO",
+                            _fit_font(draw, "NO WIFI: SSH AND UPDATES ARE OFF TOO", lx1 - lx0, 16, False), MENU_DIM)
+        return
+    confirming = time.monotonic() < _wifi_off_confirm_until
+    _draw_key(draw, (ix0, radio_top, ix1, iy1),
+              "TURNING OFF..." if wifi_radio_busy else
+              "TAP AGAIN: WIFI OFF\n(NO SSH OR UPDATES)" if confirming else "TURN WIFI OFF",
+              buttons, wifi_toggle_radio, fill=MENU_DANGER if confirming else (70, 70, 80), size=18)
+    scan_top = radio_top - gap - scan_h
     busy = wifi_scanning or wifi_connecting
-    _draw_key(draw, (ix0, iy1 - scan_h, ix1, iy1), "SCANNING..." if wifi_scanning else "SCAN AGAIN"
+    _draw_key(draw, (ix0, scan_top, ix1, radio_top - gap), "SCANNING..." if wifi_scanning else "SCAN AGAIN"
               if wifi_networks else "SCAN FOR WIFI", buttons, wifi_scan,
               fill=(80, 80, 88) if busy else MENU_ACCENT,
               text_fill=MENU_TEXT if busy else (0, 0, 0), size=22)
 
     if lst is None:
-        lst = (x0, y, x1, y1 - scan_h - gap)
+        lst = (x0, y, x1, scan_top - gap)
     lx0, ly0, lx1, ly1 = lst
     row_h = MIN_ROW_H - 6
     nets = wifi_networks

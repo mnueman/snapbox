@@ -1,8 +1,9 @@
 // Lets the photobooth app (runs as admin from systemd, so it has no login session)
-// scan for WiFi networks and join them from the touchscreen menu.
+// scan for WiFi networks, join them and switch WiFi on or off from the touchscreen menu.
 polkit.addRule(function(action, subject) {
     if (subject.user == "admin" &&
         (action.id == "org.freedesktop.NetworkManager.wifi.scan" ||
+         action.id == "org.freedesktop.NetworkManager.enable-disable-wifi" ||
          action.id == "org.freedesktop.NetworkManager.network-control" ||
          action.id == "org.freedesktop.NetworkManager.settings.modify.system")) {
         return polkit.Result.YES;

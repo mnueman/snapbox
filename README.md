@@ -53,14 +53,16 @@ underneath: tap a setting's name (or swipe) to pick which. Tap DONE or press the
   film: portrait, film: golden, film: cool green, instant photo, 70s faded, cross-processed. The live preview
   shows the look; film looks add grain and a vignette.
 - Effects tab: vintage add-ons that go on every photo with any frame, and stack: DATE STAMP (today's date in
-  orange seven-segment digits, like a 90s film camera), LIGHT LEAKS (warm glow from an edge), RED LIGHT SPOTS
-  (red orbs and a strobe ring) and LIGHT STREAKS & DUST. Each strip gets its own random leaks and spots.
+  orange seven-segment digits, like a 90s film camera), and LIGHT LEAKS, RED LIGHT SPOTS and LIGHT STREAKS &
+  DUST, each OFF or one of ten named styles that look the same every time. The sparkle button on the main
+  screen opens them over a big live preview (it's gold while any effect is on).
 - Booth tab: screen orientation, screen-off time, countdown before each photo (off / 3 / 5 / 10 s), review auto-keep
   time, auto shut down when idle (off / 15 / 30 min / 1 / 2 / 4 h), UPDATES, Shut down (tap twice), and a reminder
   of the button presses.
 - Auto shut down works on battery and on mains or a power bank. A minute before, the screen wakes and counts down;
   any tap or press keeps the booth on. A half-finished strip is saved first.
-- WiFi tab: shows the connected network and IP, scans for nearby networks (one entry per name, strongest
+- WiFi tab: TURN WIFI OFF (tap twice; it also stops SSH and updates) and TURN WIFI ON; the booth remembers
+  which across restarts. It also shows the connected network and IP, scans for nearby networks (one entry per name, strongest
   access point), and joins one. Tap a network, type the password on the on-screen keyboard and tap CONNECT
   (or USE SAVED PASSWORD for a network the Pi already knows). The old network stays saved until the new one
   connects, so a wrong password can't leave the booth offline. Open and WPA/WPA2/WPA3 networks work;
