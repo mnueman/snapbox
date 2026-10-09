@@ -54,10 +54,15 @@ for _leftover in CAPTURE_DIR.glob("capture_*.jpg"):
 
 STRIP_W, STRIP_H = 1200, 3600
 PRINT_W, PRINT_H = STRIP_W * 2, STRIP_H
-# BIG SHEET designs: one 6x4 landscape sheet (300 dpi, the printer's own resolution), in
-# frames/sheets/. A sheet fills the whole 4x6 print by itself.
+# BIG SHEET designs fill the whole 4x6 print by themselves (300 dpi, the printer's own
+# resolution): landscape 6x4 sheets in frames/sheets/, portrait 4x6 ones in frames/portrait/.
 SHEET_W, SHEET_H = 1800, 1200
 SHEET_DIR = FRAME_DIR / "sheets"
+PSHEET_W, PSHEET_H = 1200, 1800
+PSHEET_DIR = FRAME_DIR / "portrait"
+LAYOUTS = ["strip", "sheet", "psheet"]  # the order the main screen's layout button goes through
+LAYOUT_NAMES = {"strip": "PHOTO STRIPS (2x6)", "sheet": "BIG SHEET: LANDSCAPE (6x4)",
+                "psheet": "BIG SHEET: PORTRAIT (4x6)"}
 
 DEFAULT_SLOTS = [
     (120, 180, 960, 690),
@@ -596,24 +601,34 @@ def _frame_sort_key(path):
 
 # Strips first, then BIG SHEET designs; each kind is browsed on its own.
 frames = (sorted(FRAME_DIR.glob("*.png"), key=_frame_sort_key)
-          + sorted(SHEET_DIR.glob("*.png"), key=_frame_sort_key))
+          + sorted(SHEET_DIR.glob("*.png"), key=_frame_sort_key)
+          + sorted(PSHEET_DIR.glob("*.png"), key=_frame_sort_key))
 current_frame_index = 0
 
 
 def frame_kind(frame_index):
-    return "sheet" if frames and frames[frame_index].parent == SHEET_DIR else "strip"
+    if not frames:
+        return "strip"
+    return {SHEET_DIR: "sheet", PSHEET_DIR: "psheet"}.get(frames[frame_index].parent, "strip")
 
 
 def frame_size(frame_index):
-    return (SHEET_W, SHEET_H) if frame_kind(frame_index) == "sheet" else (STRIP_W, STRIP_H)
+    return {"sheet": (SHEET_W, SHEET_H), "psheet": (PSHEET_W, PSHEET_H)}.get(frame_kind(frame_index),
+                                                                         (STRIP_W, STRIP_H))
 
 
 def current_kind():
     return frame_kind(current_frame_index)
 
 
+def image_kind(size):
+    """A saved picture's layout from its shape: strips are 1:3, sheets 3:2 either way."""
+    w, h = size
+    return "sheet" if w > h else "strip" if h >= 2.5 * w else "psheet"
+
+
 def is_sheet_size(size):
-    return size[0] > size[1]  # sheets are landscape, strips tall
+    return image_kind(size) != "strip"  # either sheet: shown whole, prints on its own
 
 live_photos = [None, None, None, None]
 live_capture_paths = [None, None, None, None]
@@ -843,7 +858,8 @@ def compose_single_strip(strip_photos, frame_index=None, include_frame=True, fx=
         right = min(canvas_w, x + w + SLOT_BLEED)
         bottom = min(canvas_h, y + h + SLOT_BLEED)
 
-        fitted = apply_effects(_fitted_slot_image(photo, right - left, bottom - top), i, fx)
+        fitted = apply_effects(_fitted_slot_image(photo, right - left, bottom - top), i, fx,
+                               frame_stamp_corner(frame_index))
         strip.alpha_composite(fitted, (left, top))
 
     if include_frame:
@@ -1226,7 +1242,14 @@ def _draw_stamp(draw, right, bottom, digit_h, text, fill):
         x += w + gap
 
 
-def _render_effects(w, h, seed, opts, text, bw):
+def _stamp_width(digit_h, text):
+    dw, t = digit_h * 0.52, digit_h * 0.13
+    gap, space = digit_h * 0.16, digit_h * 0.34
+    widths = [dw if ch.isdigit() else space if ch == " " else t * 1.4 for ch in text]
+    return sum(widths) + gap * (len(text) - 1)
+
+
+def _render_effects(w, h, seed, opts, text, bw, corner="br"):
     """(screen layer RGB or None, overlay RGBA or None) for a w x h photo. `seed` is unused
     now (every style looks the same each time); it stays so saved strips keep working."""
     stamp, leaks, spots, lines = opts
@@ -1319,7 +1342,10 @@ def _render_effects(w, h, seed, opts, text, bw):
         if overlay is None:
             overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         digit_h = max(8, h * 0.075)
-        right, bottom = w - max(w, h) * 0.06, h - h * 0.08
+        # Bottom right like a film camera, unless the frame puts something there (frame JSON "stamp").
+        margin_x, margin_y = max(w, h) * 0.06, h * 0.08
+        right = w - margin_x if corner[1] == "r" else margin_x + _stamp_width(digit_h, text) + digit_h * 0.12
+        bottom = h - margin_y if corner[0] == "b" else margin_y + digit_h
         lit = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         _draw_stamp(ImageDraw.Draw(lit), right, bottom, digit_h, text, STAMP_COLOUR + (255,))
         glow = lit.filter(ImageFilter.GaussianBlur(max(1, digit_h * 0.18)))
@@ -1336,9 +1362,30 @@ def current_fx():
             "bw": COLOUR_LOOKS.get(settings["colour"], {}).get("sat", 1.0) == 0}
 
 
-def apply_effects(img, index, fx=None):
+_stamp_corners = {}
+
+
+def frame_stamp_corner(frame_index):
+    """Where this frame wants the date stamp: "br" (bottom right, the default), "bl", "tr", "tl"."""
+    if not frames:
+        return "br"
+    sidecar = frames[frame_index].with_suffix(".json")
+    key = (sidecar, _mtime(sidecar))
+    if key not in _stamp_corners:
+        try:
+            corner = json.loads(sidecar.read_text()).get("stamp", "br")
+        except Exception:
+            corner = "br"
+        _stamp_corners[key] = corner if corner in ("br", "bl", "tr", "tl") else "br"
+    return _stamp_corners[key]
+
+
+def apply_effects(img, index, fx=None, corner=None):
     """img (a photo fitted to slot `index`) with the EFFECTS add-ons drawn on: the current
-    settings, or `fx` (from current_fx) for a saved strip."""
+    settings, or `fx` (from current_fx) for a saved strip; the date stamp goes in `corner`
+    (default: where the current frame wants it)."""
+    if corner is None:
+        corner = frame_stamp_corner(current_frame_index)
     if fx is None:
         if not effects_on():
             return img
@@ -1347,12 +1394,12 @@ def apply_effects(img, index, fx=None):
     if not any(opts):
         return img
     seed, text, bw = fx["seed"], fx["stamp"], fx["bw"]
-    key = (img.size, seed, index, opts, text, bw)
+    key = (img.size, seed, index, opts, text, bw, corner)
     layers = _effect_cache.get(key)
     if layers is None:
         if len(_effect_cache) >= 12:
             del _effect_cache[next(iter(_effect_cache))]
-        layers = _effect_cache[key] = _render_effects(*img.size, seed * 8 + index, opts, text, bw)
+        layers = _effect_cache[key] = _render_effects(*img.size, seed * 8 + index, opts, text, bw, corner)
     screen, overlay = layers
     mode = img.mode
     out = img.convert("RGB")
@@ -2027,25 +2074,35 @@ def next_frame_same_capacity(step=1):
     save_preview()
 
 
+_last_frame_of_kind = {}  # the design last used in each layout, to come back to
+
+
 def toggle_layout():
-    """PHOTO STRIPS (two 2x6 strips per print) <-> BIG SHEET (one 6x4 sheet). Photos already
-    taken stay, as many as the new design has room for."""
+    """PHOTO STRIPS -> BIG SHEET landscape -> BIG SHEET portrait -> back. Photos already taken
+    stay, as many as the new design has room for."""
     global current_frame_index
-    target = "sheet" if current_kind() == "strip" else "strip"
-    group = indices_for_kind(target)
-    if not group:
-        flash_message("NO BIG SHEET DESIGNS" if target == "sheet" else "NO STRIP DESIGNS", seconds=1.0)
+    kind = current_kind()
+    _last_frame_of_kind[kind] = current_frame_index
+    order = [k for k in LAYOUTS if indices_for_kind(k)]
+    if len(order) < 2:
+        flash_message("NO OTHER LAYOUTS", seconds=1.0)
         return
-    taken = sum(p is not None for p in live_photos)
-    # Same number of photos if there is one, else the smallest that holds what's taken.
-    fits = [i for i in group if frame_slot_count(i) == current_capacity()] or \
-        sorted((i for i in group if frame_slot_count(i) >= taken), key=frame_slot_count) or group
-    current_frame_index = fits[0]
+    target = order[(order.index(kind) + 1) % len(order)] if kind in order else order[0]
+    group = indices_for_kind(target)
+    last = _last_frame_of_kind.get(target)
+    if target == "strip":
+        # Strips always come back as four photos.
+        fours = [i for i in group if frame_slot_count(i) == 4] or group
+        current_frame_index = last if last in fours else fours[0]
+    else:
+        taken = sum(p is not None for p in live_photos)
+        fits = [i for i in group if frame_slot_count(i) >= taken] or group
+        current_frame_index = last if last in fits else fits[0]
     resize_live_photos(current_capacity())
     _clear_photo_cache()
     print(f"Layout: {target} ({frames[current_frame_index].name})")
     save_preview()
-    flash_message("BIG SHEET (6x4)" if target == "sheet" else "PHOTO STRIPS (2x6)", seconds=0.8)
+    flash_message(LAYOUT_NAMES[target], seconds=0.8)
 
 
 def toggle_strip_capacity():
@@ -2095,8 +2152,11 @@ def is_sheet_file(path):
 
 
 def make_sheet_print(sheet_img):
-    """A 6x4 sheet turned upright to fill the 4x6 print by itself."""
-    return sheet_img.convert("RGB").rotate(90, expand=True).resize((PRINT_W, PRINT_H), Image.LANCZOS)
+    """A sheet filling the 4x6 print by itself (a landscape one turned upright)."""
+    img = sheet_img.convert("RGB")
+    if image_kind(img.size) == "sheet":
+        img = img.rotate(90, expand=True)
+    return img.resize((PRINT_W, PRINT_H), Image.LANCZOS)
 
 
 def make_pair_print(left_img, right_img):
@@ -2625,13 +2685,14 @@ def _draw_sparkle_icon(draw, cx, cy, k, color):
     star(cx + 10 * k, cy - 10 * k, 6 * k)
 
 
-def _draw_layout_icon(draw, cx, cy, k, color, sheet):
-    # A tall strip beside a wide sheet; the one in use is filled.
-    strip_box = (cx - 15 * k, cy - 14 * k, cx - 7 * k, cy + 14 * k)
-    sheet_box = (cx - 3 * k, cy - 7 * k, cx + 17 * k, cy + 7 * k)
-    w = max(2, round(2 * k))
-    for box, active in ((strip_box, not sheet), (sheet_box, sheet)):
-        draw.rectangle(box, fill=color if active else None, outline=color, width=w)
+def _draw_layout_icon(draw, cx, cy, k, color, kind):
+    # A skinny strip, a wide sheet and a tall sheet; the one in use is filled.
+    boxes = {"strip": (cx - 18 * k, cy - 13 * k, cx - 12 * k, cy + 13 * k),
+             "sheet": (cx - 8 * k, cy - 6 * k, cx + 8 * k, cy + 5 * k),
+             "psheet": (cx + 12 * k, cy - 10 * k, cx + 19 * k, cy + 10 * k)}
+    w = max(2, round(1.6 * k))
+    for name, box in boxes.items():
+        draw.rectangle(box, fill=color if name == kind else None, outline=color, width=w)
 
 
 def _draw_corner_buttons(img):
@@ -2649,7 +2710,7 @@ def _draw_corner_buttons(img):
         elif kind == "gallery":
             _draw_photos_icon(draw, cx, cy, k, white)
         elif kind == "layout":
-            _draw_layout_icon(draw, cx, cy, k, white, current_kind() == "sheet")
+            _draw_layout_icon(draw, cx, cy, k, white, current_kind())
         elif kind == "fx":
             # Gold while any effect is on, so you can see at a glance.
             _draw_sparkle_icon(draw, cx, cy, k, (255, 200, 60, 255) if effects_on() else white)
@@ -3535,7 +3596,11 @@ def gallery_reframe_start():
         print(f"Could not read strip {path}: {e}")
         return
     count = len(meta.get("slots") or DEFAULT_SLOTS)
-    kind = "sheet" if is_sheet_file(path) else "strip"
+    try:
+        with Image.open(path) as saved:
+            kind = image_kind(saved.size)
+    except Exception:
+        kind = "strip"
     photos = []
     for i in range(count):
         try:

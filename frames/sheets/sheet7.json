@@ -1,11 +1,23 @@
 {
   "slots": [
     [
-      0,
-      0,
-      1800,
-      1200
+      90,
+      650,
+      513,
+      430
+    ],
+    [
+      643,
+      650,
+      513,
+      430
+    ],
+    [
+      1196,
+      650,
+      513,
+      430
     ]
   ],
-  "name": "Magazine Cover"
+  "name": "Postcard: Greetings from Paradise"
 }
