@@ -54,6 +54,10 @@ for _leftover in CAPTURE_DIR.glob("capture_*.jpg"):
 
 STRIP_W, STRIP_H = 1200, 3600
 PRINT_W, PRINT_H = STRIP_W * 2, STRIP_H
+# BIG SHEET designs: one 6x4 landscape sheet (300 dpi, the printer's own resolution), in
+# frames/sheets/. A sheet fills the whole 4x6 print by itself.
+SHEET_W, SHEET_H = 1800, 1200
+SHEET_DIR = FRAME_DIR / "sheets"
 
 DEFAULT_SLOTS = [
     (120, 180, 960, 690),
@@ -590,8 +594,26 @@ def _frame_sort_key(path):
     return (int(digits) if digits else 0, path.name)
 
 
-frames = sorted(FRAME_DIR.glob("*.png"), key=_frame_sort_key)
+# Strips first, then BIG SHEET designs; each kind is browsed on its own.
+frames = (sorted(FRAME_DIR.glob("*.png"), key=_frame_sort_key)
+          + sorted(SHEET_DIR.glob("*.png"), key=_frame_sort_key))
 current_frame_index = 0
+
+
+def frame_kind(frame_index):
+    return "sheet" if frames and frames[frame_index].parent == SHEET_DIR else "strip"
+
+
+def frame_size(frame_index):
+    return (SHEET_W, SHEET_H) if frame_kind(frame_index) == "sheet" else (STRIP_W, STRIP_H)
+
+
+def current_kind():
+    return frame_kind(current_frame_index)
+
+
+def is_sheet_size(size):
+    return size[0] > size[1]  # sheets are landscape, strips tall
 
 live_photos = [None, None, None, None]
 live_capture_paths = [None, None, None, None]
@@ -680,7 +702,7 @@ def load_frame_image(frame_index):
 
     try:
         frame = Image.open(frame_path).convert("RGBA")
-        frame = frame.resize((STRIP_W, STRIP_H), Image.LANCZOS)
+        frame = frame.resize(frame_size(frame_index), Image.LANCZOS)
     except Exception as e:
         # A damaged frame file shows the photos without it instead of crashing the booth.
         print(f"Could not load frame {frame_path.name}: {e}")
@@ -750,8 +772,13 @@ def strip_is_full():
     return current_slot >= current_capacity() and current_capacity() > 0
 
 
-def indices_for_capacity(capacity):
-    return [i for i in range(len(frames)) if frame_slot_count(i) == capacity]
+def indices_for_kind(kind=None):
+    kind = kind or current_kind()
+    return [i for i in range(len(frames)) if frame_kind(i) == kind]
+
+
+def indices_for_capacity(capacity, kind=None):
+    return [i for i in indices_for_kind(kind) if frame_slot_count(i) == capacity]
 
 
 def delete_capture_file(path):
@@ -797,10 +824,10 @@ def _fitted_slot_image(photo, bleed_w, bleed_h):
 
 
 def compose_single_strip(strip_photos, frame_index=None, include_frame=True, fx=None):
-    strip = Image.new("RGBA", (STRIP_W, STRIP_H), "white")
-
     if frame_index is None:
         frame_index = current_frame_index
+    canvas_w, canvas_h = frame_size(frame_index)
+    strip = Image.new("RGBA", (canvas_w, canvas_h), "white")
 
     slots = frame_slots(frame_index)
 
@@ -813,8 +840,8 @@ def compose_single_strip(strip_photos, frame_index=None, include_frame=True, fx=
         x, y, w, h = slots[i]
         left = max(0, x - SLOT_BLEED)
         top = max(0, y - SLOT_BLEED)
-        right = min(STRIP_W, x + w + SLOT_BLEED)
-        bottom = min(STRIP_H, y + h + SLOT_BLEED)
+        right = min(canvas_w, x + w + SLOT_BLEED)
+        bottom = min(canvas_h, y + h + SLOT_BLEED)
 
         fitted = apply_effects(_fitted_slot_image(photo, right - left, bottom - top), i, fx)
         strip.alpha_composite(fitted, (left, top))
@@ -883,9 +910,18 @@ def strip_halves(slots):
     return [(0, 0, STRIP_W, cut), (0, cut, STRIP_W, STRIP_H)]
 
 
-def display_layout(slots=None):
-    """[(strip box, UI box)] pairs: where each piece of the strip goes on screen."""
+def display_layout(slots=None, size=(STRIP_W, STRIP_H)):
+    """[(strip box, UI box)] pairs: where each piece of the strip (or sheet) goes on screen."""
     ui_w, ui_h = ui_size()
+
+    if is_sheet_size(size):
+        # A sheet is shown whole, beside the round buttons.
+        left = ICON_SIZE + 2 * ICON_MARGIN
+        pad = LANDSCAPE_CELL_PAD
+        scale = min((ui_w - left - 2 * pad) / size[0], (ui_h - 2 * pad) / size[1])
+        sw, sh = max(1, int(size[0] * scale)), max(1, int(size[1] * scale))
+        dest = (left + (ui_w - left - sw) // 2, (ui_h - sh) // 2, sw, sh)
+        return [((0, 0) + tuple(size), dest)]
 
     if not is_landscape() or not slots:
         scale = min(ui_w / STRIP_W, ui_h / STRIP_H)
@@ -974,7 +1010,7 @@ def compose_display():
         strip = compose_single_strip(live_photos)
         slots = current_frame_slots()
 
-    return render_strip_to_ui(strip, display_layout(slots), Image.LANCZOS)
+    return render_strip_to_ui(strip, display_layout(slots, strip.size), Image.LANCZOS)
 
 
 def should_show_live_preview():
@@ -1018,7 +1054,8 @@ def _ensure_live_preview_base():
         _invalidate_live_preview()
         return False
 
-    layout = display_layout(slots)
+    size = frame_size(current_frame_index)
+    layout = display_layout(slots, size)
     photos_strip = compose_single_strip(live_photos, include_frame=False)
     photos_canvas = render_strip_to_ui(photos_strip, layout, Image.BILINEAR)
 
@@ -1031,8 +1068,8 @@ def _ensure_live_preview_base():
     slot_box = map_strip_box_to_ui((
         max(0, x - SLOT_BLEED),
         max(0, y - SLOT_BLEED),
-        min(STRIP_W, x + w + SLOT_BLEED),
-        min(STRIP_H, y + h + SLOT_BLEED),
+        min(size[0], x + w + SLOT_BLEED),
+        min(size[1], y + h + SLOT_BLEED),
     ), layout)
     if slot_box is None:
         _invalidate_live_preview()
@@ -1966,7 +2003,10 @@ def next_frame_same_capacity(step=1):
         return
 
     capacity = current_capacity()
-    group = indices_for_capacity(capacity)
+    # Before the first photo every design of this kind is on offer; after it, only the ones
+    # with room for exactly as many photos.
+    started = any(p is not None for p in live_photos)
+    group = indices_for_capacity(capacity) if started else indices_for_kind()
     if not group:
         print(f"No frames with {capacity} slots.")
         return
@@ -1976,12 +2016,36 @@ def next_frame_same_capacity(step=1):
         current_frame_index = group[(pos + step) % len(group)]
     except ValueError:
         current_frame_index = group[0]
+    if current_capacity() != capacity:
+        resize_live_photos(current_capacity())
+        _clear_photo_cache()
 
     print(
         f"Changed frame to: {frames[current_frame_index].name} "
         f"(slots={current_capacity()})"
     )
     save_preview()
+
+
+def toggle_layout():
+    """PHOTO STRIPS (two 2x6 strips per print) <-> BIG SHEET (one 6x4 sheet). Photos already
+    taken stay, as many as the new design has room for."""
+    global current_frame_index
+    target = "sheet" if current_kind() == "strip" else "strip"
+    group = indices_for_kind(target)
+    if not group:
+        flash_message("NO BIG SHEET DESIGNS" if target == "sheet" else "NO STRIP DESIGNS", seconds=1.0)
+        return
+    taken = sum(p is not None for p in live_photos)
+    # Same number of photos if there is one, else the smallest that holds what's taken.
+    fits = [i for i in group if frame_slot_count(i) == current_capacity()] or \
+        sorted((i for i in group if frame_slot_count(i) >= taken), key=frame_slot_count) or group
+    current_frame_index = fits[0]
+    resize_live_photos(current_capacity())
+    _clear_photo_cache()
+    print(f"Layout: {target} ({frames[current_frame_index].name})")
+    save_preview()
+    flash_message("BIG SHEET (6x4)" if target == "sheet" else "PHOTO STRIPS (2x6)", seconds=0.8)
 
 
 def toggle_strip_capacity():
@@ -1992,23 +2056,16 @@ def toggle_strip_capacity():
         return
 
     capacity = current_capacity()
-    target = 3 if capacity == 4 else 4
-    group = indices_for_capacity(target)
-    if not group:
-        print(f"No {target}-picture frames available yet.")
-        flash_message(f"NO {target}-PIC FRAMES", seconds=1.0)
+    counts = sorted({frame_slot_count(i) for i in indices_for_kind()})
+    if len(counts) < 2:
+        flash_message("NO OTHER PHOTO COUNTS", seconds=1.0)
         return
-
-    if capacity == 4 and target == 3 and current_slot >= 4:
-        current_slot = 3
-        live_photos[3] = None
-        delete_capture_file(live_capture_paths[3])
-        live_capture_paths[3] = None
-        _clear_photo_cache()
-        print("Removed 4th photo to fit 3-picture frame.")
+    target = counts[(counts.index(capacity) + 1) % len(counts)] if capacity in counts else counts[0]
+    group = indices_for_capacity(target)
 
     current_frame_index = group[0]
-    resize_live_photos(target)
+    resize_live_photos(target)  # photos past the new count are dropped
+    _clear_photo_cache()
 
     print(
         f"Switched to {target}-picture frames: {frames[current_frame_index].name}"
@@ -2027,6 +2084,19 @@ def load_strip_image(path):
     if strip.size != (STRIP_W, STRIP_H):
         strip = strip.resize((STRIP_W, STRIP_H), Image.LANCZOS)
     return strip
+
+
+def is_sheet_file(path):
+    try:
+        with Image.open(path) as img:
+            return is_sheet_size(img.size)
+    except Exception:
+        return False
+
+
+def make_sheet_print(sheet_img):
+    """A 6x4 sheet turned upright to fill the 4x6 print by itself."""
+    return sheet_img.convert("RGB").rotate(90, expand=True).resize((PRINT_W, PRINT_H), Image.LANCZOS)
 
 
 def make_pair_print(left_img, right_img):
@@ -2126,15 +2196,27 @@ _print_busy = threading.Event()
 
 
 def _build_and_send_print(paths):
-    strips = [load_strip_image(p) for p in paths]
-    if any(strip is None for strip in strips):
-        return False
+    if is_sheet_file(paths[0]):
+        try:
+            sheet = make_sheet_print(Image.open(paths[0]))  # a sheet prints on its own
+        except Exception as e:
+            print(f"Could not open saved sheet: {e}")
+            return False
+        build = sheet
+    else:
+        if is_sheet_file(paths[1]):
+            print("A sheet can't share a print with a strip.")
+            return False
+        strips = [load_strip_image(p) for p in paths]
+        if any(strip is None for strip in strips):
+            return False
+        build = make_pair_print(*strips)
 
     fd, tmp = tempfile.mkstemp(prefix="print_", suffix=".jpg")
     os.close(fd)
     tmp_path = Path(tmp)
     try:
-        make_pair_print(*strips).save(tmp_path, quality=95)
+        build.save(tmp_path, quality=95)
         print(f"Built print: {' + '.join(Path(p).name for p in paths)} -> {tmp_path}")
         return send_to_printer(tmp_path)
     finally:
@@ -2504,7 +2586,7 @@ ICON_MARGIN = 7
 def corner_buttons():
     """[(kind, (x0, y0, x1, y1))] in UI coordinates: settings, review, then quick effects (or in
     browse mode the camera)."""
-    kinds = ["menu", "gallery"] + (["camera"] if mode == "browse" else ["fx"])
+    kinds = ["menu", "gallery"] + (["camera"] if mode == "browse" else ["fx", "layout"])
     buttons = []
     for i, kind in enumerate(kinds):
         top = ICON_MARGIN + i * (ICON_SIZE + ICON_GAP)
@@ -2543,6 +2625,15 @@ def _draw_sparkle_icon(draw, cx, cy, k, color):
     star(cx + 10 * k, cy - 10 * k, 6 * k)
 
 
+def _draw_layout_icon(draw, cx, cy, k, color, sheet):
+    # A tall strip beside a wide sheet; the one in use is filled.
+    strip_box = (cx - 15 * k, cy - 14 * k, cx - 7 * k, cy + 14 * k)
+    sheet_box = (cx - 3 * k, cy - 7 * k, cx + 17 * k, cy + 7 * k)
+    w = max(2, round(2 * k))
+    for box, active in ((strip_box, not sheet), (sheet_box, sheet)):
+        draw.rectangle(box, fill=color if active else None, outline=color, width=w)
+
+
 def _draw_corner_buttons(img):
     if lcd is None:
         return
@@ -2557,6 +2648,8 @@ def _draw_corner_buttons(img):
             _draw_gear(draw, cx, cy, ICON_SIZE * 0.36, white, (0, 0, 0, 255))
         elif kind == "gallery":
             _draw_photos_icon(draw, cx, cy, k, white)
+        elif kind == "layout":
+            _draw_layout_icon(draw, cx, cy, k, white, current_kind() == "sheet")
         elif kind == "fx":
             # Gold while any effect is on, so you can see at a glance.
             _draw_sparkle_icon(draw, cx, cy, k, (255, 200, 60, 255) if effects_on() else white)
@@ -3442,13 +3535,14 @@ def gallery_reframe_start():
         print(f"Could not read strip {path}: {e}")
         return
     count = len(meta.get("slots") or DEFAULT_SLOTS)
+    kind = "sheet" if is_sheet_file(path) else "strip"
     photos = []
     for i in range(count):
         try:
             photos.append(Image.open(strip_photos_dir(path) / f"photo{i}.jpg").convert("RGB"))
         except Exception:
             photos.append(None)
-    choices = indices_for_capacity(count)
+    choices = indices_for_capacity(count, kind)
     if not choices or not any(photos):
         flash_message("NO FRAMES FIT THIS STRIP", seconds=1.0)
         return
@@ -3501,6 +3595,9 @@ def gallery_reframe_cancel():
 def gallery_pair_start():
     """MIX 2 STRIPS: this strip goes on the left; swipe to the one for the right."""
     global gallery_pair_first
+    if gallery_paths and is_sheet_file(gallery_paths[gallery_index]):
+        flash_message("BIG SHEETS PRINT\nON THEIR OWN", seconds=1.0)
+        return
     if gallery_paths:
         gallery_pair_first = gallery_paths[gallery_index]
         if len(gallery_paths) > 1:
@@ -3515,6 +3612,9 @@ def gallery_pair_cancel():
 def gallery_pair_print():
     global gallery_pair_first
     if gallery_paths and gallery_pair_first is not None:
+        if is_sheet_file(gallery_paths[gallery_index]):
+            flash_message("PICK A STRIP:\nBIG SHEETS PRINT ALONE", seconds=1.0)
+            return
         start_print(gallery_pair_first, gallery_paths[gallery_index])
         gallery_pair_first = None
 
@@ -3589,7 +3689,7 @@ def _reframe_view(w, h, halves):
         if len(r["views"]) > 6:
             r["views"].clear()
         strip = _reframe_strip(frame_index)
-        if halves:
+        if halves and frame_kind(frame_index) == "strip":
             r["views"][key] = _fold_strip(strip, frame_slots(frame_index), w, h)
         else:
             strip.thumbnail((w, h), Image.BILINEAR)
@@ -3605,6 +3705,7 @@ def _gallery_thumb(path, w, h, halves=False):
     if thumb is None:
         try:
             src = Image.open(path)
+            halves = halves and not is_sheet_size(src.size)  # a sheet is shown whole
             slots = saved_strip_slots(src) if halves else None
             if not halves:
                 src.draft("RGB", (w, h))  # JPEG decodes straight to a small size: fast
@@ -3649,7 +3750,8 @@ def _draw_pair_sheet(img, draw, area, first, second, arrow_buttons=None):
     same = first == second
     for n, (path, label, colour) in enumerate((
             (first, "1ST (KEPT)", MENU_ACCENT),
-            (second, "SAME = 2 COPIES" if same else "\u25c0 2ND: SWIPE \u25b6", (90, 200, 255)))):
+            (second, "BIG SHEET: CAN'T MIX" if is_sheet_file(second) else
+             "SAME = 2 COPIES" if same else "\u25c0 2ND: SWIPE \u25b6", (90, 200, 255)))):
         x = sx + pad + n * (strip_w + gap)
         y = sy + pad
         thumb = _gallery_thumb(path, strip_w, strip_h)
@@ -3800,9 +3902,12 @@ def render_gallery():
             # CHANGE FRAME needs the strip's kept photos (strips saved before this version had none).
             confirming = time.monotonic() < _gallery_delete_until
             reframable = can_reframe(gallery_paths[gallery_index])
+            sheet = is_sheet_file(gallery_paths[gallery_index])
+            off = dict(fill=(40, 40, 46), text_fill=(90, 90, 98))
             keys = [
-                ("PRINTING..." if printing else "PRINT\n2 COPIES", gallery_print, busy if printing else go),
-                ("MIX\n2 STRIPS", gallery_pair_start, dict(fill=(40, 120, 160))),
+                ("PRINTING..." if printing else "PRINT\nSHEET" if sheet else "PRINT\n2 COPIES",
+                 gallery_print, busy if printing else go),
+                ("MIX\n2 STRIPS", gallery_pair_start, off if sheet else dict(fill=(40, 120, 160))),
                 ("CHANGE\nFRAME", gallery_reframe_start,
                  dict(fill=(110, 70, 160)) if reframable else dict(fill=(40, 40, 46), text_fill=(90, 90, 98))),
                 ("DELETE?\nTAP AGAIN" if confirming else "DELETE", gallery_delete,
@@ -4269,7 +4374,7 @@ def handle_tap(point):
         for kind, (x0, y0, x1, y1) in corner_buttons():
             if x0 - pad <= x <= x1 + pad and y0 - pad <= y <= y1 + pad:
                 {"menu": open_menu, "gallery": open_gallery, "camera": enter_creation_mode,
-                 "fx": open_quick_effects}[kind]()
+                 "fx": open_quick_effects, "layout": toggle_layout}[kind]()
                 return
 
 
