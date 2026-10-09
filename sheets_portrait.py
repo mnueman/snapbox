@@ -8,6 +8,7 @@ from all_frames import font, rgba, bold, star_points, army_star, spaced_text, ca
     ARMY_GOLD, ARMY_BLACK, ARMY_WHITE, hibiscus, sparkle, heart, bowtie, dress, flower, leaf, dog_tag, ball_chain, \
     WOODLAND_BASE, WOODLAND_LAYERS
 from sheet_kit import *
+import realistic
 import sheets_landscape as SL
 
 W, H = P
@@ -761,4 +762,6 @@ DESIGNS = [
     ("The Atkinsons: The Gown", atk_gown), ("The Atkinsons: Deco Ivory", atk_deco_ivory),
     ("The Atkinsons: Garden Party", atk_garden), ("The Atkinsons: Champagne", atk_champagne),
     ("The Atkinsons: Just Married", atk_just_married),
+    ("Realistic: Space", lambda: realistic.space(P)), ("Realistic: Ocean", lambda: realistic.ocean(P)),
+    ("Realistic: Plants", lambda: realistic.plants(P)), ("Realistic: Outdoors", lambda: realistic.outdoors(P)),
 ]
