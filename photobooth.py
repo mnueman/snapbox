@@ -147,12 +147,69 @@ CAMERA_SETTINGS = [
         (True, "ON (LIKE A MIRROR)"), (False, "OFF"),
     ], True),
 ]
-# Vintage add-ons, drawn on every photo on top of any frame; they all stack.
+# Vintage add-ons, drawn on every photo on top of any frame; they all stack. Each style always
+# looks the same (same place, same strength) so you know what you'll get. Positions and sizes
+# are fractions of the photo (sizes of its shorter side); colours are (r, g, b); k = strength.
+_ORANGE, _RED, _GOLD, _YELLOW, _PINK = (255, 96, 20), (255, 38, 26), (255, 168, 40), (255, 214, 120), (255, 70, 120)
+LEAK_STYLES = [
+    # (name, edge band (side, width, k) or None, [(x, y, size x, size y, colour, k)])
+    ("SOFT LEFT GLOW", ("left", 0.05, 0.45), [(-0.02, 0.5, 0.4, 0.7, _ORANGE, 0.6)]),
+    ("WARM RIGHT EDGE", ("right", 0.08, 0.8),
+     [(1.0, 0.3, 0.35, 0.5, _ORANGE, 0.9), (1.02, 0.78, 0.3, 0.4, _RED, 0.8)]),
+    ("GOLDEN TOP", ("top", 0.06, 0.6), [(0.3, -0.04, 0.5, 0.3, _GOLD, 0.9), (0.78, 0.0, 0.4, 0.25, _YELLOW, 0.7)]),
+    ("RED CORNER", None, [(0.0, 0.0, 0.4, 0.4, _RED, 1.0), (0.14, 0.06, 0.22, 0.22, _ORANGE, 0.8)]),
+    ("SUNSET BOTTOM", ("bottom", 0.07, 0.7),
+     [(0.25, 1.03, 0.5, 0.3, _ORANGE, 0.9), (0.72, 1.05, 0.45, 0.3, _PINK, 0.7)]),
+    ("BOTH EDGES", None, [(-0.03, 0.4, 0.3, 0.6, _ORANGE, 0.8), (1.03, 0.62, 0.3, 0.6, _RED, 0.8)]),
+    ("BURNT BAND", ("left", 0.15, 1.0), [(0.05, 0.3, 0.3, 0.5, _RED, 0.9), (0.04, 0.8, 0.25, 0.4, _GOLD, 0.8)]),
+    ("PEACH WASH", None, [(0.55, 0.5, 0.9, 0.9, (255, 150, 90), 0.35), (1.0, 0.2, 0.35, 0.4, _ORANGE, 0.6)]),
+    ("FIERY CORNERS", None, [(0, 0, 0.3, 0.3, _RED, 0.9), (1, 0, 0.3, 0.3, _ORANGE, 0.9),
+                             (0, 1, 0.3, 0.3, _GOLD, 0.8), (1, 1, 0.3, 0.3, _RED, 0.9)]),
+    ("FULL BURN", ("right", 0.2, 1.0), [(0.95, 0.5, 0.55, 0.9, _RED, 1.0), (0.82, 0.25, 0.35, 0.4, _ORANGE, 1.0),
+                                        (0.8, 0.8, 0.35, 0.4, _YELLOW, 0.9)]),
+]
+SPOT_STYLES = [
+    # (name, [("orb", x, y, radius, colour, k) or ("ring", x, y, radius, colour, k)])
+    ("SMALL RED ORB", [("orb", 0.72, 0.3, 0.09, _RED, 0.9)]),
+    ("TWO RED ORBS", [("orb", 0.25, 0.35, 0.1, _RED, 0.85), ("orb", 0.7, 0.66, 0.08, _RED, 0.8)]),
+    ("BIG SOFT RED", [("orb", 0.6, 0.45, 0.24, _RED, 0.65)]),
+    ("ORANGE FLARE", [("orb", 0.8, 0.2, 0.13, _ORANGE, 1.0), ("orb", 0.64, 0.4, 0.06, _ORANGE, 0.7),
+                      ("orb", 0.5, 0.58, 0.035, _ORANGE, 0.55)]),
+    ("RED RING", [("ring", 0.5, 0.5, 0.3, _RED, 0.9)]),
+    ("ORB IN A RING", [("orb", 0.35, 0.42, 0.1, _RED, 0.9), ("ring", 0.35, 0.42, 0.21, _RED, 0.8)]),
+    ("CORNER HOTSPOT", [("orb", 0.96, 0.06, 0.28, (255, 60, 30), 1.0)]),
+    ("FLARE CHAIN", [("orb", 0.18, 0.2, 0.1, _RED, 0.9), ("orb", 0.36, 0.38, 0.065, _ORANGE, 0.75),
+                     ("orb", 0.54, 0.56, 0.045, _RED, 0.65), ("orb", 0.72, 0.74, 0.03, _ORANGE, 0.55)]),
+    ("PINK HAZE", [("orb", 0.3, 0.3, 0.18, _PINK, 0.6), ("orb", 0.72, 0.6, 0.2, _PINK, 0.5),
+                   ("orb", 0.5, 0.85, 0.12, _RED, 0.5)]),
+    ("STROBE BURST", [("orb", 0.62, 0.38, 0.16, (255, 60, 30), 1.0), ("ring", 0.62, 0.38, 0.34, _RED, 0.85),
+                      ("orb", 0.2, 0.75, 0.07, _RED, 0.8), ("orb", 0.85, 0.85, 0.05, _ORANGE, 0.7)]),
+]
+LINE_STYLES = [
+    # (name, {dust: specks, hairs, scratches: thin white lines, streaks: [(x, width, k)]})
+    ("LIGHT DUST", {"dust": 25}),
+    ("HEAVY DUST", {"dust": 90, "big": True}),
+    ("ONE STREAK", {"streaks": [(0.3, 0.008, 0.9)]}),
+    ("TWO STREAKS", {"streaks": [(0.18, 0.006, 0.8), (0.78, 0.01, 0.9)]}),
+    ("FINE SCRATCHES", {"scratches": 6}),
+    ("HAIR & DUST", {"hairs": 6, "dust": 40}),
+    ("STREAK & DUST", {"streaks": [(0.65, 0.009, 0.85)], "dust": 40, "hairs": 2}),
+    ("EDGE STREAKS", {"streaks": [(0.03, 0.02, 0.9), (0.97, 0.02, 0.9)]}),
+    ("OLD MOVIE", {"scratches": 8, "dust": 60, "hairs": 3, "streaks": [(0.44, 0.004, 0.5)]}),
+    ("WORN OUT", {"scratches": 10, "dust": 120, "big": True, "hairs": 8,
+                  "streaks": [(0.12, 0.012, 1.0), (0.58, 0.006, 0.7), (0.9, 0.015, 0.9)]}),
+]
+
+
+def _style_choices(styles):
+    return [(0, "OFF")] + [(i + 1, f"{i + 1}. {name}") for i, (name, *_) in enumerate(styles)]
+
+
 EFFECT_SETTINGS = [
     ("stamp", "DATE STAMP", [(False, "OFF"), (True, "ON")], False),
-    ("leaks", "LIGHT LEAKS (WARM GLOW)", [(0, "OFF"), (1, "SUBTLE"), (2, "STRONG")], 0),
-    ("spots", "RED LIGHT SPOTS", [(0, "OFF"), (1, "SUBTLE"), (2, "STRONG")], 0),
-    ("lines", "LIGHT STREAKS & DUST", [(0, "OFF"), (1, "SUBTLE"), (2, "STRONG")], 0),
+    ("leaks", "LIGHT LEAKS (WARM GLOW)", _style_choices(LEAK_STYLES), 0),
+    ("spots", "RED LIGHT SPOTS", _style_choices(SPOT_STYLES), 0),
+    ("lines", "LIGHT STREAKS & DUST", _style_choices(LINE_STYLES), 0),
 ]
 # Short names for the setting buttons along the full-screen preview.
 SETTING_SHORT = {"brightness": "BRIGHT", "colour": "COLOUR", "motion": "MOVE", "focus": "FOCUS",
@@ -1078,7 +1135,7 @@ STAMP_COLOUR = (255, 138, 28)
 # Seven-segment digits, like the date imprint of a 90s film camera.
 SEGMENTS = {"0": "abcdef", "1": "bc", "2": "abdeg", "3": "abcdg", "4": "bcfg", "5": "acdfg",
             "6": "acdefg", "7": "abc", "8": "abcdefg", "9": "abcdfg"}
-strip_seed = random.randrange(1 << 30)  # new for every strip: each strip's leaks differ
+strip_seed = random.randrange(1 << 30)  # saved with each strip (older versions varied by it)
 _effect_cache = {}
 
 
@@ -1133,102 +1190,89 @@ def _draw_stamp(draw, right, bottom, digit_h, text, fill):
 
 
 def _render_effects(w, h, seed, opts, text, bw):
-    """(screen layer RGB or None, overlay RGBA or None) for a w x h photo."""
+    """(screen layer RGB or None, overlay RGBA or None) for a w x h photo. `seed` is unused
+    now (every style looks the same each time); it stays so saved strips keep working."""
     stamp, leaks, spots, lines = opts
-    rnd = random.Random(seed)
     m = min(w, h)
     screen = None
     # Soft light is drawn small and blurred, then enlarged: fast, and smooth anyway.
     sw, sh = max(16, w // 6), max(16, h // 6)
     sm = min(sw, sh)
 
-    def soft_layer():
-        return Image.new("RGB", (sw, sh), "black")
+    def add(layer):
+        nonlocal screen
+        screen = layer if screen is None else ImageChops.screen(screen, layer)
+
+    def tint(colour, k):
+        return tuple(int(v * k) for v in colour)
 
     if leaks:
-        k = (0.55, 1.0)[leaks - 1]
-        layer = soft_layer()
+        band, blobs = LEAK_STYLES[leaks - 1][1:]
+        layer = Image.new("RGB", (sw, sh), "black")
         d = ImageDraw.Draw(layer)
-        side = rnd.choice(["left", "right", "top", "bottom", "corner"])
-        palette = [(255, 92, 20), (255, 44, 30), (255, 168, 40), (255, 214, 120)]
-        for _ in range(rnd.randint(3, 5)):
-            r = sm * rnd.uniform(0.25, 0.6)
-            if side == "left":
-                cx, cy = rnd.uniform(-0.15, 0.12) * sw, rnd.uniform(0, 1) * sh
-            elif side == "right":
-                cx, cy = rnd.uniform(0.88, 1.15) * sw, rnd.uniform(0, 1) * sh
-            elif side == "top":
-                cx, cy = rnd.uniform(0, 1) * sw, rnd.uniform(-0.2, 0.12) * sh
-            elif side == "bottom":
-                cx, cy = rnd.uniform(0, 1) * sw, rnd.uniform(0.88, 1.2) * sh
-            else:
-                cx, cy = rnd.uniform(-0.1, 0.3) * sw, rnd.uniform(-0.1, 0.3) * sh
-            c = tuple(int(v * k * rnd.uniform(0.7, 1.0)) for v in rnd.choice(palette))
-            d.ellipse((cx - r * 1.3, cy - r, cx + r * 1.3, cy + r), fill=c)
-        # The classic burnt band along the edge the film was exposed from.
-        band = sm * rnd.uniform(0.06, 0.14)
-        c = tuple(int(v * k) for v in (255, 70, 20))
-        box = {"left": (0, 0, band, sh), "right": (sw - band, 0, sw, sh), "top": (0, 0, sw, band),
-               "bottom": (0, sh - band, sw, sh), "corner": (0, 0, band, sh)}[side]
-        d.rectangle(box, fill=c)
-        screen = layer.filter(ImageFilter.GaussianBlur(sm * 0.14))
+        for x, y, rx, ry, colour, k in blobs:
+            cx, cy, ax, ay = x * sw, y * sh, rx * sm, ry * sm
+            d.ellipse((cx - ax, cy - ay, cx + ax, cy + ay), fill=tint(colour, k))
+        if band:
+            side, size, k = band
+            b = size * sm
+            box = {"left": (0, 0, b, sh), "right": (sw - b, 0, sw, sh), "top": (0, 0, sw, b),
+                   "bottom": (0, sh - b, sw, sh)}[side]
+            d.rectangle(box, fill=tint((255, 70, 20), k))
+        add(layer.filter(ImageFilter.GaussianBlur(sm * 0.14)).resize((w, h), Image.BILINEAR))
 
     if spots:
-        k = (0.6, 1.0)[spots - 1]
-        layer = soft_layer()
-        d = ImageDraw.Draw(layer)
-        for i in range(rnd.randint(1, 2) + spots - 1):
-            cx, cy = rnd.uniform(0.1, 0.9) * sw, rnd.uniform(0.1, 0.9) * sh
-            r = sm * rnd.uniform(0.07, 0.17)
-            red = tuple(int(v * k) for v in rnd.choice([(255, 30, 20), (255, 60, 30), (230, 20, 40)]))
-            d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=red)
-        glow = layer.filter(ImageFilter.GaussianBlur(sm * 0.05))
-        # A thin ring, like the red circle a strobe leaves on the lens.
-        rings = soft_layer()
-        rd = ImageDraw.Draw(rings)
-        cx, cy = rnd.uniform(0.2, 0.8) * sw, rnd.uniform(0.2, 0.8) * sh
-        r = sm * rnd.uniform(0.18, 0.3)
-        rd.ellipse((cx - r, cy - r, cx + r, cy + r), outline=tuple(int(v * k) for v in (255, 50, 30)),
-                   width=max(1, int(sm * 0.02)))
-        glow = ImageChops.add(glow, rings.filter(ImageFilter.GaussianBlur(sm * 0.008)))
-        screen = glow if screen is None else ImageChops.screen(screen, glow)
-
-    if screen is not None:
-        screen = screen.resize((w, h), Image.BILINEAR)
+        items = SPOT_STYLES[spots - 1][1]
+        orbs = Image.new("RGB", (sw, sh), "black")
+        od = ImageDraw.Draw(orbs)
+        rings = None
+        for kind, x, y, r, colour, k in items:
+            if kind == "orb":
+                cx, cy, rr = x * sw, y * sh, r * sm
+                od.ellipse((cx - rr, cy - rr, cx + rr, cy + rr), fill=tint(colour, k))
+            else:
+                # Rings are drawn at full size so they stay perfectly round and smooth.
+                if rings is None:
+                    rings = Image.new("RGB", (w, h), "black")
+                cx, cy, rr = x * w, y * h, r * m
+                ImageDraw.Draw(rings).ellipse((cx - rr, cy - rr, cx + rr, cy + rr), outline=tint(colour, k),
+                                              width=max(2, int(m * 0.016)))
+        add(orbs.filter(ImageFilter.GaussianBlur(sm * 0.05)).resize((w, h), Image.BILINEAR))
+        if rings is not None:
+            add(rings.filter(ImageFilter.GaussianBlur(max(1.0, m * 0.006))))
 
     overlay = None
     if lines:
-        k = (0.6, 1.0)[lines - 1]
-        streaks = Image.new("RGB", (w, h), "black")
-        sd = ImageDraw.Draw(streaks)
-        for _ in range(rnd.randint(1, 2) + lines - 1):
-            x = rnd.uniform(0.05, 0.95) * w
-            top, bottom = (0, h) if rnd.random() < 0.6 else sorted(rnd.uniform(0, 1) * h for _ in range(2))
-            c = tuple(int(v * k * rnd.uniform(0.6, 1.0)) for v in (255, 200, 150))
-            sd.line((x, top, x + rnd.uniform(-0.02, 0.02) * w, bottom), fill=c,
-                    width=max(1, int(m * rnd.uniform(0.004, 0.012))))
-        streaks = streaks.filter(ImageFilter.GaussianBlur(max(0.5, m * 0.003)))
-        screen = streaks if screen is None else ImageChops.screen(screen, streaks)
+        spec = LINE_STYLES[lines - 1][1]
+        rnd = random.Random(1000 + lines)  # fixed: the dust lands in the same places every time
+        if spec.get("streaks"):
+            streaks = Image.new("RGB", (w, h), "black")
+            sd = ImageDraw.Draw(streaks)
+            for x, width, k in spec["streaks"]:
+                sd.line((x * w, 0, x * w + 0.01 * w, h), fill=tint((255, 200, 150), k),
+                        width=max(1, int(m * width)))
+            add(streaks.filter(ImageFilter.GaussianBlur(max(0.5, m * 0.003))))
         overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         od = ImageDraw.Draw(overlay)
-        for _ in range(int(40 * k)):  # dust: little dark and light specks
+        big = 2.0 if spec.get("big") else 1.0
+        for _ in range(spec.get("dust", 0)):  # little dark and light specks
             x, y = rnd.uniform(0, w), rnd.uniform(0, h)
-            r = m * rnd.uniform(0.001, 0.004)
+            r = m * rnd.uniform(0.001, 0.004) * big
             c = (20, 16, 12, rnd.randint(90, 200)) if rnd.random() < 0.6 else (255, 250, 240, rnd.randint(70, 160))
             od.ellipse((x - r, y - r, x + r, y + r), fill=c)
-        for _ in range(int(5 * k)):  # hairs and fine scratches
+        for _ in range(spec.get("hairs", 0)):  # hairs on the negative
             x, y = rnd.uniform(0, w), rnd.uniform(0, h)
-            pts = [(x, y)]
-            ang = rnd.uniform(0, 2 * math.pi)
+            pts, ang = [(x, y)], rnd.uniform(0, 2 * math.pi)
             for _ in range(5):
                 ang += rnd.uniform(-0.7, 0.7)
                 step = m * rnd.uniform(0.01, 0.025)
                 x, y = x + step * math.cos(ang), y + step * math.sin(ang)
                 pts.append((x, y))
-            od.line(pts, fill=(25, 20, 15, rnd.randint(70, 150)), width=max(1, int(m * 0.0025)))
-        for _ in range(int(2 * k)):  # long vertical scratches in the emulsion
+            od.line(pts, fill=(25, 20, 15, rnd.randint(90, 160)), width=max(1, int(m * 0.0025)))
+        for _ in range(spec.get("scratches", 0)):  # long vertical scratches in the emulsion
             x = rnd.uniform(0, w)
-            od.line((x, 0, x + rnd.uniform(-0.01, 0.01) * w, h), fill=(255, 255, 255, rnd.randint(40, 90)),
+            top, bottom = sorted((rnd.uniform(-0.2, 0.5) * h, rnd.uniform(0.5, 1.2) * h))
+            od.line((x, top, x + rnd.uniform(-0.01, 0.01) * w, bottom), fill=(255, 255, 255, rnd.randint(50, 110)),
                     width=max(1, int(m * 0.0015)))
 
     if screen is not None and bw:
