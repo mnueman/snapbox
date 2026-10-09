@@ -2502,8 +2502,9 @@ ICON_MARGIN = 7
 
 
 def corner_buttons():
-    """[(kind, (x0, y0, x1, y1))] in UI coordinates: settings, review, and in browse mode the camera."""
-    kinds = ["menu", "gallery"] + (["camera"] if mode == "browse" else [])
+    """[(kind, (x0, y0, x1, y1))] in UI coordinates: settings, review, then quick effects (or in
+    browse mode the camera)."""
+    kinds = ["menu", "gallery"] + (["camera"] if mode == "browse" else ["fx"])
     buttons = []
     for i, kind in enumerate(kinds):
         top = ICON_MARGIN + i * (ICON_SIZE + ICON_GAP)
@@ -2532,6 +2533,16 @@ def _draw_camera_icon(draw, cx, cy, k, color):
     draw.ellipse((cx - 5 * k, cy - 3 * k, cx + 5 * k, cy + 7 * k), fill=color)
 
 
+def _draw_sparkle_icon(draw, cx, cy, k, color):
+    # A big four-point sparkle and a small one: the quick EFFECTS button.
+    def star(x, y, r):
+        t = r * 0.28
+        draw.polygon([(x, y - r), (x + t, y - t), (x + r, y), (x + t, y + t), (x, y + r),
+                      (x - t, y + t), (x - r, y), (x - t, y - t)], fill=color)
+    star(cx - 3 * k, cy + 2 * k, 13 * k)
+    star(cx + 10 * k, cy - 10 * k, 6 * k)
+
+
 def _draw_corner_buttons(img):
     if lcd is None:
         return
@@ -2546,6 +2557,9 @@ def _draw_corner_buttons(img):
             _draw_gear(draw, cx, cy, ICON_SIZE * 0.36, white, (0, 0, 0, 255))
         elif kind == "gallery":
             _draw_photos_icon(draw, cx, cy, k, white)
+        elif kind == "fx":
+            # Gold while any effect is on, so you can see at a glance.
+            _draw_sparkle_icon(draw, cx, cy, k, (255, 200, 60, 255) if effects_on() else white)
         else:
             _draw_camera_icon(draw, cx, cy, k, white)
 
@@ -2554,6 +2568,7 @@ menu_open = False
 menu_tab = "camera"
 PREVIEW_TABS = {"camera": CAMERA_SETTINGS, "effects": EFFECT_SETTINGS}
 menu_fullscreen = False  # CAMERA / EFFECTS: live preview as big as possible, one setting below
+menu_quick = False  # opened from the main screen's sparkle button: DONE goes straight back
 menu_focus = {"camera": "brightness", "effects": "stamp"}  # setting shown under the big preview
 menu_buttons = []  # [((x0, y0, x1, y1) in UI coords, callback)]
 _menu_last_cam = None
@@ -2563,11 +2578,21 @@ _lcd_xform = None  # (x, y, scale) of the last frame drawn on the panel
 
 
 def open_menu():
-    global menu_open, menu_tab, _menu_last_cam, menu_fullscreen
+    global menu_open, menu_tab, _menu_last_cam, menu_fullscreen, menu_quick
     print("Settings menu opened.")
     menu_open = True
     menu_tab = "camera"
     menu_fullscreen = False
+    menu_quick = False
+    _menu_last_cam = None
+    update_menu(force=True)
+
+
+def open_quick_effects():
+    """Sparkle button: the effects over a big live preview, one tap from taking photos."""
+    global menu_open, menu_tab, _menu_last_cam, menu_fullscreen, menu_quick
+    print("Quick effects opened.")
+    menu_open, menu_tab, menu_fullscreen, menu_quick = True, "effects", True, True
     _menu_last_cam = None
     update_menu(force=True)
 
@@ -4030,7 +4055,10 @@ def render_fullscreen_preview(img, draw, cam, buttons):
         x = pad + n * (chip_w + gap)
         cbox = (int(x), chip_top, int(x + chip_w), chip_top + chip_h)
         if key is None:
-            _draw_key(draw, cbox, label, buttons, lambda: set_menu_fullscreen(False), fill=MENU_DONE, size=16)
+            if menu_quick:
+                _draw_key(draw, cbox, "DONE", buttons, close_menu, fill=MENU_DONE, size=16)
+            else:
+                _draw_key(draw, cbox, label, buttons, lambda: set_menu_fullscreen(False), fill=MENU_DONE, size=16)
         else:
             active = key == focus
             _draw_key(draw, cbox, label, buttons, lambda k=key: set_menu_focus(k),
@@ -4171,7 +4199,8 @@ def handle_tap(point):
         pad = ICON_GAP // 2  # forgiving: half the gap around each button counts
         for kind, (x0, y0, x1, y1) in corner_buttons():
             if x0 - pad <= x <= x1 + pad and y0 - pad <= y <= y1 + pad:
-                {"menu": open_menu, "gallery": open_gallery, "camera": enter_creation_mode}[kind]()
+                {"menu": open_menu, "gallery": open_gallery, "camera": enter_creation_mode,
+                 "fx": open_quick_effects}[kind]()
                 return
 
 
