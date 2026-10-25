@@ -1,5 +1,6 @@
 """BIG SHEET designs: landscape 6x4 sheets (1800x1200) in frames/sheets/ and portrait 4x6
-sheets (1200x1800) in frames/portrait/, each a PNG with transparent photo openings plus a JSON
+sheets (1200x1800) in frames/portrait/ (or a pack's sheets/ and portrait/, see design_packs.py),
+each a PNG with transparent photo openings plus a JSON
 with the slots (and optionally "stamp": the corner the date stamp goes in).
 The designs live in sheets_landscape.py and sheets_portrait.py; the shared drawing kit in sheet_kit.py.
 Usage (from the photobooth folder):
@@ -11,22 +12,26 @@ import json, os, sys
 
 import sheets_landscape
 import sheets_portrait
+from design_packs import all_design_folders, design_folder, sheet_pack
 
-SETS = {"L": (os.path.join("frames", "sheets"), "sheet", sheets_landscape.DESIGNS),
-        "P": (os.path.join("frames", "portrait"), "portrait", sheets_portrait.DESIGNS)}
+SETS = {"L": ("sheet", "sheet", sheets_landscape.DESIGNS),
+        "P": ("portrait", "portrait", sheets_portrait.DESIGNS)}
 
 
 def build(kind, numbers=None):
-    folder, prefix, designs = SETS[kind]
-    os.makedirs(folder, exist_ok=True)
+    folder_kind, prefix, designs = SETS[kind]
     if numbers is None:
         # A full rebuild: clear old designs so removed or renumbered ones don't linger.
-        for f in os.listdir(folder):
-            if f.startswith(prefix) and f.endswith((".png", ".json")):
-                os.remove(os.path.join(folder, f))
+        for folder in all_design_folders(folder_kind):
+            if os.path.isdir(folder):
+                for f in os.listdir(folder):
+                    if f.startswith(prefix) and f.endswith((".png", ".json")):
+                        os.remove(os.path.join(folder, f))
     for n, (label, fn) in enumerate(designs, 1):
         if numbers and n not in numbers:
             continue
+        folder = design_folder(sheet_pack(label), folder_kind)
+        os.makedirs(folder, exist_ok=True)
         img, slots, extra = fn()
         img.save(os.path.join(folder, f"{prefix}{n}.png"))
         with open(os.path.join(folder, f"{prefix}{n}.json"), "w") as f:

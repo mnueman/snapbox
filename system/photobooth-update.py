@@ -15,7 +15,7 @@ from pathlib import Path
 REPO = Path("/home/admin/photobooth")
 USER = "admin"
 BRANCH = "stable"
-REMOTE = "updates"  # read-only deploy key; see system/setup-updates.sh
+REMOTE = "updates"  # the public repo over HTTPS; see system/setup-updates.sh
 SERVICE = "photobooth.service"
 RESULT_FILE = REPO / "update-result.json"  # read (and removed) by the app to show the outcome
 PENDING_FILE = REPO / "update-pending.json"  # exists only while switching versions
@@ -29,7 +29,7 @@ def log(msg):
 def git(*args, check=True):
     # As admin, so files keep their owner and git uses admin's credentials.
     result = subprocess.run(
-        ["runuser", "-u", USER, "--", "env", f"HOME=/home/{USER}",
+        ["runuser", "-u", USER, "--", "env", f"HOME=/home/{USER}", "GIT_TERMINAL_PROMPT=0",
          "git", "-C", str(REPO), *args],
         capture_output=True, text=True, timeout=180)
     if check and result.returncode != 0:
@@ -64,6 +64,12 @@ def result(ok, message, **extra):
 
 def switch_to(sha):
     git("checkout", "--quiet", "--force", "--detach", sha)
+    # Packs packs/booths.json now gives this booth (only ever adds; see system/packs.py).
+    # Not having a pack yet is no reason to fail the update.
+    packs = subprocess.run(["runuser", "-u", USER, "--", "env", f"HOME=/home/{USER}", "python3",
+                            str(REPO / "system" / "packs.py"), "sync"],
+                           capture_output=True, text=True, timeout=180)
+    log(f"Packs: {(packs.stdout or packs.stderr).strip()}")
     os.sync()
     # The service, sudoers and polkit files of that version.
     run = subprocess.run(["sh", str(REPO / "system" / "install.sh")],

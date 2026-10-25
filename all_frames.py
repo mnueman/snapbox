@@ -2,12 +2,15 @@
 Generates frame11 (Deco Silver), the Atkinsons wedding set (frame12..frame19), the fun set
 (frame20..frame25), the mall booth set (frame26..frame31), the Army set (frame32..frame36) and
 the Hawaii set (frame37..frame40) (1200x3600 PNG with transparent photo openings + slot JSON).
+Shared ones go in frames/, the Atkinsons, Army and Hawaii sets in their packs (design_packs.py).
 The date stamp and vintage light effects are add-ons in the app, not frames.
 Usage (from the photobooth folder): python3 all_frames.py [frame numbers, default all]
 """
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import json, math, os, random, sys, urllib.request
 import numpy as np
+
+from design_packs import STRIP_PACKS, design_folder
 
 NAME = "The   Atkinsons"
 OUT = "frames"
@@ -97,8 +100,10 @@ def name(d, y, fill, size=150):
     d.text((CX, y), NAME, font=font("GreatVibes.ttf", size), fill=rgba(fill), anchor="mm")
 
 def save(img, slots, n):
-    img.save(os.path.join(OUT, f"frame{n}.png"))
-    with open(os.path.join(OUT, f"frame{n}.json"), "w") as f:
+    folder = design_folder(STRIP_PACKS.get(n), "strip")
+    os.makedirs(folder, exist_ok=True)
+    img.save(os.path.join(folder, f"frame{n}.png"))
+    with open(os.path.join(folder, f"frame{n}.json"), "w") as f:
         json.dump({"slots": slots}, f, indent=2)
 
 # ---------- 14: Black Tie (the groom's tux) ----------

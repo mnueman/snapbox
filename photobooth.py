@@ -57,9 +57,13 @@ PRINT_W, PRINT_H = STRIP_W * 2, STRIP_H
 # BIG SHEET designs fill the whole 4x6 print by themselves (300 dpi, the printer's own
 # resolution): landscape 6x4 sheets in frames/sheets/, portrait 4x6 ones in frames/portrait/.
 SHEET_W, SHEET_H = 1800, 1200
-SHEET_DIR = FRAME_DIR / "sheets"
 PSHEET_W, PSHEET_H = 1200, 1800
-PSHEET_DIR = FRAME_DIR / "portrait"
+# Designs come from three places, each laid out the same (strips at the top, landscape sheets in
+# sheets/, portrait ones in portrait/): frames/ (every booth), packs/<name>/ (only the packs this
+# booth was given; see system/packs.py) and ~/my-designs (the owner's own; updates never touch it).
+PACKS_DIR = BASE / "packs"
+MY_DESIGNS_DIR = Path.home() / "my-designs"
+DESIGN_SUBFOLDERS = {"strip": None, "sheet": "sheets", "psheet": "portrait"}
 LAYOUTS = ["strip", "sheet", "psheet"]  # the order the main screen's layout button goes through
 LAYOUT_NAMES = {"strip": "PHOTO STRIPS (2x6)", "sheet": "BIG SHEET: LANDSCAPE (6x4)",
                 "psheet": "BIG SHEET: PORTRAIT (4x6)"}
@@ -612,17 +616,45 @@ def _frame_sort_key(path):
     return (int(digits) if digits else 0, path.name)
 
 
-# Strips first, then BIG SHEET designs; each kind is browsed on its own.
-frames = (sorted(FRAME_DIR.glob("*.png"), key=_frame_sort_key)
-          + sorted(SHEET_DIR.glob("*.png"), key=_frame_sort_key)
-          + sorted(PSHEET_DIR.glob("*.png"), key=_frame_sort_key))
+def _find_designs():
+    """(designs, {path: kind}): strips first, then BIG SHEET designs; each kind is browsed on its
+    own. Shared and pack designs are in number order together; the owner's own come after."""
+    for sub in [""] + [s for s in DESIGN_SUBFOLDERS.values() if s]:
+        try:
+            (MY_DESIGNS_DIR / sub).mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"Could not make {MY_DESIGNS_DIR / sub}: {e}")
+    packs = sorted(p for p in PACKS_DIR.iterdir() if p.is_dir()) if PACKS_DIR.is_dir() else []
+    found, kinds = [], {}
+    for kind, sub in DESIGN_SUBFOLDERS.items():
+        def scan(folder):
+            folder = folder / sub if sub else folder
+            return sorted(folder.glob("*.png"), key=_frame_sort_key)
+        ours = sorted((p for root in [FRAME_DIR, *packs] for p in scan(root)), key=_frame_sort_key)
+        for path in ours + scan(MY_DESIGNS_DIR):
+            found.append(path)
+            kinds[path] = kind
+    return found, kinds
+
+
+frames, _frame_kinds = _find_designs()
 current_frame_index = 0
+print(f"{len(frames)} designs, {sum(MY_DESIGNS_DIR in p.parents for p in frames)} of them in {MY_DESIGNS_DIR}")
 
 
 def frame_kind(frame_index):
     if not frames:
         return "strip"
-    return {SHEET_DIR: "sheet", PSHEET_DIR: "psheet"}.get(frames[frame_index].parent, "strip")
+    return _frame_kinds.get(frames[frame_index], "strip")
+
+
+def design_id(path):
+    """Which design a saved strip used: its path from the home folder, e.g.
+    "photobooth/packs/army/frame32.png" or "my-designs/sheets/party.png"."""
+    try:
+        return str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
 
 
 def frame_size(frame_index):
@@ -1775,6 +1807,7 @@ def strip_photos_dir(strip_path):
 def strip_meta(slots, frame_index, fx):
     """What goes in a strip JPEG's comment: its layout, and enough to re-frame it."""
     return json.dumps({"slots": slots, "frame": frames[frame_index].name if frames else None,
+                       "design": design_id(frames[frame_index]) if frames else None,
                        "fx": fx}).encode()
 
 
@@ -3831,8 +3864,10 @@ def gallery_reframe_start():
     if not choices or not any(photos):
         flash_message("NO FRAMES FIT THIS STRIP", seconds=1.0)
         return
-    names = [frames[i].name for i in choices]
-    pos = names.index(meta["frame"]) if meta.get("frame") in names else 0
+    # By path; strips saved before designs could be in packs only have the file name.
+    ids, names = [design_id(frames[i]) for i in choices], [frames[i].name for i in choices]
+    pos = (ids.index(meta["design"]) if meta.get("design") in ids
+           else names.index(meta["frame"]) if meta.get("frame") in names else 0)
     fx = meta.get("fx") or {"seed": 0, "opts": [], "stamp": "", "bw": False}
     gallery_reframe = {"path": path, "photos": photos, "fx": fx, "choices": choices, "pos": pos,
                        "start": pos, "views": {}}
@@ -4290,8 +4325,9 @@ _update_announce_pending = False
 
 
 def _git(*args, timeout=60):
+    # Never wait for a password: the updates repo is public.
     return subprocess.run(["git", "-C", str(BASE), *args], capture_output=True, text=True,
-                          timeout=timeout)
+                          timeout=timeout, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
 
 
 def _booth_version():
