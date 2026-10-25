@@ -215,7 +215,13 @@ def _style_choices(styles):
 
 
 EFFECT_SETTINGS = [
-    ("stamp", "DATE STAMP", [(False, "OFF"), (True, "ON")], False),
+    # "custom": a date typed in on the number pad (settings "stamp_date"), for when the clock is
+    # wrong (no WiFi to set it) or to stamp a special day.
+    ("stamp", "DATE STAMP", [(False, "OFF"), (True, "ON: TODAY"), ("custom", "ON: MY DATE")], False),
+    # A new pick for every strip, instead of the three settings below.
+    ("random", "RANDOM EFFECT EACH STRIP", [
+        (0, "OFF"), (1, "ONE EFFECT"), (2, "TWO SUBTLE ONES"), (3, "ONE OR TWO SUBTLE"),
+    ], 0),
     ("leaks", "LIGHT LEAKS (WARM GLOW)", _style_choices(LEAK_STYLES), 0),
     ("spots", "RED LIGHT SPOTS", _style_choices(SPOT_STYLES), 0),
     ("lines", "LIGHT STREAKS & DUST", _style_choices(LINE_STYLES), 0),
@@ -223,7 +229,7 @@ EFFECT_SETTINGS = [
 # Short names for the setting buttons along the full-screen preview.
 SETTING_SHORT = {"brightness": "BRIGHT", "colour": "COLOUR", "motion": "MOVE", "focus": "FOCUS",
                  "light": "LIGHT", "zoom": "ZOOM", "mirror": "MIRROR", "stamp": "DATE",
-                 "leaks": "LEAKS", "spots": "SPOTS", "lines": "STREAKS"}
+                 "random": "RANDOM", "leaks": "LEAKS", "spots": "SPOTS", "lines": "STREAKS"}
 BOOTH_SETTINGS = [
     ("rotation", "SCREEN", [
         (-90, "PORTRAIT"), (90, "PORTRAIT (FLIPPED)"), (0, "LANDSCAPE"), (180, "LANDSCAPE (FLIPPED)"),
@@ -263,6 +269,15 @@ def _load_settings():
         for key, value in saved.items():
             if key in SETTING_DEFS and value in [v for v, _ in SETTING_DEFS[key][1]]:
                 values[key] = value
+    values["stamp_date"] = None  # "YYYY-MM-DD", for the date stamp's "custom" setting
+    if isinstance(saved, dict) and isinstance(saved.get("stamp_date"), str):
+        try:
+            datetime.strptime(saved["stamp_date"], "%Y-%m-%d")
+            values["stamp_date"] = saved["stamp_date"]
+        except ValueError:
+            pass
+    if values["stamp"] == "custom" and values["stamp_date"] is None:
+        values["stamp"] = True
     return values
 
 
@@ -1184,11 +1199,19 @@ def apply_colour_look(img, name=None):
 # ---------------------------------------------------------------------------
 
 EFFECT_KEYS = [k for k, _, _, _ in EFFECT_SETTINGS]
+FX_KEYS = ("stamp", "leaks", "spots", "lines")  # what a strip's fx "opts" holds, in this order
+FX_STYLES = {"leaks": LEAK_STYLES, "spots": SPOT_STYLES, "lines": LINE_STYLES}
+# RANDOM's styles (by number). One on its own is at full strength, so the heaviest (FULL BURN,
+# STROBE BURST, HEAVY DUST, WORN OUT) are left out; a mix is two gentle ones at RANDOM_SOFT.
+RANDOM_ONE = {"leaks": range(1, 10), "spots": range(1, 10), "lines": (1, 3, 4, 5, 6, 7, 8, 9)}
+RANDOM_GENTLE = {"leaks": (1, 2, 3, 4, 5, 8), "spots": (1, 2, 3, 4, 6, 7), "lines": (1, 3, 4, 5, 6, 7)}
+RANDOM_SOFT = 0.55
 STAMP_COLOUR = (255, 138, 28)
 # Seven-segment digits, like the date imprint of a 90s film camera.
 SEGMENTS = {"0": "abcdef", "1": "bc", "2": "abdeg", "3": "abcdg", "4": "bcfg", "5": "acdfg",
             "6": "acdefg", "7": "abc", "8": "abcdefg", "9": "abcdfg"}
 strip_seed = random.randrange(1 << 30)  # saved with each strip (older versions varied by it)
+random_roll = random.randrange(1 << 30)  # the RANDOM effect's pick for this strip
 _effect_cache = {}
 
 
@@ -1196,8 +1219,47 @@ def effects_on():
     return any(settings[k] for k in EFFECT_KEYS)
 
 
+def stamp_date():
+    """The day the date stamp shows: the one typed in (MY DATE), or the clock's."""
+    if settings["stamp"] == "custom" and settings.get("stamp_date"):
+        try:
+            return datetime.strptime(settings["stamp_date"], "%Y-%m-%d")
+        except ValueError:
+            pass
+    return datetime.now()
+
+
 def stamp_text():
-    return datetime.now().strftime("%m %d '%y")  # 10 06 '26
+    return stamp_date().strftime("%m %d '%y")  # 10 06 '26
+
+
+def random_pick(roll=None):
+    """RANDOM's choice for this strip: ({"leaks": style number, ...}, strength)."""
+    kind = settings["random"]
+    if not kind:
+        return {}, 1.0
+    rnd = random.Random(random_roll if roll is None else roll)
+    mix = kind == 2 or (kind == 3 and rnd.random() < 0.5)
+    if mix:
+        return {key: rnd.choice(RANDOM_GENTLE[key]) for key in rnd.sample(sorted(FX_STYLES), 2)}, RANDOM_SOFT
+    key = rnd.choice(sorted(FX_STYLES))
+    return {key: rnd.choice(RANDOM_ONE[key])}, 1.0
+
+
+def reroll_random():
+    """Tap the RANDOM setting: pick again for this strip."""
+    global random_roll
+    if settings["random"]:
+        random_roll = random.randrange(1 << 30)
+        _invalidate_live_preview()
+
+
+def effect_opts():
+    """[stamp, leaks, spots, lines] for the strip being made, and their strength."""
+    if not settings["random"]:
+        return [bool(settings["stamp"])] + [settings[k] for k in FX_KEYS[1:]], 1.0
+    pick, soft = random_pick()
+    return [bool(settings["stamp"])] + [pick.get(k, 0) for k in FX_KEYS[1:]], soft
 
 
 def _seg_poly(x0, y0, x1, y1, t):
@@ -1249,9 +1311,10 @@ def _stamp_width(digit_h, text):
     return sum(widths) + gap * (len(text) - 1)
 
 
-def _render_effects(w, h, seed, opts, text, bw, corner="br"):
+def _render_effects(w, h, seed, opts, text, bw, corner="br", soft=1.0):
     """(screen layer RGB or None, overlay RGBA or None) for a w x h photo. `seed` is unused
-    now (every style looks the same each time); it stays so saved strips keep working."""
+    now (every style looks the same each time); it stays so saved strips keep working.
+    `soft` (0-1) tones the light, dust and scratches down."""
     stamp, leaks, spots, lines = opts
     m = min(w, h)
     screen = None
@@ -1264,7 +1327,10 @@ def _render_effects(w, h, seed, opts, text, bw, corner="br"):
         screen = layer if screen is None else ImageChops.screen(screen, layer)
 
     def tint(colour, k):
-        return tuple(int(v * k) for v in colour)
+        return tuple(int(v * k * soft) for v in colour)
+
+    def count(n):
+        return max(1, round(n * soft)) if n else 0
 
     if leaks:
         band, blobs = LEAK_STYLES[leaks - 1][1:]
@@ -1315,12 +1381,12 @@ def _render_effects(w, h, seed, opts, text, bw, corner="br"):
         overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         od = ImageDraw.Draw(overlay)
         big = 2.0 if spec.get("big") else 1.0
-        for _ in range(spec.get("dust", 0)):  # little dark and light specks
+        for _ in range(count(spec.get("dust", 0))):  # little dark and light specks
             x, y = rnd.uniform(0, w), rnd.uniform(0, h)
             r = m * rnd.uniform(0.001, 0.004) * big
             c = (20, 16, 12, rnd.randint(90, 200)) if rnd.random() < 0.6 else (255, 250, 240, rnd.randint(70, 160))
             od.ellipse((x - r, y - r, x + r, y + r), fill=c)
-        for _ in range(spec.get("hairs", 0)):  # hairs on the negative
+        for _ in range(count(spec.get("hairs", 0))):  # hairs on the negative
             x, y = rnd.uniform(0, w), rnd.uniform(0, h)
             pts, ang = [(x, y)], rnd.uniform(0, 2 * math.pi)
             for _ in range(5):
@@ -1329,7 +1395,7 @@ def _render_effects(w, h, seed, opts, text, bw, corner="br"):
                 x, y = x + step * math.cos(ang), y + step * math.sin(ang)
                 pts.append((x, y))
             od.line(pts, fill=(25, 20, 15, rnd.randint(90, 160)), width=max(1, int(m * 0.0025)))
-        for _ in range(spec.get("scratches", 0)):  # long vertical scratches in the emulsion
+        for _ in range(count(spec.get("scratches", 0))):  # long vertical scratches in the emulsion
             x = rnd.uniform(0, w)
             top, bottom = sorted((rnd.uniform(-0.2, 0.5) * h, rnd.uniform(0.5, 1.2) * h))
             od.line((x, top, x + rnd.uniform(-0.01, 0.01) * w, bottom), fill=(255, 255, 255, rnd.randint(50, 110)),
@@ -1358,7 +1424,8 @@ def _render_effects(w, h, seed, opts, text, bw, corner="br"):
 
 def current_fx():
     """The add-ons for the strip being made, saved with it so re-framing redraws the same ones."""
-    return {"seed": strip_seed, "opts": [settings[k] for k in EFFECT_KEYS], "stamp": stamp_text(),
+    opts, soft = effect_opts()
+    return {"seed": strip_seed, "opts": opts, "soft": soft, "stamp": stamp_text(),
             "bw": COLOUR_LOOKS.get(settings["colour"], {}).get("sat", 1.0) == 0}
 
 
@@ -1393,13 +1460,14 @@ def apply_effects(img, index, fx=None, corner=None):
     opts = tuple(fx["opts"])
     if not any(opts):
         return img
-    seed, text, bw = fx["seed"], fx["stamp"], fx["bw"]
-    key = (img.size, seed, index, opts, text, bw, corner)
+    seed, text, bw, soft = fx["seed"], fx["stamp"], fx["bw"], fx.get("soft", 1.0)
+    key = (img.size, seed, index, opts, text, bw, corner, soft)
     layers = _effect_cache.get(key)
     if layers is None:
         if len(_effect_cache) >= 12:
             del _effect_cache[next(iter(_effect_cache))]
-        layers = _effect_cache[key] = _render_effects(*img.size, seed * 8 + index, opts, text, bw, corner)
+        layers = _effect_cache[key] = _render_effects(*img.size, seed * 8 + index, opts, text, bw, corner,
+                                                      soft)
     screen, overlay = layers
     mode = img.mode
     out = img.convert("RGB")
@@ -1737,13 +1805,14 @@ def delete_live_captures():
 
 
 def clear_live_strip():
-    global live_photos, live_capture_paths, current_slot, strip_seed
+    global live_photos, live_capture_paths, current_slot, strip_seed, random_roll
 
     capacity = current_capacity()
     live_photos = [None] * capacity
     live_capture_paths = [None] * capacity
     current_slot = 0
     strip_seed = random.randrange(1 << 30)
+    random_roll = random.randrange(1 << 30)
     _clear_photo_cache()
 
 
@@ -2752,19 +2821,21 @@ def open_quick_effects():
 
 
 def close_menu(redraw=True):
-    global menu_open, menu_fullscreen
+    global menu_open, menu_fullscreen, date_entry
     if not menu_open:
         return
     print("Settings menu closed.")
     menu_open = False
     menu_fullscreen = False
+    date_entry = None
     _invalidate_live_preview()
     if redraw:
         update_lcd()
 
 
 def set_menu_tab(tab):
-    global menu_tab, wifi_view, menu_fullscreen
+    global menu_tab, wifi_view, menu_fullscreen, date_entry
+    date_entry = None
     if tab == "wifi" and menu_tab != "wifi":
         wifi_view = "list"
         wifi_scan()
@@ -2792,10 +2863,146 @@ def step_setting(key, step):
     for tab, defs in PREVIEW_TABS.items():
         if key in {k for k, _, _, _ in defs}:
             menu_focus[tab] = key  # the full-screen preview opens on the last one changed
+    if key in FX_STYLES and settings["random"]:
+        set_setting("random", 0)  # choosing a style by hand turns RANDOM off
     choices = [v for v, _ in SETTING_DEFS[key][1]]
     i = choices.index(settings[key]) + step
     if 0 <= i < len(choices):
-        set_setting(key, choices[i])
+        if key == "stamp" and choices[i] == "custom":
+            open_date_keypad()  # MY DATE is switched on by SAVE, once there is a date
+        else:
+            set_setting(key, choices[i])
+
+
+def _long_date(day):
+    return day.strftime("%b %d %Y").upper()  # OCT 25 2026
+
+
+def setting_text(key):
+    """What a setting row shows: its choice, or for some, what that choice means right now."""
+    label = SETTING_DEFS[key][1][[v for v, _ in SETTING_DEFS[key][1]].index(settings[key])][1]
+    if key == "stamp" and settings["stamp"]:
+        return f"{'MY DATE' if settings['stamp'] == 'custom' else 'TODAY'}: {_long_date(stamp_date())}"
+    if key in FX_STYLES and settings["random"]:
+        pick = random_pick()[0]
+        return FX_STYLES[key][pick[key] - 1][0] if key in pick else "NONE THIS STRIP"
+    return label
+
+
+def setting_title(key):
+    """A setting row's name, with a hint when tapping the row does something."""
+    title = SETTING_DEFS[key][0]
+    if key == "stamp" and settings["stamp"]:
+        return f"{title}  \u00b7  TAP TO SET DATE"
+    if key == "random" and settings["random"]:
+        return "RANDOM  \u00b7  TAP TO SHUFFLE"
+    if key in FX_STYLES and settings["random"]:
+        pick, soft = random_pick()
+        return f"{title}  \u00b7  RANDOM{', SUBTLE' if key in pick and soft < 1 else ''}"
+    return title
+
+
+# Tapping the middle of these setting rows (between the arrows) does something extra.
+ROW_TAPS = {"stamp": lambda: open_date_keypad(), "random": lambda: reroll_random()}
+
+
+# ---------------------------------------------------------------------------
+# Number pad for the date stamp's MY DATE: type MM DD YY.
+# ---------------------------------------------------------------------------
+
+date_entry = None  # digits typed so far, or None when the number pad is closed
+
+
+def open_date_keypad():
+    global date_entry
+    date_entry = ""
+
+
+def date_keypad_type(ch):
+    global date_entry
+    if date_entry is not None and len(date_entry) < 6:
+        date_entry += ch
+
+
+def date_keypad_backspace():
+    global date_entry
+    if date_entry:
+        date_entry = date_entry[:-1]
+
+
+def date_keypad_clear():
+    global date_entry
+    if date_entry is not None:
+        date_entry = ""
+
+
+def date_keypad_cancel():
+    global date_entry
+    date_entry = None
+
+
+def _typed_date():
+    """The typed MM DD YY as a datetime, or None if incomplete or not a real day."""
+    if date_entry is None or len(date_entry) != 6:
+        return None
+    try:
+        return datetime(2000 + int(date_entry[4:]), int(date_entry[:2]), int(date_entry[2:4]))
+    except ValueError:
+        return None
+
+
+def date_keypad_save():
+    global date_entry
+    day = _typed_date()
+    if day is None:
+        return
+    settings["stamp_date"] = day.strftime("%Y-%m-%d")
+    date_entry = None
+    set_setting("stamp", "custom")  # saves stamp_date too
+
+
+def _render_date_keypad(draw, area, buttons):
+    """Full screen: CANCEL, the date being typed, SAVE; then a big 0-9 pad."""
+    x0, y0, x1, y1 = area
+    w = x1 - x0
+    gap = 6
+
+    top_h = 40
+    hint = f"TYPE THE DATE: MONTH, DAY, YEAR  \u00b7  THE CLOCK SAYS {_long_date(datetime.now())}"
+    _draw_text_centered(draw, (x0, y0, x1, y0 + top_h), hint, _fit_font(draw, hint, w, 17, False), MENU_DIM)
+    y = y0 + top_h + gap
+
+    row_h = 72
+    cancel = (x0, y, x0 + int(w * 0.22), y + row_h)
+    save = (x1 - int(w * 0.22), y, x1, y + row_h)
+    field = (cancel[2] + gap, y, save[0] - gap, y + row_h)
+    _draw_key(draw, cancel, "CANCEL", buttons, date_keypad_cancel, fill=(70, 70, 80), size=20)
+    day = _typed_date()
+    full = len(date_entry) == 6
+    _draw_key(draw, save, "SAVE" if day else "NOT A DATE" if full else "SAVE", buttons,
+              date_keypad_save if day else (lambda: None),
+              fill=MENU_DONE if day else (90, 40, 40) if full else (50, 50, 58),
+              text_fill=MENU_TEXT if day or full else (110, 110, 118), size=22 if day or not full else 15)
+    draw.rounded_rectangle(field, radius=8, fill=(0, 0, 0), outline=MENU_ACCENT, width=2)
+    digits = date_entry.ljust(6, "_")
+    shown = f"{digits[:2]} / {digits[2:4]} / {digits[4:]}"
+    _draw_text_centered(draw, field, shown, _fit_font(draw, "MM / DD / YY", field[2] - field[0] - 16, 34),
+                        MENU_TEXT if day or not full else (255, 110, 110))
+    y += row_h + gap
+
+    key_h = (y1 - y - 3 * gap) // 4
+    key_w = (w - 2 * gap) / 3
+    keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "CLEAR", "0", "\u232b"]
+    for n, label in enumerate(keys):
+        col, row = n % 3, n // 3
+        left = x0 + col * (key_w + gap)
+        box = (int(left), y + row * (key_h + gap), int(left + key_w), y + row * (key_h + gap) + key_h)
+        if label == "CLEAR":
+            _draw_key(draw, box, label, buttons, date_keypad_clear, fill=(70, 70, 80), size=20)
+        elif label == "\u232b":
+            _draw_key(draw, box, label, buttons, date_keypad_backspace, fill=(70, 70, 80), size=32)
+        else:
+            _draw_key(draw, box, label, buttons, lambda ch=label: date_keypad_type(ch), size=34)
 
 
 def press_shutdown():
@@ -2812,7 +3019,7 @@ def _draw_setting_row(draw, box, key, buttons):
     label, choices = SETTING_DEFS[key][0], SETTING_DEFS[key][1]
     values = [v for v, _ in choices]
     i = values.index(settings[key])
-    text = choices[i][1]
+    text = setting_text(key)
     h = y1 - y0
     arrow_w = min(72, h + 12, (x1 - x0) // 5)
 
@@ -2832,8 +3039,11 @@ def _draw_setting_row(draw, box, key, buttons):
         buttons.append((abox, lambda k=key, d=direction: step_setting(k, d)))
 
     mid = (x0 + arrow_w, y0, x1 - arrow_w, y1)
+    if key in ROW_TAPS:
+        buttons.append((mid, ROW_TAPS[key]))
     max_w = mid[2] - mid[0] - 8
-    label_font = menu_font(13 if h < 64 else 15)
+    label = setting_title(key)
+    label_font = _fit_font(draw, label, max_w, 13 if h < 64 else 15, bold=False)
     value_font = _fit_font(draw, text, max_w, 20 if h < 64 else 22)
     split = y0 + int(h * 0.42)
     _draw_text_centered(draw, (mid[0], y0 + 2, mid[2], split), label, label_font, MENU_DIM)
@@ -2867,7 +3077,8 @@ def _draw_pager(draw, box, page, pages, on_step, buttons):
 def _draw_setting_rows(draw, area, keys, buttons, page_id):
     """Rows at least MIN_ROW_H tall; split into pages when they don't all fit."""
     x0, y0, x1, y1 = area
-    gap = 6
+    # Closer together when that saves going to a second page.
+    gap = 6 if len(keys) * (MIN_ROW_H + 6) - 6 <= y1 - y0 else 4
     if len(keys) * (MIN_ROW_H + gap) - gap <= y1 - y0:
         per_page, pages, page, rows_bottom = len(keys), 1, 0, y1
     else:
@@ -4323,6 +4534,10 @@ def render_menu(cam=None):
     pad = 8
     bar_h = 70
 
+    if date_entry is not None:
+        _render_date_keypad(draw, (pad, pad, w - pad, h - pad), buttons)
+        menu_buttons = buttons
+        return img
     if menu_tab == "wifi" and wifi_view == "keyboard" and wifi_target is not None:
         # Typing gets the whole screen: no tab bar, the biggest keys possible.
         _render_wifi_keyboard(draw, (pad, pad, w - pad, h - pad), buttons)
@@ -4448,7 +4663,7 @@ def handle_swipe(dx):
     step = 1 if dx < 0 else -1
     print(f"Swipe {'left' if step > 0 else 'right'}")
     if menu_open:
-        if menu_fullscreen and menu_tab in PREVIEW_TABS:
+        if menu_fullscreen and menu_tab in PREVIEW_TABS and date_entry is None:
             menu_focus_step(step)
             update_menu(force=True)
     elif mode == "browse":

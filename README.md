@@ -67,10 +67,18 @@ underneath: tap a setting's name (or swipe) to pick which. Tap DONE or press the
   Colour looks: normal, vivid, warm, cool, soft & dreamy, black & white, noir, sepia, film (warm), film (B&W),
   film: portrait, film: golden, film: cool green, instant photo, 70s faded, cross-processed. The live preview
   shows the look; film looks add grain and a vignette.
-- Effects tab: vintage add-ons that go on every photo with any frame, and stack: DATE STAMP (today's date in
+- Effects tab: vintage add-ons that go on every photo with any frame, and stack: DATE STAMP (the date in
   orange seven-segment digits, like a 90s film camera), and LIGHT LEAKS, RED LIGHT SPOTS and LIGHT STREAKS &
   DUST, each OFF or one of ten named styles that look the same every time. The sparkle button on the main
   screen opens them over a big live preview (it's gold while any effect is on).
+  - DATE STAMP: ON: TODAY uses the Pi's clock, which is only set while it's on WiFi (the row shows the date
+    it will print). ON: MY DATE opens a number pad: type MM DD YY and SAVE. Tap the row to change the date.
+    MY DATE stays until it's changed or switched back to TODAY, so it also works for stamping a special day.
+  - RANDOM EFFECT EACH STRIP picks the leaks / spots / streaks for each new strip, instead of those three
+    settings: ONE EFFECT (one style, full strength; the four heaviest are left out), TWO SUBTLE ONES (two
+    gentle styles from different kinds, toned down), or ONE OR TWO SUBTLE (either, half the time each).
+    The three rows show this strip's pick; tap RANDOM to shuffle it. Changing any of the three by hand
+    turns RANDOM off.
 - Booth tab: screen orientation, screen-off time, countdown before each photo (off / 3 / 5 / 10 s), review auto-keep
   time, auto shut down when idle (off / 15 / 30 min / 1 / 2 / 4 h), UPDATES, Shut down (tap twice), and a reminder
   of the button presses.
