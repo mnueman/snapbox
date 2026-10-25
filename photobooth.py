@@ -219,9 +219,7 @@ EFFECT_SETTINGS = [
     # wrong (no WiFi to set it) or to stamp a special day.
     ("stamp", "DATE STAMP", [(False, "OFF"), (True, "ON: TODAY"), ("custom", "ON: MY DATE")], False),
     # A new pick for every photo, instead of the three settings below.
-    ("random", "RANDOM EFFECT EACH PHOTO", [
-        (0, "OFF"), (1, "ONE EFFECT"), (2, "TWO SUBTLE ONES"), (3, "ONE OR TWO SUBTLE"),
-    ], 0),
+    ("random", "RANDOM EFFECT EACH PHOTO", [(0, "OFF"), (1, "ON")], 0),
     ("leaks", "LIGHT LEAKS (WARM GLOW)", _style_choices(LEAK_STYLES), 0),
     ("spots", "RED LIGHT SPOTS", _style_choices(SPOT_STYLES), 0),
     ("lines", "LIGHT STREAKS & DUST", _style_choices(LINE_STYLES), 0),
@@ -1206,6 +1204,7 @@ FX_STYLES = {"leaks": LEAK_STYLES, "spots": SPOT_STYLES, "lines": LINE_STYLES}
 RANDOM_ONE = {"leaks": range(1, 10), "spots": range(1, 10), "lines": (1, 3, 4, 5, 6, 7, 8, 9)}
 RANDOM_GENTLE = {"leaks": (1, 2, 3, 4, 5, 8), "spots": (1, 2, 3, 4, 6, 7), "lines": (1, 3, 4, 5, 6, 7)}
 RANDOM_SOFT = 0.55
+RANDOM_NONE = 0.35  # chance a photo gets no effect at all; otherwise half one, half a subtle two
 STAMP_COLOUR = (255, 138, 28)
 # Seven-segment digits, like the date imprint of a 90s film camera.
 SEGMENTS = {"0": "abcdef", "1": "bc", "2": "abdeg", "3": "abcdg", "4": "bcfg", "5": "acdfg",
@@ -1233,9 +1232,10 @@ def stamp_text():
     return stamp_date().strftime("%m %d '%y")  # 10 06 '26
 
 
-def _random_draw(rnd, kind):
-    mix = kind == 2 or (kind == 3 and rnd.random() < 0.5)
-    if mix:
+def _random_draw(rnd):
+    if rnd.random() < RANDOM_NONE:
+        return {}, 1.0
+    if rnd.random() < 0.5:
         return {key: rnd.choice(RANDOM_GENTLE[key]) for key in rnd.sample(sorted(FX_STYLES), 2)}, RANDOM_SOFT
     key = rnd.choice(sorted(FX_STYLES))
     return {key: rnd.choice(RANDOM_ONE[key])}, 1.0
@@ -1243,17 +1243,16 @@ def _random_draw(rnd, kind):
 
 def random_pick(index):
     """RANDOM's choice for photo `index` of this strip: ({"leaks": style number, ...}, strength).
-    Never the same as the photo before it."""
-    kind = settings["random"]
-    if not kind:
+    Never the same effect as the photo before it (two plain photos in a row can happen)."""
+    if not settings["random"]:
         return {}, 1.0
     if index not in random_rolls:
         random_rolls[index] = random.randrange(1 << 30)
     rnd = random.Random(random_rolls[index])
     before = random_pick(index - 1) if index > 0 else None
     for _ in range(8):
-        pick = _random_draw(rnd, kind)
-        if pick != before:
+        pick = _random_draw(rnd)
+        if pick != before or not pick[0]:
             break
     return pick
 

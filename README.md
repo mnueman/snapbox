@@ -74,11 +74,12 @@ underneath: tap a setting's name (or swipe) to pick which. Tap DONE or press the
   - DATE STAMP: ON: TODAY uses the Pi's clock, which is only set while it's on WiFi (the row shows the date
     it will print). ON: MY DATE opens a number pad: type MM DD YY and SAVE. Tap the row to change the date.
     MY DATE stays until it's changed or switched back to TODAY, so it also works for stamping a special day.
-  - RANDOM EFFECT EACH PHOTO picks the leaks / spots / streaks for every photo, instead of those three
-    settings: ONE EFFECT (one style, full strength; the four heaviest are left out), TWO SUBTLE ONES (two
-    gentle styles from different kinds, toned down), or ONE OR TWO SUBTLE (either, half the time each).
-    A photo never gets the same pick as the one before it. The three rows show the next photo's pick; tap
-    RANDOM to shuffle it. Changing any of the three by hand turns RANDOM off.
+  - RANDOM EFFECT EACH PHOTO (OFF / ON) picks the leaks / spots / streaks for every photo on its own,
+    instead of those three settings, so one strip can mix kinds. Each photo: 35% nothing, otherwise half
+    the time one style at full strength (the four heaviest are left out) and half the time two gentle
+    styles of different kinds, toned down. A photo never gets the same effect as the one before it. The
+    three rows show the next photo's pick; tap RANDOM to shuffle it. Changing any of the three by hand
+    turns RANDOM off.
 - Booth tab: screen orientation, screen-off time, countdown before each photo (off / 3 / 5 / 10 s), review auto-keep
   time, auto shut down when idle (off / 15 / 30 min / 1 / 2 / 4 h), UPDATES, Shut down (tap twice), and a reminder
   of the button presses.
