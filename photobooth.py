@@ -218,8 +218,8 @@ EFFECT_SETTINGS = [
     # "custom": a date typed in on the number pad (settings "stamp_date"), for when the clock is
     # wrong (no WiFi to set it) or to stamp a special day.
     ("stamp", "DATE STAMP", [(False, "OFF"), (True, "ON: TODAY"), ("custom", "ON: MY DATE")], False),
-    # A new pick for every strip, instead of the three settings below.
-    ("random", "RANDOM EFFECT EACH STRIP", [
+    # A new pick for every photo, instead of the three settings below.
+    ("random", "RANDOM EFFECT EACH PHOTO", [
         (0, "OFF"), (1, "ONE EFFECT"), (2, "TWO SUBTLE ONES"), (3, "ONE OR TWO SUBTLE"),
     ], 0),
     ("leaks", "LIGHT LEAKS (WARM GLOW)", _style_choices(LEAK_STYLES), 0),
@@ -1211,7 +1211,7 @@ STAMP_COLOUR = (255, 138, 28)
 SEGMENTS = {"0": "abcdef", "1": "bc", "2": "abdeg", "3": "abcdg", "4": "bcfg", "5": "acdfg",
             "6": "acdefg", "7": "abc", "8": "abcdefg", "9": "abcdfg"}
 strip_seed = random.randrange(1 << 30)  # saved with each strip (older versions varied by it)
-random_roll = random.randrange(1 << 30)  # the RANDOM effect's pick for this strip
+random_rolls = {}  # photo number -> what the RANDOM effect picks from; cleared for every strip
 _effect_cache = {}
 
 
@@ -1233,12 +1233,7 @@ def stamp_text():
     return stamp_date().strftime("%m %d '%y")  # 10 06 '26
 
 
-def random_pick(roll=None):
-    """RANDOM's choice for this strip: ({"leaks": style number, ...}, strength)."""
-    kind = settings["random"]
-    if not kind:
-        return {}, 1.0
-    rnd = random.Random(random_roll if roll is None else roll)
+def _random_draw(rnd, kind):
     mix = kind == 2 or (kind == 3 and rnd.random() < 0.5)
     if mix:
         return {key: rnd.choice(RANDOM_GENTLE[key]) for key in rnd.sample(sorted(FX_STYLES), 2)}, RANDOM_SOFT
@@ -1246,19 +1241,35 @@ def random_pick(roll=None):
     return {key: rnd.choice(RANDOM_ONE[key])}, 1.0
 
 
+def random_pick(index):
+    """RANDOM's choice for photo `index` of this strip: ({"leaks": style number, ...}, strength).
+    Never the same as the photo before it."""
+    kind = settings["random"]
+    if not kind:
+        return {}, 1.0
+    if index not in random_rolls:
+        random_rolls[index] = random.randrange(1 << 30)
+    rnd = random.Random(random_rolls[index])
+    before = random_pick(index - 1) if index > 0 else None
+    for _ in range(8):
+        pick = _random_draw(rnd, kind)
+        if pick != before:
+            break
+    return pick
+
+
 def reroll_random():
-    """Tap the RANDOM setting: pick again for this strip."""
-    global random_roll
+    """Tap the RANDOM setting: pick again for the next photo."""
     if settings["random"]:
-        random_roll = random.randrange(1 << 30)
+        random_rolls[_preview_slot_index()] = random.randrange(1 << 30)
         _invalidate_live_preview()
 
 
-def effect_opts():
-    """[stamp, leaks, spots, lines] for the strip being made, and their strength."""
+def effect_opts(index):
+    """[stamp, leaks, spots, lines] for photo `index` of the strip being made, and their strength."""
     if not settings["random"]:
         return [bool(settings["stamp"])] + [settings[k] for k in FX_KEYS[1:]], 1.0
-    pick, soft = random_pick()
+    pick, soft = random_pick(index)
     return [bool(settings["stamp"])] + [pick.get(k, 0) for k in FX_KEYS[1:]], soft
 
 
@@ -1423,10 +1434,14 @@ def _render_effects(w, h, seed, opts, text, bw, corner="br", soft=1.0):
 
 
 def current_fx():
-    """The add-ons for the strip being made, saved with it so re-framing redraws the same ones."""
-    opts, soft = effect_opts()
-    return {"seed": strip_seed, "opts": opts, "soft": soft, "stamp": stamp_text(),
-            "bw": COLOUR_LOOKS.get(settings["colour"], {}).get("sat", 1.0) == 0}
+    """The add-ons for the strip being made, saved with it so re-framing redraws the same ones.
+    With RANDOM, each photo's own are in "slots" ("opts" is the first photo's, for older versions)."""
+    opts, soft = effect_opts(0)
+    fx = {"seed": strip_seed, "opts": opts, "soft": soft, "stamp": stamp_text(),
+          "bw": COLOUR_LOOKS.get(settings["colour"], {}).get("sat", 1.0) == 0}
+    if settings["random"]:
+        fx["slots"] = [dict(zip(("opts", "soft"), effect_opts(i))) for i in range(current_capacity())]
+    return fx
 
 
 _stamp_corners = {}
@@ -1457,10 +1472,11 @@ def apply_effects(img, index, fx=None, corner=None):
         if not effects_on():
             return img
         fx = current_fx()
-    opts = tuple(fx["opts"])
+    slot = fx["slots"][index] if index < len(fx.get("slots", ())) else fx
+    opts = tuple(slot["opts"])
     if not any(opts):
         return img
-    seed, text, bw, soft = fx["seed"], fx["stamp"], fx["bw"], fx.get("soft", 1.0)
+    seed, text, bw, soft = fx["seed"], fx["stamp"], fx["bw"], slot.get("soft", 1.0)
     key = (img.size, seed, index, opts, text, bw, corner, soft)
     layers = _effect_cache.get(key)
     if layers is None:
@@ -1805,14 +1821,14 @@ def delete_live_captures():
 
 
 def clear_live_strip():
-    global live_photos, live_capture_paths, current_slot, strip_seed, random_roll
+    global live_photos, live_capture_paths, current_slot, strip_seed
 
     capacity = current_capacity()
     live_photos = [None] * capacity
     live_capture_paths = [None] * capacity
     current_slot = 0
     strip_seed = random.randrange(1 << 30)
-    random_roll = random.randrange(1 << 30)
+    random_rolls.clear()
     _clear_photo_cache()
 
 
@@ -2884,8 +2900,8 @@ def setting_text(key):
     if key == "stamp" and settings["stamp"]:
         return f"{'MY DATE' if settings['stamp'] == 'custom' else 'TODAY'}: {_long_date(stamp_date())}"
     if key in FX_STYLES and settings["random"]:
-        pick = random_pick()[0]
-        return FX_STYLES[key][pick[key] - 1][0] if key in pick else "NONE THIS STRIP"
+        pick = random_pick(_preview_slot_index())[0]
+        return FX_STYLES[key][pick[key] - 1][0] if key in pick else "NONE THIS PHOTO"
     return label
 
 
@@ -2897,7 +2913,7 @@ def setting_title(key):
     if key == "random" and settings["random"]:
         return "RANDOM  \u00b7  TAP TO SHUFFLE"
     if key in FX_STYLES and settings["random"]:
-        pick, soft = random_pick()
+        pick, soft = random_pick(_preview_slot_index())
         return f"{title}  \u00b7  RANDOM{', SUBTLE' if key in pick and soft < 1 else ''}"
     return title
 
