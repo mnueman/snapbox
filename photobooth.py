@@ -2880,13 +2880,13 @@ def step_setting(key, step):
             menu_focus[tab] = key  # the full-screen preview opens on the last one changed
     if key in FX_STYLES and settings["random"]:
         set_setting("random", 0)  # choosing a style by hand turns RANDOM off
+    # Round and round: right from the last choice goes back to the first (usually OFF).
     choices = [v for v, _ in SETTING_DEFS[key][1]]
-    i = choices.index(settings[key]) + step
-    if 0 <= i < len(choices):
-        if key == "stamp" and choices[i] == "custom":
-            open_date_keypad()  # MY DATE is switched on by SAVE, once there is a date
-        else:
-            set_setting(key, choices[i])
+    i = (choices.index(settings[key]) + step) % len(choices)
+    if key == "stamp" and choices[i] == "custom":
+        open_date_keypad()  # MY DATE is switched on by SAVE, once there is a date
+    else:
+        set_setting(key, choices[i])
 
 
 def _long_date(day):
@@ -3031,20 +3031,14 @@ def press_shutdown():
 
 def _draw_setting_row(draw, box, key, buttons):
     x0, y0, x1, y1 = box
-    label, choices = SETTING_DEFS[key][0], SETTING_DEFS[key][1]
-    values = [v for v, _ in choices]
-    i = values.index(settings[key])
     text = setting_text(key)
     h = y1 - y0
     arrow_w = min(72, h + 12, (x1 - x0) // 5)
 
     draw.rounded_rectangle(box, radius=10, fill=MENU_ROW)
-    for direction, ax0, enabled in (
-        (-1, x0, i > 0),
-        (1, x1 - arrow_w, i < len(values) - 1),
-    ):
+    for direction, ax0 in ((-1, x0), (1, x1 - arrow_w)):
         abox = (ax0, y0, ax0 + arrow_w, y1)
-        color = MENU_ACCENT if enabled else (80, 80, 88)
+        color = MENU_ACCENT
         cx, cy, t = (abox[0] + abox[2]) / 2, (y0 + y1) / 2, min(14, h * 0.25)
         if direction < 0:
             pts = [(cx + t * 0.7, cy - t), (cx + t * 0.7, cy + t), (cx - t * 0.9, cy)]

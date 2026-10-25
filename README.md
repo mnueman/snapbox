@@ -56,8 +56,8 @@ layout, whatever its number of photos; after it, only designs with the same numb
 
 ## Settings menu
 
-Tap the gear in the top-left corner of the screen. Use the ◀ ▶ arrows to change a setting; changes save
-automatically (`settings.json`) and the camera and effects tabs show a live preview, cropped like the next
+Tap the gear in the top-left corner of the screen. Use the ◀ ▶ arrows to change a setting (they go round: ▶ on the last choice goes back to the
+first, usually OFF); changes save automatically (`settings.json`) and the camera and effects tabs show a live preview, cropped like the next
 photo. Tap the preview (or FULL SCREEN PREVIEW) to make it as big as the screen allows, with one setting
 underneath: tap a setting's name (or swipe) to pick which. Tap DONE or press the button to close.
 
