@@ -25,11 +25,12 @@
 
    `sudo apt install --no-install-recommends git python3-picamera2 python3-pygame python3-pil python3-numpy python3-gpiozero python3-lgpio python3-smbus2 libegl-mesa0 libegl1 libgles2 i2c-tools`
 
-4. Get the app and give the booth its design packs (its name in `packs/booths.json`, see "Designs" below):
+4. Get the app and say who the booth is for: the name of their folder in `gifts/` (see "Designs" below),
+   in quotes, or `master` for your own booth with everyone's gifts:
 
    ```
    git clone -b stable https://github.com/mnueman/snapbox.git ~/photobooth
-   ~/photobooth/system/packs.py setup booth-1
+   ~/photobooth/system/gifts.py setup "Nick & Maddy Atkinson"
    ~/photobooth/system/setup-updates.sh
    sudo ~/photobooth/system/install.sh
    sudo reboot
@@ -76,24 +77,32 @@ optionally `"stamp": "bl"`, `"tl"` or `"tr"` to move the date stamp to another c
 | Folder | What | On which booths |
 | --- | --- | --- |
 | `frames/` | Shared designs | Every booth. New ones arrive with updates. |
-| `packs/<name>/` | A pack: `atkinsons` (wedding), `army`, `hawaii` | Only booths `packs/booths.json` gives it to |
-| `~/my-designs/` | The booth owner's own designs | Only that booth. Not in git; updates never touch it. |
+| `gifts/<person>/<collection>/` | Made for one person, e.g. `gifts/Nick & Maddy Atkinson/wedding/`, `.../army/`, `.../hawaii/` | That person's booth, and the master booth |
+| `~/my-designs/` (and any folders in it) | The booth owner's own designs | Only that booth. Not in git; updates never touch it. |
 
-Shared and pack designs are shown together in number order; the owner's own come last. The app finds
-designs when it starts, so restart it after adding some.
+Shared and gift designs are shown together in number order; the owner's own come last. The booth looks
+for new, changed or removed designs every 15 seconds while it's idle, so nothing needs a restart. A design
+that goes missing while it's in use is swapped for another of the same layout (with room for the photos
+already taken); a design that can't be used (wrong size, no or bad JSON, an opening outside the picture,
+a damaged picture) is skipped and the reason logged.
 
-- Packs a booth doesn't have aren't on it at all (git sparse checkout). `system/packs.py` shows and sets
-  them: `setup NAME` installs exactly the packs `packs/booths.json` lists for NAME (run when setting up a
-  booth), `add PACK` installs one more now, and `sync` (the updater runs it after every update) installs
-  any the list has gained. Packs are only ever added: taking one off the list leaves it on the booth.
-- To gift a booth a pack: add the pack to its list in `packs/booths.json` and publish an update.
-- To make a new pack: put its designs in `packs/<name>/` (on a booth with packs set up, run
-  `system/packs.py add <name>` first, or git won't see the new folder).
-- Never delete, rename or move a design that has shipped (including from `frames/` into a pack): booths
-  would lose it with their next update.
+- Who a booth is for: `system/gifts.py setup "Their Name"` (shows the current setup with no arguments).
+  The booth then has `gifts/Their Name/` and nothing else from `gifts/`: other people's gifts aren't on
+  it at all (git sparse checkout). `setup master` is for your own booth: every person's gifts. A booth
+  never set up also has everyone's.
+- To gift someone more designs, add a folder to theirs (`gifts/Their Name/nyc/`) and publish an update.
+  It arrives on their booth with nothing else to change. Their folder can be made before or after their
+  booth is set up.
+- Make designs for other people on the master booth: on a booth set up for one person, git can't see
+  the other people's folders.
+- Never delete, rename or move a design that has shipped, including between `frames/` and `gifts/`:
+  booths would lose it with their next update. Give new designs new numbers.
+- Before publishing an update, commit and run `python3 system/check_designs.py`. It fails if a design
+  that's on `stable` would be gone or a design can't be used, warns about repeated numbers, and says
+  which numbers are free. (`--allow-gone` when designs leaving booths is intended.)
 - Generators: `python3 all_frames.py [numbers]` (strips 11-40), `python3 realistic.py` (strips 41-44) and
   `python3 sheet_frames.py` (sheets; designs in `sheets_landscape.py` / `sheets_portrait.py`, drawing kit
-  in `sheet_kit.py`). `design_packs.py` decides which pack each generated design goes in.
+  in `sheet_kit.py`). `design_folders.py` decides which folder each generated design goes in.
 - Fonts in `frames/fonts/` are Google Fonts; see `frames/fonts/FONTS.txt`.
 
 ## Settings menu
@@ -203,8 +212,8 @@ Publish an update (after trying it on your own booth):
 Each booth checks 90 s after starting and every 6 hours. When it finds something new and is idle it shows
 "Your creator has gifted you with an update!"; BOOTH tab > UPDATES > INSTALL UPDATE installs it. The
 updater (`system/photobooth-update.py`, runs as root) refuses if the code was edited on the booth, checks
-the new version compiles, switches to it, adds any packs `packs/booths.json` now gives the booth,
-reinstalls the system files, and requires the app to start and stay up for 20 s; otherwise it switches
+the new version compiles, switches to it (with only this booth's gifts; new ones in its person's
+folder come with it), reinstalls the system files, and requires the app to start and stay up for 20 s; otherwise it switches
 back to the old version. If power is cut mid-update, the next boot restores the old version. Photos,
 settings and `~/my-designs` aren't touched.
 

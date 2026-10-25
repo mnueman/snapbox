@@ -58,12 +58,16 @@ PRINT_W, PRINT_H = STRIP_W * 2, STRIP_H
 # resolution): landscape 6x4 sheets in frames/sheets/, portrait 4x6 ones in frames/portrait/.
 SHEET_W, SHEET_H = 1800, 1200
 PSHEET_W, PSHEET_H = 1200, 1800
-# Designs come from three places, each laid out the same (strips at the top, landscape sheets in
-# sheets/, portrait ones in portrait/): frames/ (every booth), packs/<name>/ (only the packs this
-# booth was given; see system/packs.py) and ~/my-designs (the owner's own; updates never touch it).
-PACKS_DIR = BASE / "packs"
+# Designs come from three places: frames/ (every booth), gifts/<person>/ (made for this booth's
+# person, in a folder per collection; see system/gifts.py) and ~/my-designs (the owner's own;
+# updates never touch it). Every design folder is laid out the same: strips at the top, landscape
+# sheets in sheets/, portrait ones in portrait/. Gifts and the owner's own can be in subfolders.
+GIFTS_DIR = BASE / "gifts"
 MY_DESIGNS_DIR = Path.home() / "my-designs"
 DESIGN_SUBFOLDERS = {"strip": None, "sheet": "sheets", "psheet": "portrait"}
+DESIGN_SIZES = {"strip": (STRIP_W, STRIP_H), "sheet": (SHEET_W, SHEET_H), "psheet": (PSHEET_W, PSHEET_H)}
+MAX_DESIGN_PHOTOS = 8
+DESIGN_RESCAN_SECONDS = 15  # while idle, look for designs added or gone (no restart needed)
 LAYOUTS = ["strip", "sheet", "psheet"]  # the order the main screen's layout button goes through
 LAYOUT_NAMES = {"strip": "PHOTO STRIPS (2x6)", "sheet": "BIG SHEET: LANDSCAPE (6x4)",
                 "psheet": "BIG SHEET: PORTRAIT (4x6)"}
@@ -610,28 +614,142 @@ if USE_LCD:
             raise SystemExit(1)
 
 
+def _mtime(path):
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 def _frame_sort_key(path):
     # frame2 before frame10: compare the number, not the text.
     digits = "".join(ch for ch in path.stem if ch.isdigit())
-    return (int(digits) if digits else 0, path.name)
+    return (int(digits) if digits else 0, path.name, str(path))
+
+
+def _booth_name():
+    """The person this booth was set up for (system/gifts.py), or None."""
+    try:
+        result = subprocess.run(["git", "-C", str(BASE), "config", "--get", "snapbox.booth"],
+                                capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        print(f"Could not read the booth's name: {e}")
+        return None
+    return result.stdout.strip() or None
+
+
+BOOTH_NAME = None
+for _sub in ("", "sheets", "portrait"):
+    try:
+        (MY_DESIGNS_DIR / _sub).mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print(f"Could not make {MY_DESIGNS_DIR / _sub}: {e}")
+
+
+def design_id(path):
+    """Which design a saved strip used: its path from the home folder, e.g.
+    "photobooth/gifts/Nick & Maddy Atkinson/army/frame32.png" or "my-designs/sheets/party.png"."""
+    try:
+        return str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
+
+def read_design_slots(path, kind):
+    """(the photo openings from the design's JSON, None), or (None, why it can't be used)."""
+    sidecar = path.with_suffix(".json")
+    if not sidecar.exists():
+        # The original strips work without one; anything else must say where its photos go.
+        return (DEFAULT_SLOTS, None) if kind == "strip" else (None, "no .json with its photo openings")
+    try:
+        data = json.loads(sidecar.read_text())
+        raw = data.get("slots") if isinstance(data, dict) else data
+        slots = [tuple(int(v) for v in slot) for slot in raw]
+        if any(len(slot) != 4 for slot in slots):
+            return None, "each opening needs x, y, width and height"
+    except Exception as e:
+        return None, f"its .json can't be read ({e})"
+    w, h = DESIGN_SIZES[kind]
+    if not 1 <= len(slots) <= MAX_DESIGN_PHOTOS:
+        return None, f"it has {len(slots)} photo openings (1 to {MAX_DESIGN_PHOTOS} work)"
+    for x, y, sw, sh in slots:
+        if sw < 20 or sh < 20 or x < 0 or y < 0 or x + sw > w or y + sh > h:
+            return None, f"opening {[x, y, sw, sh]} isn't inside {w}x{h}"
+    return slots, None
+
+
+_design_checks = {}  # (path, PNG mtime, JSON mtime) -> why it can't be used, or None
+
+
+def design_problem(path, kind):
+    """Why this design can't be used (logged once), or None if it's fine."""
+    key = (path, _mtime(path), _mtime(path.with_suffix(".json")))
+    if key not in _design_checks:
+        w, h = DESIGN_SIZES[kind]
+        try:
+            with Image.open(path) as im:
+                iw, ih = im.size
+        except Exception as e:
+            why = f"the picture can't be opened ({e})"
+        else:
+            if abs(iw * h - ih * w) > 0.02 * iw * h:
+                why = f"it's {iw}x{ih}, but a design in this folder is {w}x{h}"
+            elif iw * ih > 4 * w * h:
+                why = f"it's {iw}x{ih}, far bigger than {w}x{h}"
+            else:
+                why = read_design_slots(path, kind)[1]
+        if why:
+            print(f"Skipping design {design_id(path)}: {why}")
+        _design_checks[key] = why
+    return _design_checks[key]
+
+
+def _design_folders(root, nested=True):
+    """root, and (if nested) every folder below it except the sheets/ and portrait/ in each."""
+    if not root.is_dir():
+        return []
+    folders = [root]
+    if nested:
+        for d in sorted(root.rglob("*")):
+            parts = d.relative_to(root).parts
+            if d.is_dir() and not any(p in ("sheets", "portrait") or p.startswith((".", "__"))
+                                      for p in parts):
+                folders.append(d)
+    return folders
+
+
+def _gift_roots():
+    """This booth's gifts: its person's folder; every person's on the master booth (the
+    creator's) and on a booth never set up."""
+    if BOOTH_NAME and BOOTH_NAME != "master":
+        return [GIFTS_DIR / BOOTH_NAME]
+    return sorted(p for p in GIFTS_DIR.iterdir() if p.is_dir()) if GIFTS_DIR.is_dir() else []
 
 
 def _find_designs():
     """(designs, {path: kind}): strips first, then BIG SHEET designs; each kind is browsed on its
-    own. Shared and pack designs are in number order together; the owner's own come after."""
-    for sub in [""] + [s for s in DESIGN_SUBFOLDERS.values() if s]:
-        try:
-            (MY_DESIGNS_DIR / sub).mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            print(f"Could not make {MY_DESIGNS_DIR / sub}: {e}")
-    packs = sorted(p for p in PACKS_DIR.iterdir() if p.is_dir()) if PACKS_DIR.is_dir() else []
+    own. Shared and gift designs are in number order together; the owner's own come after.
+    Designs that can't be used (wrong size, no photo openings, damaged) are left out."""
+    global BOOTH_NAME
+    name = _booth_name()
+    if name != BOOTH_NAME:
+        print(f"This booth is now set up for: {name or 'nobody, so every gift'}")
+        BOOTH_NAME = name
+    ours = [f for f in _design_folders(FRAME_DIR, nested=False)]
+    ours += [f for root in _gift_roots() for f in _design_folders(root)]
+    mine = _design_folders(MY_DESIGNS_DIR)
     found, kinds = [], {}
     for kind, sub in DESIGN_SUBFOLDERS.items():
-        def scan(folder):
-            folder = folder / sub if sub else folder
-            return sorted(folder.glob("*.png"), key=_frame_sort_key)
-        ours = sorted((p for root in [FRAME_DIR, *packs] for p in scan(root)), key=_frame_sort_key)
-        for path in ours + scan(MY_DESIGNS_DIR):
+        def scan(folders):
+            paths = []
+            for folder in folders:
+                try:
+                    paths += [p for p in (folder / sub if sub else folder).glob("*.png")
+                              if p.is_file() and not design_problem(p, kind)]
+                except OSError as e:
+                    print(f"Could not look in {folder}: {e}")
+            return sorted(paths, key=_frame_sort_key)
+        for path in scan(ours) + scan(mine):
             found.append(path)
             kinds[path] = kind
     return found, kinds
@@ -639,22 +757,15 @@ def _find_designs():
 
 frames, _frame_kinds = _find_designs()
 current_frame_index = 0
-print(f"{len(frames)} designs, {sum(MY_DESIGNS_DIR in p.parents for p in frames)} of them in {MY_DESIGNS_DIR}")
+_designs_stale = False  # a design went missing or broke: look again right away
+print(f"{len(frames)} designs (booth: {BOOTH_NAME or 'not set up, so every gift'}; "
+      f"{sum(MY_DESIGNS_DIR in p.parents for p in frames)} in {MY_DESIGNS_DIR})")
 
 
 def frame_kind(frame_index):
     if not frames:
         return "strip"
     return _frame_kinds.get(frames[frame_index], "strip")
-
-
-def design_id(path):
-    """Which design a saved strip used: its path from the home folder, e.g.
-    "photobooth/packs/army/frame32.png" or "my-designs/sheets/party.png"."""
-    try:
-        return str(path.relative_to(Path.home()))
-    except ValueError:
-        return str(path)
 
 
 def frame_size(frame_index):
@@ -723,13 +834,6 @@ def _invalidate_live_preview():
     _live_preview_slot_box = None
 
 
-def _mtime(path):
-    try:
-        return path.stat().st_mtime_ns
-    except OSError:
-        return None
-
-
 def center_crop_to_slot(img, slot_w, slot_h, resample=Image.LANCZOS):
     img = img.convert("RGB")
     src_w, src_h = img.size
@@ -750,6 +854,7 @@ def center_crop_to_slot(img, slot_w, slot_h, resample=Image.LANCZOS):
 
 
 def load_frame_image(frame_index):
+    global _designs_stale
     if not frames or frame_index < 0 or frame_index >= len(frames):
         return None
 
@@ -764,8 +869,11 @@ def load_frame_image(frame_index):
         frame = Image.open(frame_path).convert("RGBA")
         frame = frame.resize(frame_size(frame_index), Image.LANCZOS)
     except Exception as e:
-        # A damaged frame file shows the photos without it instead of crashing the booth.
-        print(f"Could not load frame {frame_path.name}: {e}")
+        # A missing or damaged design: the photos show without it this once, the design is
+        # dropped and the booth moves on to one that's there (refresh_designs).
+        print(f"Could not load design {design_id(frame_path)}: {e}")
+        _design_checks[(frame_path, mtime, _mtime(frame_path.with_suffix(".json")))] = str(e)
+        _designs_stale = True
         frame = None
     # Each frame is ~17 MB at full size; keep only the few most recent.
     while len(_frame_img_cache) >= 4:
@@ -783,20 +891,13 @@ def _normalize_slots(raw):
 
 
 def _load_frame_config(frame_path):
-    slots = DEFAULT_SLOTS
-
-    sidecar = frame_path.with_suffix(".json")
-    if sidecar.exists():
-        try:
-            data = json.loads(sidecar.read_text())
-            if isinstance(data, dict):
-                if data.get("slots"):
-                    slots = _normalize_slots(data["slots"])
-            else:
-                slots = _normalize_slots(data)
-        except Exception as e:
-            print(f"Bad frame config {sidecar.name}, using defaults: {e}")
-
+    global _designs_stale
+    slots, why = read_design_slots(frame_path, _frame_kinds.get(frame_path, "strip"))
+    if why:
+        # Broke since the booth found it: use the defaults until it's dropped (refresh_designs).
+        print(f"Bad design {design_id(frame_path)}, using default openings: {why}")
+        _designs_stale = True
+        return DEFAULT_SLOTS
     return slots
 
 
@@ -2192,6 +2293,53 @@ def next_frame_same_capacity(step=1):
 
 
 _last_frame_of_kind = {}  # the design last used in each layout, to come back to
+_designs_next_scan = 0.0
+
+
+def refresh_designs():
+    """Picks up designs added, changed or gone since the app started (an update, a new gift, the
+    owner's own), keeping the one in use if it's still there. True if anything changed."""
+    global frames, _frame_kinds, current_frame_index, _last_frame_of_kind, _designs_stale
+    if gallery_reframe is not None:
+        return False  # CHANGE FRAME holds design numbers: look again once it's closed
+    _designs_stale = False
+    found, kinds = _find_designs()
+    if found == frames:
+        return False
+    old = frames
+    in_use = old[current_frame_index] if old else None
+    kind = _frame_kinds.get(in_use, "strip")
+    last_used = {k: old[i] for k, i in _last_frame_of_kind.items() if i < len(old)}
+    frames, _frame_kinds = found, kinds
+    _frame_img_cache.clear()
+    _frame_cfg_cache.clear()
+    _last_frame_of_kind = {k: found.index(p) for k, p in last_used.items() if p in found}
+    if in_use in found:
+        current_frame_index = found.index(in_use)
+    else:
+        # Gone: another of the same layout, with room for the photos already taken.
+        taken = sum(p is not None for p in live_photos)
+        group = indices_for_kind(kind) or list(range(len(found)))
+        same = [i for i in group if frame_slot_count(i) == len(live_photos)]
+        fits = [i for i in group if frame_slot_count(i) >= taken]
+        current_frame_index = (same or fits or group or [0])[0]
+    if current_capacity() != len(live_photos):
+        resize_live_photos(current_capacity())
+    _clear_photo_cache()
+    print(f"Designs changed: {len(set(found) - set(old))} new, {len(set(old) - set(found))} gone, "
+          f"{len(found)} now; using {design_id(frames[current_frame_index]) if frames else 'none'}")
+    return True
+
+
+def tick_designs():
+    """Right away if a design went missing or broke; otherwise every so often while idle."""
+    global _designs_next_scan
+    now = time.monotonic()
+    if not _designs_stale and (now < _designs_next_scan or not _booth_idle()):
+        return
+    _designs_next_scan = now + DESIGN_RESCAN_SECONDS
+    if refresh_designs() and mode == "creation" and not menu_open and not gallery_open:
+        save_preview()
 
 
 def toggle_layout():
@@ -3864,7 +4012,7 @@ def gallery_reframe_start():
     if not choices or not any(photos):
         flash_message("NO FRAMES FIT THIS STRIP", seconds=1.0)
         return
-    # By path; strips saved before designs could be in packs only have the file name.
+    # By path; strips saved before designs could be in gift folders only have the file name.
     ids, names = [design_id(frames[i]) for i in choices], [frames[i].name for i in choices]
     pos = (ids.index(meta["design"]) if meta.get("design") in ids
            else names.index(meta["frame"]) if meta.get("frame") in names else 0)
@@ -4893,6 +5041,7 @@ try:
             tick_photo_show()
             tick_review()
             tick_updates()
+            tick_designs()
             tick_auto_off()
 
             if (

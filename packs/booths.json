@@ -1,4 +1,0 @@
-{
-  "_about": "Which design packs each booth gets (folders in packs/). Set a booth up with: system/packs.py setup NAME. Adding a pack to a booth's list here gives it that pack with its next update; taking one off doesn't remove it from the booth. See CLAUDE.md.",
-  "booth-1": ["army", "atkinsons", "hawaii"]
-}

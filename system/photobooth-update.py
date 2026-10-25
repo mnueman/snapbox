@@ -63,13 +63,8 @@ def result(ok, message, **extra):
 
 
 def switch_to(sha):
+    # Sparse checkout (system/gifts.py): only this booth's person's gifts are checked out.
     git("checkout", "--quiet", "--force", "--detach", sha)
-    # Packs packs/booths.json now gives this booth (only ever adds; see system/packs.py).
-    # Not having a pack yet is no reason to fail the update.
-    packs = subprocess.run(["runuser", "-u", USER, "--", "env", f"HOME=/home/{USER}", "python3",
-                            str(REPO / "system" / "packs.py"), "sync"],
-                           capture_output=True, text=True, timeout=180)
-    log(f"Packs: {(packs.stdout or packs.stderr).strip()}")
     os.sync()
     # The service, sudoers and polkit files of that version.
     run = subprocess.run(["sh", str(REPO / "system" / "install.sh")],
