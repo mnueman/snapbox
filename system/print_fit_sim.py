@@ -194,12 +194,22 @@ def check_shape(ns, kind, size):
         centre = (paper["left"](mid[:, 1]) + paper["right"](mid[:, 1])) / 2
         join = float(np.abs(mid[:, 0] - centre).max())
 
-    # Nothing white: a plain dark-red picture comes out dark red everywhere, edges included.
+    # A plain dark-red picture: dark red everywhere between the design's top and bottom edges
+    # (side edges included: no white on the paper), white past them (clean tear-off tabs).
     plain = Image.new("RGB", size, (120, 20, 30))
     plain_in = (ns["make_pair_print"](plain, plain) if kind == "strip"
                 else ns["make_sheet_print"](plain))
     pa = np.asarray(ns["fit_print"](plain_in), dtype=int)
-    off_colour = int((np.abs(pa - [120, 20, 30]).max(axis=2) > 12).sum())
+    red = np.abs(pa - [120, 20, 30]).max(axis=2) <= 12
+    white = pa.min(axis=2) >= 243
+    ys = np.arange(H)[:, None] + 0.5
+    xs = np.arange(W)[None, :] + 0.5
+    (tlx, tly), (trx, try_), (brx, bry), (blx, bly) = corners
+    top = tly + (try_ - tly) * (xs - tlx) / (trx - tlx)
+    bot = bly + (bry - bly) * (xs - blx) / (brx - blx)
+    inside = (ys > top + 2) & (ys < bot - 2)
+    outside = (ys < top - 2) | (ys > bot + 2)
+    off_colour = int((inside & ~red).sum() + (outside & ~white).sum())
     return dot_err_mm, missing, edge_err, join, off_colour
 
 
@@ -241,7 +251,7 @@ def part1(ns):
               + ", ".join(f"{e} {v:.3f}" for e, v in edge_err.items())
               + (f", strip join {join:.3f}" if join is not None else "")
               + (f", {missing} DOTS MISSING" if missing else "")
-              + (f", {off} px NOT DESIGN COLOUR" if off else ", no white"))
+              + (f", {off} px WRONG COLOUR" if off else ", no white on paper, tabs clean"))
     print(f"  => {'all pass' if all_ok else 'FAILED'}: worst {worst:.3f} mm "
           f"(pass mark {PART1_TOL_MM} mm)")
     return all_ok, worst

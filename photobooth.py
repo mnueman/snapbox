@@ -2503,13 +2503,14 @@ def _perspective(src, dst):
 
 def fit_print(img):
     """The print, its corners moved to print_corners, so the design fills exactly the part of the
-    paper that survives. Outside it, the design's own edge pixels carried on to the sheet's edge,
-    so a print that lands slightly off shows more of the design's border, never white."""
+    paper that survives. Past the long sides (off the paper), the design's own edge pixels carry
+    on, so a print that lands slightly off never shows white there. Past the two perforations
+    it's left white: only the bleed crosses onto the tear-off tabs, not a band of colour."""
     img = img.convert("RGB")
     w, h = img.size
     pad = round(w / (4 * 25.4) * 12)  # more than any cut-off: what shows outside the design
-    padded = Image.fromarray(np.pad(np.asarray(img), ((pad, pad), (pad, pad), (0, 0)),
-                                    mode="edge"))
+    wide = np.pad(np.asarray(img), ((0, 0), (pad, pad), (0, 0)), mode="edge")
+    padded = Image.fromarray(np.pad(wide, ((pad, pad), (0, 0), (0, 0)), constant_values=255))
     src = [(pad, pad), (pad + w, pad), (pad + w, pad + h), (pad, pad + h)]
     coeffs = _perspective(src, print_corners((w, h)))
     return padded.transform((w, h), Image.PERSPECTIVE, coeffs, Image.BICUBIC)
