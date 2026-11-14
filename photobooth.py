@@ -5,6 +5,7 @@ import json
 import math
 import os
 import random
+import re
 import shutil
 import socket
 import time
@@ -1759,6 +1760,9 @@ def update_lcd(img=None, overlay_text=None, fast=False):
                 _draw_review_hint(img, review_seconds_left())
             _draw_corner_buttons(img)
         _draw_battery_indicator(img)
+        if overlay_text is None:
+            _draw_printer_status(img, badge=not menu_open and not gallery_open
+                                 and not fullscreen_view)
 
         inset = ui_inset()
         if inset:
@@ -2563,6 +2567,192 @@ def _print_worker(paths):
         action_queue.put(("print_done", ok))
 
 
+# ---------------------------------------------------------------------------
+# Printer over the booth's own WiFi (system/setup-printer.sh): the SELPHY joins the booth's network
+# (uap0). A background thread spots it, adds it to CUPS by itself (AirPrint, no driver) and tells
+# the screen whether it's connected.
+# ---------------------------------------------------------------------------
+
+PRINTER_WIFI_IFACE = "uap0"
+PRINTER_QUEUE = "SELPHY"
+PRINTER_POLL_SECONDS = 5
+PRINTER_GONE_POLLS = 2  # missed checks in a row before it counts as disconnected
+PRINTER_TOAST_SECONDS = 3
+
+printer_connected = None  # True / False; None: not known yet, or this booth has no printer WiFi
+printer_toast = None  # (text, ok, until): "PRINTER CONNECTED" etc. along the bottom
+
+
+def _printer_wifi_stations():
+    """MAC addresses of the devices on the printer WiFi; None if it isn't running."""
+    try:
+        result = subprocess.run(["iw", "dev", PRINTER_WIFI_IFACE, "station", "dump"],
+                                capture_output=True, text=True, timeout=5)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return [line.split()[1] for line in result.stdout.splitlines() if line.startswith("Station ")]
+
+
+def _find_selphy():
+    """(address, resource) of a SELPHY offering AirPrint on the printer WiFi, or None."""
+    try:
+        result = subprocess.run(["avahi-browse", "-rptk", "_ipp._tcp"],
+                                capture_output=True, text=True, timeout=15)
+    except Exception:
+        return None
+    for line in result.stdout.splitlines():
+        # =;interface;protocol;name;type;domain;host;address;port;txt
+        f = line.split(";")
+        if len(f) < 10 or f[0] != "=" or f[1] != PRINTER_WIFI_IFACE or f[2] != "IPv4":
+            continue
+        if not re.search(r"selphy|cp1500|canon", f[3] + f[9], re.I):
+            continue
+        rp = re.search(r'"rp=([^"]*)"', f[9])
+        return f[7], rp.group(1) if rp else "ipp/print"
+    return None
+
+
+def _printer_answers(address):
+    try:
+        with socket.create_connection((address, 631), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def _ensure_printer_queue(address, resource):
+    """Adds (or re-points) the SELPHY print queue; needs the lpadmin group, no sudo."""
+    uri = f"ipp://{address}:631/{resource}"
+    try:
+        have = subprocess.run(["lpstat", "-v", PRINTER_QUEUE], capture_output=True, text=True,
+                              timeout=10)
+        if have.returncode != 0 or uri not in have.stdout:
+            # "everywhere" asks the printer what it can do: no driver needed.
+            result = subprocess.run(
+                ["lpadmin", "-p", PRINTER_QUEUE, "-E", "-v", uri, "-m", "everywhere",
+                 "-D", "Canon SELPHY CP1500", "-L", "Booth printer WiFi",
+                 "-o", "printer-error-policy=abort-job"],
+                capture_output=True, text=True, timeout=90)
+            if result.returncode != 0:
+                print(f"Could not add the printer ({uri}): {result.stderr.strip()}")
+                return False
+            print(f"Printer added: {PRINTER_QUEUE} at {uri}")
+        # A queue CUPS stopped after an error would hold every later print.
+        subprocess.run(["cupsenable", PRINTER_QUEUE], capture_output=True, timeout=10)
+        subprocess.run(["cupsaccept", PRINTER_QUEUE], capture_output=True, timeout=10)
+        return True
+    except Exception as e:
+        print(f"Could not add the printer: {e}")
+        return False
+
+
+def _printer_watch():
+    # Runs off the UI thread; reports changes via action_queue, never touches pygame.
+    found = None  # (address, resource)
+    queued = None  # the `found` the print queue was last set up for
+    reported = None
+    missed = 0
+    while True:
+        try:
+            stations = _printer_wifi_stations()
+            if stations is None:
+                now = None
+            elif not stations:
+                now = False
+            else:
+                if found is None or not _printer_answers(found[0]):
+                    found = _find_selphy()
+                now = found is not None and _printer_answers(found[0])
+                if now and queued != found and _ensure_printer_queue(*found):
+                    queued = found
+            if now is False and reported:
+                missed += 1
+                if missed < PRINTER_GONE_POLLS:
+                    now = True  # a missed check or two isn't a disconnect
+            else:
+                missed = 0
+            if now != reported:
+                print(f"Printer: {'connected' if now else 'not connected' if now is False else 'no printer WiFi'}")
+                reported = now
+                action_queue.put(("printer", now))
+        except Exception as e:
+            print(f"Printer check failed: {e}")
+        time.sleep(PRINTER_POLL_SECONDS)
+
+
+def note_printer(connected):
+    """Main thread: the printer connected or went away."""
+    global printer_connected, printer_toast
+    before = printer_connected
+    printer_connected = connected
+    # At startup, only announce a printer that's there.
+    if connected is None or (before is None and not connected):
+        printer_toast = None
+    else:
+        printer_toast = ("PRINTER CONNECTED" if connected else "PRINTER DISCONNECTED", connected,
+                         time.monotonic() + PRINTER_TOAST_SECONDS)
+    if not should_show_live_preview():
+        update_lcd()
+
+
+def tick_printer():
+    global printer_toast
+    if printer_toast is not None and time.monotonic() >= printer_toast[2]:
+        printer_toast = None
+        if not should_show_live_preview():
+            update_lcd()
+
+
+def _draw_printer_icon(draw, x, y, k, color):
+    """A printer, 28k x 24k, top-left at (x, y)."""
+    w = max(2, round(2 * k))
+    draw.rectangle((x + 7 * k, y, x + 21 * k, y + 9 * k), outline=color, width=w)  # paper in
+    draw.rounded_rectangle((x, y + 7 * k, x + 28 * k, y + 19 * k), radius=3 * k, fill=color)
+    draw.rectangle((x + 7 * k, y + 15 * k, x + 21 * k, y + 24 * k), fill=(0, 0, 0, 255),
+                   outline=color, width=w)
+
+
+def _draw_printer_status(img, badge):
+    """Top right (under the battery): the printer, with a green or red dot. Along the bottom: a
+    few seconds of PRINTER CONNECTED / DISCONNECTED when that changes."""
+    if printer_connected is None:
+        return
+    draw = ImageDraw.Draw(img, "RGBA")
+    green, red = (60, 210, 90, 255), (235, 60, 60, 255)
+    if badge:
+        k = 1.6
+        w, h = round(40 * k), round(34 * k)
+        right = img.width - 8
+        top = 8 if battery_percent is None else 34
+        draw.rounded_rectangle((right - w, top, right, top + h), radius=round(8 * k),
+                               fill=(0, 0, 0, 150))
+        icon = (255, 255, 255, 235) if printer_connected else (150, 150, 150, 235)
+        _draw_printer_icon(draw, right - w + 4 * k, top + 5 * k, k, icon)
+        dot = green if printer_connected else red
+        d = round(14 * k)
+        draw.ellipse((right - d - 3, top + h - d - 3, right - 3, top + h - 3), fill=dot,
+                     outline=(0, 0, 0, 255), width=3)
+    if printer_toast is not None:
+        text, ok, _ = printer_toast
+        font = _fit_font(draw, text, img.width - 80, 26)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        pad, dot_d = 14, 18
+        box_w = tw + dot_d + 3 * pad
+        box_h = max(th, dot_d) + 2 * pad
+        x0 = (img.width - box_w) // 2
+        y0 = img.height - box_h - 14
+        draw.rounded_rectangle((x0, y0, x0 + box_w, y0 + box_h), radius=box_h // 2,
+                               fill=(0, 0, 0, 210))
+        cy = y0 + box_h // 2
+        draw.ellipse((x0 + pad, cy - dot_d // 2, x0 + pad + dot_d, cy + dot_d // 2),
+                     fill=green if ok else red)
+        draw.text((x0 + 2 * pad + dot_d - bbox[0], cy - th // 2 - bbox[1]), text, font=font,
+                  fill=(255, 255, 255, 255))
+
+
 def print_current_browsed_item():
     if browse_strips:
         start_print(browse_strips[browse_index])
@@ -2573,6 +2763,10 @@ def start_print(path, other=None):
     if _print_busy.is_set():
         print("Print already in progress; ignoring.")
         flash_message("ALREADY PRINTING", seconds=0.8)
+        return
+
+    if printer_connected is False:
+        flash_message("PRINTER NOT CONNECTED\nTurn the printer on and\nwait for the green dot", seconds=2.0)
         return
 
     _print_busy.set()
@@ -4941,6 +5135,7 @@ print("")
 
 poll_battery()
 save_preview()
+threading.Thread(target=_printer_watch, daemon=True).start()
 
 pending_short_time = None
 short_press_count = 0
@@ -5010,6 +5205,9 @@ try:
                         short_press_count = 0
                         continue
 
+                if action == "printer":
+                    note_printer(payload)
+                    continue
                 if action == "print_done":
                     flash_message("PRINT SENT" if payload else "PRINT FAILED", seconds=1.0)
                 elif action == "shutdown":
@@ -5039,6 +5237,7 @@ try:
                 update_lcd()
 
             tick_photo_show()
+            tick_printer()
             tick_review()
             tick_updates()
             tick_designs()
