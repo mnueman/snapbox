@@ -1,0 +1,6 @@
+[Unit]
+Description=Restart the WiFi chip if it gets stuck
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/snapbox-wifi-watchdog

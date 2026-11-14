@@ -11,6 +11,9 @@ install -m 0644 photobooth-wifi.rules /etc/polkit-1/rules.d/50-photobooth-wifi.r
 install -m 0644 photobooth-update.rules /etc/polkit-1/rules.d/50-photobooth-update.rules
 install -m 0644 photobooth.service photobooth-guard.service photobooth-guard.timer \
     photobooth-update.service photobooth-update-recover.service /etc/systemd/system/
+# Restarts the WiFi chip if it gets stuck (see snapbox-wifi-watchdog.sh).
+install -m 0755 snapbox-wifi-watchdog.sh /usr/local/sbin/snapbox-wifi-watchdog
+install -m 0644 snapbox-wifi-watchdog.service snapbox-wifi-watchdog.timer /etc/systemd/system/
 install -d /etc/systemd/journald.conf.d
 install -m 0644 photobooth-journald.conf /etc/systemd/journald.conf.d/50-photobooth.conf
 systemctl restart systemd-journald
@@ -18,6 +21,7 @@ systemctl restart systemd-journald
 journalctl --flush
 systemctl daemon-reload
 systemctl enable photobooth.service photobooth-guard.timer photobooth-update-recover.service
+systemctl enable --now snapbox-wifi-watchdog.timer
 # Automatic package-list updates write to the SD card at random times; not needed on a booth.
 systemctl disable --now apt-daily.timer apt-daily-upgrade.timer || true
 # Flush to the SD card now: if power is cut before this, the new files can end up empty.
