@@ -121,13 +121,17 @@ PRINT_OPTIONS = [
     "-o", "PageSize=Postcard.Borderless",
 ]
 # How much of a borderless 4x6 the SELPHY loses on each side, in mm of the picture as sent (the
-# printer enlarges it a little and it isn't centred). Measured on booth-1's CP1500 with
-# system/print_calibration.py: the first number you can read on each edge, after tearing off the
-# tabs. Prints are fitted into what's left, so the design's edges land on the perforations and
-# the paper's edges.
-PRINT_TRIM_MM = {"top": 4.68, "bottom": 5.90, "left": 2.26, "right": 3.14}
-# The design reaches this far past those edges, so a slightly different paper feed shows the
-# design's edge, not white.
+# printer enlarges it a little and it isn't centred), measured at the middle of each edge. From
+# 3 ruler prints on booth-1's CP1500, 5 photos (system/print_calibration.py,
+# system/measure_calibration.py), corrected by the measurement's own self-check. Top and bottom are the perforations.
+PRINT_TRIM_MM = {"top": 4.70, "bottom": 5.88, "left": 2.21, "right": 2.94}
+# The picture also sits very slightly turned on the paper (about 0.09 degrees): how much each
+# edge's cut-off changes per mm along it (top and bottom: left to right; left and right: top to
+# bottom).
+PRINT_SLANT = {"top": 0.00159, "bottom": -0.00066, "left": -0.00154, "right": 0.00152}
+# Prints are fitted so the design's edges land on the perforations and paper edges, reaching
+# this far past them so a print that lands slightly differently shows design, not a gap.
+# Chosen with system/print_fit_sim.py.
 PRINT_BLEED_MM = 0.5
 
 
@@ -2466,25 +2470,49 @@ def detect_printer():
     return None
 
 
-def print_layout(size):
-    """(x0, y0, x1, y1): where the design goes on a print of `size`, so it fills the part of the
-    paper that's left after the printer's cut-off (PRINT_TRIM_MM), plus PRINT_BLEED_MM."""
+def print_corners(size):
+    """Where the design's corners go on a print of `size` (px; top-left, top-right, bottom-right,
+    bottom-left): on the paper's measured edges (PRINT_TRIM_MM, PRINT_SLANT), PRINT_BLEED_MM
+    beyond them."""
     w, h = size
     px_mm = w / (4 * 25.4)  # the print is 4 inches across
-    t = {side: max(0.0, mm - PRINT_BLEED_MM) * px_mm for side, mm in PRINT_TRIM_MM.items()}
-    return (round(t["left"]), round(t["top"]), round(w - t["right"]), round(h - t["bottom"]))
+    W, H, b = w / px_mm, h / px_mm, PRINT_BLEED_MM
+    t, s = PRINT_TRIM_MM, PRINT_SLANT
+    # Each edge as a straight line, in mm: top/bottom y = p + q*x, left/right x = p + q*y.
+    top = (t["top"] - b - s["top"] * W / 2, s["top"])
+    bottom = (H - t["bottom"] + b + s["bottom"] * W / 2, -s["bottom"])
+    left = (t["left"] - b - s["left"] * H / 2, s["left"])
+    right = (W - t["right"] + b + s["right"] * H / 2, -s["right"])
+
+    def meet(across, down):  # y = p1 + q1*x and x = p2 + q2*y
+        (p1, q1), (p2, q2) = across, down
+        y = (p1 + q1 * p2) / (1 - q1 * q2)
+        return ((p2 + q2 * y) * px_mm, y * px_mm)
+
+    return [meet(top, left), meet(top, right), meet(bottom, right), meet(bottom, left)]
+
+
+def _perspective(src, dst):
+    """Coefficients for Image.transform(PERSPECTIVE): maps each dst point (output) to src."""
+    rows, rhs = [], []
+    for (x, y), (u, v) in zip(dst, src):
+        rows.append([x, y, 1, 0, 0, 0, -u * x, -u * y]); rhs.append(u)
+        rows.append([0, 0, 0, x, y, 1, -v * x, -v * y]); rhs.append(v)
+    return np.linalg.solve(np.array(rows, float), np.array(rhs, float)).tolist()
 
 
 def fit_print(img):
-    """The print, fitted into the part of the paper that survives (print_layout). Each direction
-    is fitted on its own (they differ by under 2%, too little to see). Outside it, the design's
-    own edge pixels carried on to the sheet's edge, so a print that lands slightly off shows more
-    of the design's border, never white."""
-    x0, y0, x1, y1 = print_layout(img.size)
-    fitted = np.asarray(img.convert("RGB").resize((x1 - x0, y1 - y0), Image.LANCZOS))
+    """The print, its corners moved to print_corners, so the design fills exactly the part of the
+    paper that survives. Outside it, the design's own edge pixels carried on to the sheet's edge,
+    so a print that lands slightly off shows more of the design's border, never white."""
+    img = img.convert("RGB")
     w, h = img.size
-    full = np.pad(fitted, ((y0, h - y1), (x0, w - x1), (0, 0)), mode="edge")
-    return Image.fromarray(full)
+    pad = round(w / (4 * 25.4) * 12)  # more than any cut-off: what shows outside the design
+    padded = Image.fromarray(np.pad(np.asarray(img), ((pad, pad), (pad, pad), (0, 0)),
+                                    mode="edge"))
+    src = [(pad, pad), (pad + w, pad), (pad + w, pad + h), (pad, pad + h)]
+    coeffs = _perspective(src, print_corners((w, h)))
+    return padded.transform((w, h), Image.PERSPECTIVE, coeffs, Image.BICUBIC)
 
 
 def _prepare_print_image(path):
