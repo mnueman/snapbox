@@ -1,0 +1,5 @@
+#!/bin/sh
+# NetworkManager dispatcher: when wlan0 connects, make sure it ignores band steering (see
+# snapbox-wifi-nosteer.sh). Named 40-... so it runs before 50-snapbox-hotspot moves the hotspot.
+[ "$1" = wlan0 ] && [ "$2" = up ] || exit 0
+exec /usr/local/sbin/snapbox-wifi-nosteer up

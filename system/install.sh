@@ -14,6 +14,10 @@ install -m 0644 photobooth.service photobooth-guard.service photobooth-guard.tim
 # Restarts the WiFi chip if it gets stuck (see snapbox-wifi-watchdog.sh).
 install -m 0755 snapbox-wifi-watchdog.sh /usr/local/sbin/snapbox-wifi-watchdog
 install -m 0644 snapbox-wifi-watchdog.service snapbox-wifi-watchdog.timer /etc/systemd/system/
+# Makes the booth's WiFi ignore routers' band steering (see snapbox-wifi-nosteer.sh).
+install -m 0755 snapbox-wifi-nosteer.sh /usr/local/sbin/snapbox-wifi-nosteer
+install -m 0644 snapbox-wifi-nosteer.service /etc/systemd/system/
+install -m 0755 snapbox-wifi-nosteer.dispatcher /etc/NetworkManager/dispatcher.d/40-snapbox-wifi-nosteer
 install -d /etc/systemd/journald.conf.d
 install -m 0644 photobooth-journald.conf /etc/systemd/journald.conf.d/50-photobooth.conf
 systemctl restart systemd-journald
@@ -22,6 +26,9 @@ journalctl --flush
 systemctl daemon-reload
 systemctl enable photobooth.service photobooth-guard.timer photobooth-update-recover.service
 systemctl enable --now snapbox-wifi-watchdog.timer
+systemctl enable snapbox-wifi-nosteer.service
+# Right away too (only reconnects WiFi if it isn't set yet).
+/usr/local/sbin/snapbox-wifi-nosteer up || true
 # Automatic package-list updates write to the SD card at random times; not needed on a booth.
 systemctl disable --now apt-daily.timer apt-daily-upgrade.timer || true
 # Flush to the SD card now: if power is cut before this, the new files can end up empty.

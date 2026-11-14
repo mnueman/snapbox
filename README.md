@@ -192,6 +192,10 @@ Layers that keep it running:
 - `photobooth-guard.timer` starts the service every minute if it isn't running for any other reason.
 - If the screen isn't ready at boot, the app exits so systemd retries instead of running without a screen.
 - Raspberry Pi OS's hardware watchdog reboots the Pi if the whole system hangs.
+- The booth's WiFi ignores routers' "band steering" (being told to move to 5 GHz): the printer hotspot
+  shares its radio and channel (`snapbox-wifi-nosteer`). If the WiFi chip still gets stuck (every scan
+  fails), `snapbox-wifi-watchdog.timer` restarts the WiFi driver, then reboots if that didn't help (at
+  most 3 times in a row). Log: `journalctl -t snapbox-wifi-nosteer -u snapbox-wifi-watchdog`.
 - Settings and strips are written with fsync + rename, so a power cut can't leave them empty.
 - An unexpected error in the main loop is logged and the booth carries on; 5 within a minute restarts the app.
 - If the camera isn't detected the screen says "CAMERA NOT FOUND - check the cable" and keeps retrying.

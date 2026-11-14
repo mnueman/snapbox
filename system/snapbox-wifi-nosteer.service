@@ -1,0 +1,10 @@
+[Unit]
+Description=Make the booth's WiFi ignore routers' band steering
+After=NetworkManager.service wpa_supplicant.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/snapbox-wifi-nosteer wait
+
+[Install]
+WantedBy=multi-user.target

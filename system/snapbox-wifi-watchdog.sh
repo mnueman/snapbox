@@ -67,6 +67,8 @@ if ! modprobe -r brcmfmac_cyw brcmfmac; then
 fi
 sleep 2
 modprobe brcmfmac
+# The new wlan0 must ignore band steering again, before it connects.
+systemctl restart --no-block snapbox-wifi-nosteer.service
 # wlan0 connecting brings the hotspot back by itself (NetworkManager dispatcher); this covers
 # the case where there's no known WiFi around.
 sleep 15
