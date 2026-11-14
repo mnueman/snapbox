@@ -291,6 +291,14 @@ settings = _load_settings()
 screen_rotation = settings["rotation"]
 
 
+def to_panel_rotation(rotation, panel_w, panel_h):
+    """The SCREEN setting assumes a landscape panel (800x480). A panel that is natively
+    portrait (e.g. 480x640) needs an extra quarter turn so LANDSCAPE really is landscape."""
+    if panel_h > panel_w:
+        return {0: -90, 180: 90, -90: 180, 90: 0}[rotation]
+    return rotation
+
+
 def _fatal_screen(message, seconds=15):
     """Shows a problem on the booth screen before the app's UI exists, then exits so the
     service tries again (the problem may get fixed, e.g. a camera cable pushed back in)."""
@@ -1018,14 +1026,6 @@ def compose_single_strip(strip_photos, frame_index=None, include_frame=True, fx=
 
 def is_landscape():
     return screen_rotation in (0, 180)
-
-
-def to_panel_rotation(rotation, panel_w, panel_h):
-    """The SCREEN setting assumes a landscape panel (800x480). A panel that is natively
-    portrait (e.g. 480x640) needs an extra quarter turn so LANDSCAPE really is landscape."""
-    if panel_h > panel_w:
-        return {0: -90, 180: 90, -90: 180, 90: 0}[rotation]
-    return rotation
 
 
 def panel_rotation():
