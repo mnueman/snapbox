@@ -1,0 +1,12 @@
+[Unit]
+Description=Booth WiFi network for the printer
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/snapbox-hotspot
+
+[Install]
+WantedBy=multi-user.target

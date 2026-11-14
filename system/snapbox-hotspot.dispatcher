@@ -1,0 +1,8 @@
+#!/bin/sh
+# NetworkManager dispatcher: when the booth's normal WiFi connects, move the printer hotspot to the
+# same channel (the WiFi chip can only run both on one channel). Runs in the background so
+# NetworkManager isn't kept waiting; output goes to `journalctl -u photobooth-hotspot`.
+[ "$1" = wlan0 ] || exit 0
+case "$2" in
+    up) systemctl restart --no-block photobooth-hotspot.service ;;
+esac
