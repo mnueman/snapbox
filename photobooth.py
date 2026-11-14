@@ -306,6 +306,37 @@ def _load_settings():
 
 
 settings = _load_settings()
+
+
+# Menu colours, by theme (BOOTH tab > MENU COLOURS). All are dark with white text; the accent is
+# always light enough for black text on it. bg, row, dim text, accent, done, danger, off (a
+# button that can't be used), busy.
+THEMES = {
+    "classic": ((22, 22, 26), (46, 46, 54), (150, 150, 160), (255, 190, 40), (40, 150, 70),
+                (190, 45, 45), (30, 30, 36), (80, 80, 88)),
+    "midnight": ((10, 16, 34), (28, 40, 72), (140, 155, 190), (90, 200, 255), (30, 140, 120),
+                 (200, 60, 80), (16, 24, 48), (70, 82, 110)),
+    "rose": ((36, 18, 28), (72, 38, 56), (190, 150, 168), (255, 150, 180), (60, 150, 110),
+             (200, 50, 60), (48, 26, 38), (104, 76, 90)),
+    "forest": ((14, 28, 22), (32, 58, 46), (150, 175, 160), (240, 200, 90), (50, 150, 80),
+               (190, 60, 45), (20, 38, 30), (74, 96, 84)),
+    "grape": ((26, 16, 40), (54, 38, 82), (170, 155, 195), (200, 160, 255), (50, 150, 110),
+              (200, 55, 85), (36, 24, 54), (88, 76, 112)),
+}
+MENU_TEXT = (255, 255, 255)
+
+
+def apply_theme():
+    global MENU_BG, MENU_ROW, MENU_DIM, MENU_ACCENT, MENU_DONE, MENU_DANGER, MENU_OFF, MENU_BUSY
+    global MAIN_BG
+    name = settings["theme"] if settings["theme"] in THEMES else "classic"
+    (MENU_BG, MENU_ROW, MENU_DIM, MENU_ACCENT, MENU_DONE, MENU_DANGER, MENU_OFF,
+     MENU_BUSY) = THEMES[name]
+    # Behind the strip on the main and review screens: black in CLASSIC, as it always was.
+    MAIN_BG = (0, 0, 0) if name == "classic" else MENU_BG
+
+
+apply_theme()
 screen_rotation = settings["rotation"]
 
 
@@ -618,6 +649,7 @@ def set_setting(key, value):
         _invalidate_live_preview()
     elif key == "theme":
         apply_theme()
+        _invalidate_live_preview()
     elif key == "edge" or key in EFFECT_KEYS:
         _invalidate_live_preview()
     elif key in {k for k, _, _, _ in CAMERA_SETTINGS}:
@@ -1138,7 +1170,7 @@ def render_strip_to_ui(strip, layout, resample, transparent=False):
     if transparent:
         canvas = Image.new("RGBA", ui_size(), (0, 0, 0, 0))
     else:
-        canvas = Image.new("RGB", ui_size(), "black")
+        canvas = Image.new("RGB", ui_size(), MAIN_BG)
         strip = strip.convert("RGB")
 
     for src, (dx, dy, dw, dh) in layout:
@@ -1734,7 +1766,11 @@ def _draw_centered_banner(img, text):
         cx + max_w // 2 + pad,
         cy + total_h // 2 + pad,
     ]
-    draw.rectangle(box, fill=(0, 0, 0, 190))
+    if settings["theme"] == "classic":
+        draw.rectangle(box, fill=(0, 0, 0, 190))
+    else:
+        draw.rounded_rectangle(box, radius=10, fill=MENU_BG + (225,), outline=MENU_ACCENT + (255,),
+                               width=2)
 
     y = cy - total_h // 2
     for (w, h, bx, by), line in zip(line_sizes, lines):
@@ -2040,7 +2076,8 @@ def _draw_review_hint(img, seconds_left):
     lines = ["1x KEEP   2x RETAKE   3x FRAME", f"Keeping in {seconds_left}s"]
     line_h = 22
     bar_h = line_h * len(lines) + 10
-    draw.rectangle((0, img.height - bar_h, img.width, img.height), fill=(0, 0, 0, 190))
+    draw.rectangle((0, img.height - bar_h, img.width, img.height),
+                   fill=(0, 0, 0, 190) if settings["theme"] == "classic" else MENU_BG + (215,))
     y = img.height - bar_h + 5
     for line in lines:
         bbox = draw.textbbox((0, 0), line, font=font)
@@ -2091,7 +2128,7 @@ def _fit_to_screen(img, aspect, effects_index=None):
     if h > ui_h:
         w, h = int(ui_h * aspect), ui_h
     x, y = (ui_w - w) // 2, (ui_h - h) // 2
-    canvas = Image.new("RGB", (ui_w, ui_h), "black")
+    canvas = Image.new("RGB", (ui_w, ui_h), MAIN_BG)
     fitted = center_crop_to_slot(img, w, h, resample=Image.BILINEAR)
     if effects_index is not None:
         fitted = apply_effects(fitted, effects_index)
@@ -3091,31 +3128,6 @@ def cycle_screen_rotation():
 # Touchscreen settings menu (opened with the gear icon in the top-left corner)
 # ---------------------------------------------------------------------------
 
-# Menu colours, by theme (BOOTH tab > MENU COLOURS). All are dark with white text; the accent is
-# always light enough for black text on it. bg, row, dim text, accent, done, danger, off (a
-# button that can't be used), busy.
-THEMES = {
-    "classic": ((22, 22, 26), (46, 46, 54), (150, 150, 160), (255, 190, 40), (40, 150, 70),
-                (190, 45, 45), (30, 30, 36), (80, 80, 88)),
-    "midnight": ((10, 16, 34), (28, 40, 72), (140, 155, 190), (90, 200, 255), (30, 140, 120),
-                 (200, 60, 80), (16, 24, 48), (70, 82, 110)),
-    "rose": ((36, 18, 28), (72, 38, 56), (190, 150, 168), (255, 150, 180), (60, 150, 110),
-             (200, 50, 60), (48, 26, 38), (104, 76, 90)),
-    "forest": ((14, 28, 22), (32, 58, 46), (150, 175, 160), (240, 200, 90), (50, 150, 80),
-               (190, 60, 45), (20, 38, 30), (74, 96, 84)),
-    "grape": ((26, 16, 40), (54, 38, 82), (170, 155, 195), (200, 160, 255), (50, 150, 110),
-              (200, 55, 85), (36, 24, 54), (88, 76, 112)),
-}
-MENU_TEXT = (255, 255, 255)
-
-
-def apply_theme():
-    global MENU_BG, MENU_ROW, MENU_DIM, MENU_ACCENT, MENU_DONE, MENU_DANGER, MENU_OFF, MENU_BUSY
-    (MENU_BG, MENU_ROW, MENU_DIM, MENU_ACCENT, MENU_DONE, MENU_DANGER, MENU_OFF,
-     MENU_BUSY) = THEMES.get(settings["theme"], THEMES["classic"])
-
-
-apply_theme()
 SHUTDOWN_CONFIRM_SECONDS = 4
 
 _fonts = {}
@@ -3235,7 +3247,10 @@ def _draw_corner_buttons(img):
     white = (255, 255, 255, 230)
     for kind, (x0, y0, x1, y1) in corner_buttons():
         # The camera (back to taking photos) stands out in green.
-        fill = (40, 150, 70, 230) if kind == "camera" else (0, 0, 0, 150)
+        if kind == "camera":
+            fill = MENU_DONE + (230,)
+        else:  # CLASSIC keeps its see-through black; the others use the theme's button colour
+            fill = (0, 0, 0, 150) if settings["theme"] == "classic" else MENU_ROW + (215,)
         draw.ellipse((x0, y0, x1, y1), fill=fill)
         cx, cy, k = (x0 + x1) / 2, (y0 + y1) / 2, ICON_SIZE / 44
         if kind == "menu":
@@ -3246,7 +3261,7 @@ def _draw_corner_buttons(img):
             _draw_layout_icon(draw, cx, cy, k, white, current_kind())
         elif kind == "fx":
             # Gold while any effect is on, so you can see at a glance.
-            _draw_sparkle_icon(draw, cx, cy, k, (255, 200, 60, 255) if effects_on() else white)
+            _draw_sparkle_icon(draw, cx, cy, k, MENU_ACCENT + (255,) if effects_on() else white)
         else:
             _draw_camera_icon(draw, cx, cy, k, white)
 
@@ -4515,7 +4530,7 @@ def _draw_pair_sheet(img, draw, area, first, second, arrow_buttons=None):
 def render_gallery():
     global gallery_buttons
     w, h = ui_size()
-    img = Image.new("RGB", (w, h), (0, 0, 0))
+    img = Image.new("RGB", (w, h), MAIN_BG)
     draw = ImageDraw.Draw(img, "RGBA")
     buttons = []
     pad, gap = 8, 6
