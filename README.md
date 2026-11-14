@@ -132,7 +132,7 @@ underneath: tap a setting's name (or swipe) to pick which. Tap DONE or press the
     three rows show the next photo's pick; tap RANDOM to shuffle it. Changing any of the three by hand
     turns RANDOM off.
 - Booth tab: screen orientation, screen-off time, countdown before each photo (off / 3 / 5 / 10 s), review auto-keep
-  time, auto shut down when idle (off / 15 / 30 min / 1 / 2 / 4 h), UPDATES, Shut down (tap twice), and a reminder
+  time, menu colours (CLASSIC, MIDNIGHT, ROSE, FOREST, GRAPE), auto shut down when idle (off / 15 / 30 min / 1 / 2 / 4 h), UPDATES, Shut down (tap twice), and a reminder
   of the button presses.
 - Auto shut down works on battery and on mains or a power bank. A minute before, the screen wakes and counts down;
   any tap or press keeps the booth on. A half-finished strip is saved first.
@@ -152,7 +152,9 @@ Tap the photo button under the gear to open REVIEW. Swipe left/right (or use ◀
 newest first. Every print is one 4x6 sheet (Canon SELPHY CP1500) holding two strips side by side.
 PRINT 2 COPIES prints the strip on screen twice. MIX 2 STRIPS picks the strip on screen for the left half:
 swipe to another and tap PRINT THESE 2; the screen shows the sheet as it will print. CHANGE FRAME rebuilds
-the strip with another frame (swipe to try them, SAVE THIS FRAME to keep one): each strip's photos are kept
+the strip with another frame (swipe to try them, SAVE THIS FRAME to keep one). It offers every design
+with room for the same number of photos, in any layout: its own layout first, then the others, so a
+4-photo strip can become a 4-photo big sheet and back. Each strip's photos are kept
 in `strips/archive/photos/` for this (about 1 MB a strip; strips saved before this feature can't be
 re-framed). DELETE asks for a second tap within 4 seconds before it
 deletes, so a stray tap can't remove a photo. The top shows free storage and roughly how many more strips

@@ -268,6 +268,11 @@ BOOTH_SETTINGS = [
         (0, "NO SHIFT"), (1, "1 MM"), (2, "2 MM"), (3, "3 MM"), (4, "4 MM"), (5, "5 MM"),
         (6, "6 MM"),
     ], 2),
+    # Colours of the menus and buttons (THEMES, further down).
+    ("theme", "MENU COLOURS", [
+        ("classic", "CLASSIC"), ("midnight", "MIDNIGHT"), ("rose", "ROSE"),
+        ("forest", "FOREST"), ("grape", "GRAPE"),
+    ], "classic"),
     # Saves the battery or power bank (and works on mains too).
     ("auto_off", "AUTO SHUT DOWN WHEN IDLE", [
         (None, "OFF"), (900, "AFTER 15 MIN"), (1800, "AFTER 30 MIN"), (3600, "AFTER 1 HOUR"),
@@ -611,6 +616,8 @@ def set_setting(key, value):
     if key == "rotation":
         screen_rotation = value
         _invalidate_live_preview()
+    elif key == "theme":
+        apply_theme()
     elif key == "edge" or key in EFFECT_KEYS:
         _invalidate_live_preview()
     elif key in {k for k, _, _, _ in CAMERA_SETTINGS}:
@@ -2371,12 +2378,16 @@ def toggle_layout():
     target = order[(order.index(kind) + 1) % len(order)] if kind in order else order[0]
     group = indices_for_kind(target)
     last = _last_frame_of_kind.get(target)
-    if target == "strip":
+    taken = sum(p is not None for p in live_photos)
+    same = [i for i in group if frame_slot_count(i) == taken] if strip_is_full() else []
+    if same:
+        # All photos taken: a design for exactly that many, so it stays finished.
+        current_frame_index = last if last in same else same[0]
+    elif target == "strip":
         # Strips always come back as four photos.
         fours = [i for i in group if frame_slot_count(i) == 4] or group
         current_frame_index = last if last in fours else fours[0]
     else:
-        taken = sum(p is not None for p in live_photos)
         fits = [i for i in group if frame_slot_count(i) >= taken] or group
         current_frame_index = last if last in fits else fits[0]
     resize_live_photos(current_capacity())
@@ -3080,13 +3091,31 @@ def cycle_screen_rotation():
 # Touchscreen settings menu (opened with the gear icon in the top-left corner)
 # ---------------------------------------------------------------------------
 
-MENU_BG = (22, 22, 26)
-MENU_ROW = (46, 46, 54)
+# Menu colours, by theme (BOOTH tab > MENU COLOURS). All are dark with white text; the accent is
+# always light enough for black text on it. bg, row, dim text, accent, done, danger, off (a
+# button that can't be used), busy.
+THEMES = {
+    "classic": ((22, 22, 26), (46, 46, 54), (150, 150, 160), (255, 190, 40), (40, 150, 70),
+                (190, 45, 45), (30, 30, 36), (80, 80, 88)),
+    "midnight": ((10, 16, 34), (28, 40, 72), (140, 155, 190), (90, 200, 255), (30, 140, 120),
+                 (200, 60, 80), (16, 24, 48), (70, 82, 110)),
+    "rose": ((36, 18, 28), (72, 38, 56), (190, 150, 168), (255, 150, 180), (60, 150, 110),
+             (200, 50, 60), (48, 26, 38), (104, 76, 90)),
+    "forest": ((14, 28, 22), (32, 58, 46), (150, 175, 160), (240, 200, 90), (50, 150, 80),
+               (190, 60, 45), (20, 38, 30), (74, 96, 84)),
+    "grape": ((26, 16, 40), (54, 38, 82), (170, 155, 195), (200, 160, 255), (50, 150, 110),
+              (200, 55, 85), (36, 24, 54), (88, 76, 112)),
+}
 MENU_TEXT = (255, 255, 255)
-MENU_DIM = (150, 150, 160)
-MENU_ACCENT = (255, 190, 40)
-MENU_DONE = (40, 150, 70)
-MENU_DANGER = (190, 45, 45)
+
+
+def apply_theme():
+    global MENU_BG, MENU_ROW, MENU_DIM, MENU_ACCENT, MENU_DONE, MENU_DANGER, MENU_OFF, MENU_BUSY
+    (MENU_BG, MENU_ROW, MENU_DIM, MENU_ACCENT, MENU_DONE, MENU_DANGER, MENU_OFF,
+     MENU_BUSY) = THEMES.get(settings["theme"], THEMES["classic"])
+
+
+apply_theme()
 SHUTDOWN_CONFIRM_SECONDS = 4
 
 _fonts = {}
@@ -3879,7 +3908,8 @@ def wifi_page_step(step):
     wifi_page = max(0, wifi_page + step)
 
 
-def _draw_key(draw, box, label, buttons, action, fill=MENU_ROW, text_fill=MENU_TEXT, size=22):
+def _draw_key(draw, box, label, buttons, action, fill=None, text_fill=MENU_TEXT, size=22):
+    fill = MENU_ROW if fill is None else fill  # looked up now: the theme can change
     draw.rounded_rectangle(box, radius=8, fill=fill)
     # Anchor on the font's middle so q, g and y line up with the other keys.
     font = _fit_font(draw, max(label.split("\n"), key=len), box[2] - box[0] - 6, size, bold=True)
@@ -3895,7 +3925,7 @@ def _draw_signal_bars(draw, x, y, h, signal, color):
     for i in range(bars):
         bh = int(h * (i + 1) / bars)
         draw.rectangle((x + i * (bw + 2), y + h - bh, x + i * (bw + 2) + bw, y + h),
-                       fill=color if i < lit else (80, 80, 88))
+                       fill=color if i < lit else MENU_BUSY)
 
 
 def _draw_lock(draw, x, y, color):
@@ -3994,7 +4024,7 @@ def _render_wifi_list(draw, area, buttons):
     busy = wifi_scanning or wifi_connecting
     _draw_key(draw, (ix0, scan_top, ix1, radio_top - gap), "SCANNING..." if wifi_scanning else "SCAN AGAIN"
               if wifi_networks else "SCAN FOR WIFI", buttons, wifi_scan,
-              fill=(80, 80, 88) if busy else MENU_ACCENT,
+              fill=MENU_BUSY if busy else MENU_ACCENT,
               text_fill=MENU_TEXT if busy else (0, 0, 0), size=22)
 
     if lst is None:
@@ -4247,7 +4277,10 @@ def gallery_reframe_start():
             photos.append(Image.open(strip_photos_dir(path) / f"photo{i}.jpg").convert("RGB"))
         except Exception:
             photos.append(None)
-    choices = indices_for_capacity(count, kind)
+    # Any design with room for exactly these photos: its own layout first, then the others
+    # (a 4-photo strip can become a 4-photo big sheet, and back).
+    choices = [i for k in [kind] + [k for k in LAYOUTS if k != kind]
+               for i in indices_for_capacity(count, k)]
     if not choices or not any(photos):
         flash_message("NO FRAMES FIT THIS STRIP", seconds=1.0)
         return
@@ -4473,7 +4506,7 @@ def _draw_pair_sheet(img, draw, area, first, second, arrow_buttons=None):
             for step, text, kx0, kx1 in ((-1, "\u25c0", lbox[0], mid - 3), (1, "\u25b6", mid + 3, lbox[2])):
                 enabled = 0 <= gallery_index + step < len(gallery_paths)
                 _draw_key(draw, (kx0, lbox[1], kx1, lbox[3]), text, arrow_buttons,
-                          lambda st=step: gallery_step(st), fill=MENU_ROW if enabled else (30, 30, 36),
+                          lambda st=step: gallery_step(st), fill=MENU_ROW if enabled else MENU_OFF,
                           text_fill=colour if enabled else (90, 90, 98), size=22)
         else:
             _draw_text_centered(draw, lbox, label, _fit_font(draw, label, lbox[2] - lbox[0], 16), colour)
@@ -4498,7 +4531,9 @@ def render_gallery():
     if level != "ok":
         text = ("STORAGE FULL: " if level == "full" else "STORAGE LOW: ") + text
     if n and gallery_reframe is not None:
-        title = f"CHANGE FRAME  \u00b7  {gallery_reframe['pos'] + 1} OF {len(gallery_reframe['choices'])}"
+        r = gallery_reframe
+        title = (f"{LAYOUT_NAMES[frame_kind(r['choices'][r['pos']])]}  \u00b7  "
+                 f"{r['pos'] + 1} OF {len(r['choices'])}")
         text, color, level = "SWIPE OR TAP \u25c0 \u25b6 TO TRY FRAMES, THEN SAVE", MENU_ACCENT, "ok"
     elif n and gallery_pair_first is not None:
         title = "MIX 2 STRIPS: THIS IS YOUR PRINT"
@@ -4520,7 +4555,7 @@ def render_gallery():
         can_newer = can_older = len(gallery_reframe["choices"]) > 1
     else:
         can_newer, can_older = gallery_index > 0, gallery_index < n - 1
-    dim = (30, 30, 36)
+    dim = MENU_OFF
 
     def arrow(box, label, step, enabled):
         _draw_key(draw, box, label, buttons,
@@ -4537,7 +4572,7 @@ def render_gallery():
                   fill=(70, 70, 80), size=22)
         _draw_key(draw, (w - pad - side_w, top, w - pad, h - pad),
                   "PRINTING..." if printing else "PRINT\nTHESE 2", buttons, gallery_pair_print,
-                  fill=(80, 80, 88) if printing else MENU_ACCENT,
+                  fill=MENU_BUSY if printing else MENU_ACCENT,
                   text_fill=MENU_TEXT if printing else (0, 0, 0), size=22)
         area = (pad + side_w + gap, top, w - pad - side_w - gap, h - pad)
     elif landscape:
@@ -4589,7 +4624,7 @@ def render_gallery():
     if n and not pair_side:
         bx0, by0, bx1, by1 = actions
         printing = _print_busy.is_set()
-        busy = dict(fill=(80, 80, 88), text_fill=MENU_TEXT)
+        busy = dict(fill=MENU_BUSY, text_fill=MENU_TEXT)
         go = dict(fill=MENU_ACCENT, text_fill=(0, 0, 0))
         if gallery_reframe is not None:
             half = (bx1 - bx0 - gap) // 2
@@ -4860,7 +4895,7 @@ def render_update_view(draw, area, buttons):
     busy = update_state in ("checking", "installing")
     check = (x0, back[1] - gap - button_h, x1, back[1] - gap)
     _draw_key(draw, check, "CHECKING..." if update_state == "checking" else "CHECK FOR UPDATES",
-              buttons, check_for_updates, fill=(80, 80, 88) if busy else MENU_ACCENT,
+              buttons, check_for_updates, fill=MENU_BUSY if busy else MENU_ACCENT,
               text_fill=MENU_TEXT if busy else (0, 0, 0))
     if update_state == "available":
         install = (x0, check[1] - gap - button_h, x1, check[1] - gap)
