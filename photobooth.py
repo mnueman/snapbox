@@ -120,7 +120,15 @@ PRINTER_NAME = None
 PRINT_OPTIONS = [
     "-o", "PageSize=Postcard.Borderless",
 ]
-PRINT_SCALE = 96
+# How much of a borderless 4x6 the SELPHY loses on each side, in mm of the picture as sent (the
+# printer enlarges it a little and it isn't centred). Measured on booth-1's CP1500 with
+# system/print_calibration.py: the first number you can read on each edge, after tearing off the
+# tabs. Prints are fitted into what's left, so the design's edges land on the perforations and
+# the paper's edges.
+PRINT_TRIM_MM = {"top": 4.68, "bottom": 5.90, "left": 2.26, "right": 3.14}
+# The design reaches this far past those edges, so a slightly different paper feed shows the
+# design's edge, not white.
+PRINT_BLEED_MM = 0.5
 
 
 def _load_screen_rotation():
@@ -2458,25 +2466,33 @@ def detect_printer():
     return None
 
 
-def _prepare_print_image(path):
-    # Shrink onto a white canvas so borderless overscan crops margin, not strips.
-    if PRINT_SCALE >= 100:
-        return str(path), None
+def print_layout(size):
+    """(x0, y0, x1, y1): where the design goes on a print of `size`, so it fills the part of the
+    paper that's left after the printer's cut-off (PRINT_TRIM_MM), plus PRINT_BLEED_MM."""
+    w, h = size
+    px_mm = w / (4 * 25.4)  # the print is 4 inches across
+    t = {side: max(0.0, mm - PRINT_BLEED_MM) * px_mm for side, mm in PRINT_TRIM_MM.items()}
+    return (round(t["left"]), round(t["top"]), round(w - t["right"]), round(h - t["bottom"]))
 
+
+def fit_print(img):
+    """The print, fitted into the part of the paper that survives (print_layout). Each direction
+    is fitted on its own (they differ by under 2%, too little to see). Outside it, the design's
+    own edge pixels carried on to the sheet's edge, so a print that lands slightly off shows more
+    of the design's border, never white."""
+    x0, y0, x1, y1 = print_layout(img.size)
+    fitted = np.asarray(img.convert("RGB").resize((x1 - x0, y1 - y0), Image.LANCZOS))
+    w, h = img.size
+    full = np.pad(fitted, ((y0, h - y1), (x0, w - x1), (0, 0)), mode="edge")
+    return Image.fromarray(full)
+
+
+def _prepare_print_image(path):
     try:
-        img = Image.open(path).convert("RGB")
+        canvas = fit_print(Image.open(path))
     except Exception as e:
         print(f"Could not prepare print image {path}: {e}")
         return str(path), None
-
-    w, h = img.size
-    scale = PRINT_SCALE / 100.0
-    new_w = max(1, int(round(w * scale)))
-    new_h = max(1, int(round(h * scale)))
-
-    shrunk = img.resize((new_w, new_h), Image.LANCZOS)
-    canvas = Image.new("RGB", (w, h), "white")
-    canvas.paste(shrunk, ((w - new_w) // 2, (h - new_h) // 2))
 
     try:
         fd, tmp_path = tempfile.mkstemp(prefix="print_", suffix=".jpg")
@@ -2484,7 +2500,7 @@ def _prepare_print_image(path):
         canvas.save(tmp_path, quality=95)
         return tmp_path, tmp_path
     except Exception as e:
-        print(f"Could not write scaled print image: {e}")
+        print(f"Could not write fitted print image: {e}")
         return str(path), None
 
 
