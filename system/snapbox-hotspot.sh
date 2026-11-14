@@ -64,8 +64,16 @@ if ! nmcli -t -f NAME connection show | grep -qxF "$CON"; then
         ipv4.method shared ipv4.addresses 10.42.0.1/24 ipv6.method disabled >/dev/null || exit 1
 fi
 
-now=$(nmcli -g 802-11-wireless.channel connection show "$CON")
 state=$(nmcli -g GENERAL.STATE connection show "$CON" 2>/dev/null)
+# The file decides the name and password: edit it, then `sudo systemctl restart photobooth-hotspot`.
+# (The printer then has to be told the new ones from its own menu.)
+if [ "$(nmcli -g 802-11-wireless.ssid connection show "$CON")" != "$SSID" ] ||
+        [ "$(nmcli -s -g 802-11-wireless-security.psk connection show "$CON")" != "$PASSWORD" ]; then
+    echo "snapbox-hotspot: name or password changed in $CONF"
+    nmcli connection modify "$CON" 802-11-wireless.ssid "$SSID" wifi-sec.psk "$PASSWORD"
+    state=""
+fi
+now=$(nmcli -g 802-11-wireless.channel connection show "$CON")
 if [ "$now" != "$chan" ]; then
     echo "snapbox-hotspot: moving to channel $chan (was $now)"
     nmcli connection modify "$CON" 802-11-wireless.channel "$chan"
