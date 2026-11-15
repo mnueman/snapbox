@@ -1,5 +1,5 @@
 #!/bin/sh
-# Boot splash: shows the Snapbox name plate (with a moving shine) instead of Linux's start-up text.
+# Boot splash: shows the Snapshot name plate (with a moving shine) instead of Linux's start-up text.
 # Run with sudo, with internet (it installs Plymouth, the boot-splash program). Needs a reboot.
 #
 #   sudo sh ~/photobooth/system/setup-splash.sh           install it (safe to run again)
