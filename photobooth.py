@@ -274,8 +274,8 @@ BOOTH_SETTINGS = [
     ], 2),
     # Colours of the menus and buttons (THEMES, further down).
     ("theme", "MENU COLOURS", [
-        ("classic", "CLASSIC"), ("midnight", "MIDNIGHT"), ("rose", "ROSE"),
-        ("forest", "FOREST"), ("grape", "GRAPE"),
+        ("classic", "CLASSIC"), ("sunshine", "SUNSHINE"), ("bubblegum", "BUBBLEGUM"),
+        ("ocean", "OCEAN"), ("mint", "MINT"), ("party", "PARTY"), ("midnight", "MIDNIGHT"),
     ], "classic"),
     # Saves the battery or power bank (and works on mains too).
     ("auto_off", "AUTO SHUT DOWN WHEN IDLE", [
@@ -312,32 +312,62 @@ def _load_settings():
 settings = _load_settings()
 
 
-# Menu colours, by theme (BOOTH tab > MENU COLOURS). All are dark with white text; the accent is
-# always light enough for black text on it. bg, row, dim text, accent, done, danger, off (a
-# button that can't be used), busy.
+# Colours of the menus, main screen and review screen, by theme (BOOTH tab > MENU COLOURS).
+# The accent is always light enough for black text on it.
+#   bg: behind everything      row: buttons and setting rows   text / dim: writing on bg and row
+#   accent: the chosen thing   done / danger: green and red buttons
+#   off: a button that can't be used   busy: a button that's working   key: plain keys
+#   field: where typing shows  inset: a quiet box   good / bad: status writing on bg
+#   disc: the round buttons on the main screen (white icons on them)
+#   main: behind the strip on the main and review screens
 THEMES = {
-    "classic": ((22, 22, 26), (46, 46, 54), (150, 150, 160), (255, 190, 40), (40, 150, 70),
-                (190, 45, 45), (30, 30, 36), (80, 80, 88)),
-    "midnight": ((10, 16, 34), (28, 40, 72), (140, 155, 190), (90, 200, 255), (30, 140, 120),
-                 (200, 60, 80), (16, 24, 48), (70, 82, 110)),
-    "rose": ((36, 18, 28), (72, 38, 56), (190, 150, 168), (255, 150, 180), (60, 150, 110),
-             (200, 50, 60), (48, 26, 38), (104, 76, 90)),
-    "forest": ((14, 28, 22), (32, 58, 46), (150, 175, 160), (240, 200, 90), (50, 150, 80),
-               (190, 60, 45), (20, 38, 30), (74, 96, 84)),
-    "grape": ((26, 16, 40), (54, 38, 82), (170, 155, 195), (200, 160, 255), (50, 150, 110),
-              (200, 55, 85), (36, 24, 54), (88, 76, 112)),
+    "classic": dict(bg=(22, 22, 26), row=(46, 46, 54), text=(255, 255, 255), dim=(150, 150, 160),
+                    accent=(255, 190, 40), done=(40, 150, 70), danger=(190, 45, 45),
+                    off=(30, 30, 36), busy=(80, 80, 88), key=(70, 70, 80), field=(0, 0, 0),
+                    inset=(34, 34, 40), good=(120, 220, 140), bad=(255, 110, 110),
+                    disc=(0, 0, 0), main=(0, 0, 0)),
+    "sunshine": dict(bg=(255, 236, 170), row=(255, 252, 240), text=(74, 44, 10), dim=(150, 112, 60),
+                     accent=(255, 150, 20), done=(70, 200, 110), danger=(245, 96, 80),
+                     off=(246, 222, 150), busy=(226, 204, 150), key=(255, 214, 110),
+                     field=(255, 255, 255), inset=(255, 226, 140), good=(20, 130, 60),
+                     bad=(200, 40, 40), disc=(230, 110, 0), main=(255, 224, 130)),
+    "bubblegum": dict(bg=(255, 200, 226), row=(255, 244, 250), text=(96, 16, 64), dim=(170, 90, 130),
+                      accent=(255, 96, 170), done=(60, 200, 150), danger=(240, 70, 100),
+                      off=(250, 184, 212), busy=(230, 176, 204), key=(255, 160, 205),
+                      field=(255, 255, 255), inset=(255, 178, 214), good=(10, 130, 90),
+                      bad=(200, 30, 70), disc=(226, 50, 140), main=(255, 178, 214)),
+    "ocean": dict(bg=(170, 226, 250), row=(240, 250, 255), text=(8, 48, 92), dim=(70, 120, 160),
+                  accent=(40, 190, 255), done=(60, 205, 150), danger=(245, 100, 95),
+                  off=(150, 210, 238), busy=(150, 196, 220), key=(120, 204, 245),
+                  field=(255, 255, 255), inset=(140, 212, 245), good=(0, 120, 80),
+                  bad=(200, 40, 50), disc=(0, 110, 200), main=(130, 208, 246)),
+    "mint": dict(bg=(186, 242, 214), row=(242, 255, 248), text=(10, 66, 48), dim=(70, 130, 105),
+                 accent=(60, 220, 160), done=(50, 190, 110), danger=(245, 105, 95),
+                 off=(166, 228, 198), busy=(160, 212, 188), key=(130, 226, 186),
+                 field=(255, 255, 255), inset=(156, 232, 196), good=(0, 120, 70),
+                 bad=(200, 40, 50), disc=(0, 150, 100), main=(150, 230, 190)),
+    "party": dict(bg=(84, 30, 170), row=(128, 66, 220), text=(255, 255, 255), dim=(216, 190, 255),
+                  accent=(255, 224, 40), done=(30, 200, 140), danger=(255, 70, 120),
+                  off=(70, 24, 140), busy=(140, 110, 200), key=(160, 90, 240),
+                  field=(40, 10, 90), inset=(104, 46, 196), good=(120, 255, 190),
+                  bad=(255, 150, 170), disc=(255, 60, 160), main=(100, 40, 196)),
+    "midnight": dict(bg=(10, 16, 34), row=(28, 40, 72), text=(255, 255, 255), dim=(140, 155, 190),
+                     accent=(90, 200, 255), done=(30, 140, 120), danger=(200, 60, 80),
+                     off=(16, 24, 48), busy=(70, 82, 110), key=(52, 66, 104), field=(0, 0, 0),
+                     inset=(20, 30, 58), good=(120, 220, 170), bad=(255, 120, 130),
+                     disc=(28, 40, 72), main=(10, 16, 34)),
 }
-MENU_TEXT = (255, 255, 255)
 
 
 def apply_theme():
-    global MENU_BG, MENU_ROW, MENU_DIM, MENU_ACCENT, MENU_DONE, MENU_DANGER, MENU_OFF, MENU_BUSY
-    global MAIN_BG
-    name = settings["theme"] if settings["theme"] in THEMES else "classic"
-    (MENU_BG, MENU_ROW, MENU_DIM, MENU_ACCENT, MENU_DONE, MENU_DANGER, MENU_OFF,
-     MENU_BUSY) = THEMES[name]
-    # Behind the strip on the main and review screens: black in CLASSIC, as it always was.
-    MAIN_BG = (0, 0, 0) if name == "classic" else MENU_BG
+    global MENU_BG, MENU_ROW, MENU_TEXT, MENU_DIM, MENU_ACCENT, MENU_DONE, MENU_DANGER, MENU_OFF
+    global MENU_BUSY, MENU_KEY, MENU_FIELD, MENU_INSET, MENU_GOOD, MENU_BAD, MENU_DISC, MAIN_BG
+    t = THEMES.get(settings["theme"], THEMES["classic"])
+    MENU_BG, MENU_ROW, MENU_TEXT, MENU_DIM = t["bg"], t["row"], t["text"], t["dim"]
+    MENU_ACCENT, MENU_DONE, MENU_DANGER = t["accent"], t["done"], t["danger"]
+    MENU_OFF, MENU_BUSY, MENU_KEY, MENU_FIELD = t["off"], t["busy"], t["key"], t["field"]
+    MENU_INSET, MENU_GOOD, MENU_BAD, MENU_DISC, MAIN_BG = (t["inset"], t["good"], t["bad"],
+                                                            t["disc"], t["main"])
 
 
 apply_theme()
@@ -1786,7 +1816,7 @@ def _draw_centered_banner(img, text):
             (cx - w // 2 - bx, y - by),
             line,
             font=font,
-            fill=(255, 255, 255, 255),
+            fill=MENU_TEXT + (255,),
         )
         y += h + line_gap
 
@@ -2093,7 +2123,7 @@ def _draw_review_hint(img, seconds_left):
         bbox = draw.textbbox((0, 0), line, font=font)
         w = bbox[2] - bbox[0]
         draw.text(((img.width - w) // 2 - bbox[0], y - bbox[1]), line,
-                  font=font, fill=(255, 255, 255, 255))
+                  font=font, fill=MENU_TEXT + (255,))
         y += line_h
 
 
@@ -3632,8 +3662,8 @@ def _draw_corner_buttons(img):
         # The camera (back to taking photos) stands out in green.
         if kind == "camera":
             fill = MENU_DONE + (230,)
-        else:  # CLASSIC keeps its see-through black; the others use the theme's button colour
-            fill = (0, 0, 0, 150) if settings["theme"] == "classic" else MENU_ROW + (215,)
+        else:  # CLASSIC keeps its see-through black; the others use the theme's own colour
+            fill = (0, 0, 0, 150) if settings["theme"] == "classic" else MENU_DISC + (235,)
         draw.ellipse((x0, y0, x1, y1), fill=fill)
         cx, cy, k = (x0 + x1) / 2, (y0 + y1) / 2, ICON_SIZE / 44
         if kind == "menu":
@@ -3644,7 +3674,8 @@ def _draw_corner_buttons(img):
             _draw_layout_icon(draw, cx, cy, k, white, current_kind())
         elif kind == "fx":
             # Gold while any effect is on, so you can see at a glance.
-            _draw_sparkle_icon(draw, cx, cy, k, MENU_ACCENT + (255,) if effects_on() else white)
+            _draw_sparkle_icon(draw, cx, cy, k, ((255, 200, 60, 255) if settings["theme"] == "classic" else (255, 240, 120, 255))
+                               if effects_on() else white)
         else:
             _draw_camera_icon(draw, cx, cy, k, white)
 
@@ -3838,18 +3869,18 @@ def _render_date_keypad(draw, area, buttons):
     cancel = (x0, y, x0 + int(w * 0.22), y + row_h)
     save = (x1 - int(w * 0.22), y, x1, y + row_h)
     field = (cancel[2] + gap, y, save[0] - gap, y + row_h)
-    _draw_key(draw, cancel, "CANCEL", buttons, date_keypad_cancel, fill=(70, 70, 80), size=20)
+    _draw_key(draw, cancel, "CANCEL", buttons, date_keypad_cancel, fill=MENU_KEY, size=20)
     day = _typed_date()
     full = len(date_entry) == 6
     _draw_key(draw, save, "SAVE" if day else "NOT A DATE" if full else "SAVE", buttons,
               date_keypad_save if day else (lambda: None),
               fill=MENU_DONE if day else (90, 40, 40) if full else (50, 50, 58),
               text_fill=MENU_TEXT if day or full else (110, 110, 118), size=22 if day or not full else 15)
-    draw.rounded_rectangle(field, radius=8, fill=(0, 0, 0), outline=MENU_ACCENT, width=2)
+    draw.rounded_rectangle(field, radius=8, fill=MENU_FIELD, outline=MENU_ACCENT, width=2)
     digits = date_entry.ljust(6, "_")
     shown = f"{digits[:2]} / {digits[2:4]} / {digits[4:]}"
     _draw_text_centered(draw, field, shown, _fit_font(draw, "MM / DD / YY", field[2] - field[0] - 16, 34),
-                        MENU_TEXT if day or not full else (255, 110, 110))
+                        MENU_TEXT if day or not full else MENU_BAD)
     y += row_h + gap
 
     key_h = (y1 - y - 3 * gap) // 4
@@ -3860,9 +3891,9 @@ def _render_date_keypad(draw, area, buttons):
         left = x0 + col * (key_w + gap)
         box = (int(left), y + row * (key_h + gap), int(left + key_w), y + row * (key_h + gap) + key_h)
         if label == "CLEAR":
-            _draw_key(draw, box, label, buttons, date_keypad_clear, fill=(70, 70, 80), size=20)
+            _draw_key(draw, box, label, buttons, date_keypad_clear, fill=MENU_KEY, size=20)
         elif label == "\u232b":
-            _draw_key(draw, box, label, buttons, date_keypad_backspace, fill=(70, 70, 80), size=32)
+            _draw_key(draw, box, label, buttons, date_keypad_backspace, fill=MENU_KEY, size=32)
         else:
             _draw_key(draw, box, label, buttons, lambda ch=label: date_keypad_type(ch), size=34)
 
@@ -3919,7 +3950,7 @@ def _draw_pager(draw, box, page, pages, on_step, buttons):
     x0, y0, x1, y1 = box
     gap = 6
     half = (x1 - x0 - gap) * 2 // 5
-    dim = (34, 34, 40)
+    dim = MENU_INSET
     _draw_key(draw, (x0, y0, x0 + half, y1), "\u25c0 PREV", buttons, lambda: on_step(-1),
               fill=MENU_ROW if page > 0 else dim,
               text_fill=MENU_TEXT if page > 0 else (90, 90, 98), size=20)
@@ -4326,8 +4357,9 @@ def wifi_page_step(step):
     wifi_page = max(0, wifi_page + step)
 
 
-def _draw_key(draw, box, label, buttons, action, fill=None, text_fill=MENU_TEXT, size=22):
+def _draw_key(draw, box, label, buttons, action, fill=None, text_fill=None, size=22):
     fill = MENU_ROW if fill is None else fill  # looked up now: the theme can change
+    text_fill = MENU_TEXT if text_fill is None else text_fill
     draw.rounded_rectangle(box, radius=8, fill=fill)
     # Anchor on the font's middle so q, g and y line up with the other keys.
     font = _fit_font(draw, max(label.split("\n"), key=len), box[2] - box[0] - 6, size, bold=True)
@@ -4380,7 +4412,7 @@ def _render_wifi_list(draw, area, buttons):
     elif wifi_connecting:
         status, name, color = "CONNECTING...", None, MENU_ACCENT
     elif ssid:
-        status, name, color = "CONNECTED TO", ssid, (120, 220, 140)
+        status, name, color = "CONNECTED TO", ssid, MENU_GOOD
     elif wifi_scanning:
         status, name, color = "CHECKING...", None, MENU_DIM
     else:
@@ -4410,11 +4442,12 @@ def _render_wifi_list(draw, area, buttons):
     if ip and not wifi_connecting:
         # What to type on a computer on the same WiFi; the IP changes with the network.
         ssh_box = (ix0, y, ix1, y + 56)
-        draw.rounded_rectangle(ssh_box, radius=10, fill=(34, 34, 40))
+        draw.rounded_rectangle(ssh_box, radius=10, fill=MENU_INSET)
         cmd = f"ssh admin@{ip}"
         alt = f"or ssh admin@{socket.gethostname()}.local"
         _draw_text_centered(draw, (ix0, y + 4, ix1, y + 32), cmd,
-                            _fit_font(draw, cmd, iw - 14, 20), MENU_ACCENT)
+                            _fit_font(draw, cmd, iw - 14, 20),
+                            MENU_ACCENT if sum(MENU_BG) < 380 else MENU_TEXT)
         _draw_text_centered(draw, (ix0, y + 32, ix1, y + 52), alt,
                             _fit_font(draw, alt, iw - 14, 14, bold=False), MENU_DIM)
         y += 62
@@ -4425,14 +4458,15 @@ def _render_wifi_list(draw, area, buttons):
         l1 = f"PHONE PRINTS: JOIN WIFI {PRINTER_WIFI[0]}"
         l2 = f"password {PRINTER_WIFI[1]}  then open {WEB_ADDR}:{WEB_PORT}"
         _draw_text_centered(draw, (ix0, y + 4, ix1, y + 30), l1,
-                            _fit_font(draw, l1, iw - 14, 16), MENU_ACCENT)
+                            _fit_font(draw, l1, iw - 14, 16),
+                            MENU_ACCENT if sum(MENU_BG) < 380 else MENU_TEXT)
         _draw_text_centered(draw, (ix0, y + 30, ix1, y + 52), l2,
                             _fit_font(draw, l2, iw - 14, 14, bold=False), MENU_TEXT)
         y += 62
     if wifi_message:
         text, ok = wifi_message
         _draw_text_centered(draw, (ix0, y, ix1, y + 28), text, _fit_font(draw, text, iw, 18),
-                            (120, 220, 140) if ok else (255, 110, 110))
+                            MENU_GOOD if ok else MENU_BAD)
         y += 32
 
     scan_h, radio_h = 70, 60
@@ -4451,7 +4485,7 @@ def _render_wifi_list(draw, area, buttons):
               "TURNING OFF..." if wifi_radio_busy else
               ("TAP AGAIN: WIFI OFF\n(NO PRINTING, SSH, UPDATES)" if PRINTER_WIFI else
                "TAP AGAIN: WIFI OFF\n(NO SSH OR UPDATES)") if confirming else "TURN WIFI OFF",
-              buttons, wifi_toggle_radio, fill=MENU_DANGER if confirming else (70, 70, 80), size=18)
+              buttons, wifi_toggle_radio, fill=MENU_DANGER if confirming else MENU_KEY, size=18)
     scan_top = radio_top - gap - scan_h
     busy = wifi_scanning or wifi_connecting
     _draw_key(draw, (ix0, scan_top, ix1, radio_top - gap), "SCANNING..." if wifi_scanning else "SCAN AGAIN"
@@ -4504,14 +4538,14 @@ def _render_wifi_keyboard(draw, area, buttons):
     connect = (x1 - int(w * 0.22), y, x1, y + row_h)
     show = (connect[0] - gap - int(w * 0.14), y, connect[0] - gap, y + row_h)
     field = (cancel[2] + gap, y, show[0] - gap, y + row_h)
-    _draw_key(draw, cancel, "CANCEL", buttons, wifi_cancel_keyboard, fill=(70, 70, 80), size=18)
+    _draw_key(draw, cancel, "CANCEL", buttons, wifi_cancel_keyboard, fill=MENU_KEY, size=18)
     ready = len(wifi_password) >= 8
     _draw_key(draw, connect, "CONNECT" if ready else "8+ CHARS", buttons,
               (lambda: wifi_start_connect(wifi_target, wifi_password)) if ready else (lambda: None),
               fill=MENU_DONE if ready else (50, 50, 58), size=20 if ready else 15)
     _draw_key(draw, show, "HIDE" if wifi_show_password else "SHOW", buttons, wifi_toggle_show,
               size=16)
-    draw.rounded_rectangle(field, radius=8, fill=(0, 0, 0), outline=MENU_ACCENT, width=2)
+    draw.rounded_rectangle(field, radius=8, fill=MENU_FIELD, outline=MENU_ACCENT, width=2)
     shown = wifi_password if wifi_show_password else "\u2022" * len(wifi_password)
     font = menu_font(24)
     max_w = field[2] - field[0] - 20
@@ -4541,7 +4575,7 @@ def _render_wifi_keyboard(draw, area, buttons):
     label, target = WIFI_KB_SWITCH[wifi_kb_page]
     active = wifi_kb_page == "upper"
     _draw_key(draw, key_box(0, 2, span=1.5), label, buttons, lambda t=target: wifi_set_kb_page(t),
-              fill=MENU_ACCENT if active else (70, 70, 80),
+              fill=MENU_ACCENT if active else MENU_KEY,
               text_fill=(0, 0, 0) if active else MENU_TEXT, size=16)
     chars = rows[2]
     offset = 1.5 + (7 - len(chars)) / 2
@@ -4549,11 +4583,11 @@ def _render_wifi_keyboard(draw, area, buttons):
         _draw_key(draw, key_box(c, 2, offset=offset), ch, buttons, lambda ch=ch: wifi_type(ch),
                   size=26)
     _draw_key(draw, key_box(8.5, 2, span=1.5), "\u232b", buttons, wifi_backspace,
-              fill=(70, 70, 80), size=28)
+              fill=MENU_KEY, size=28)
 
     letters = wifi_kb_page in ("lower", "upper")
     _draw_key(draw, key_box(0, 3, span=2), "123" if letters else "ABC", buttons,
-              lambda: wifi_set_kb_page("sym1" if letters else "lower"), fill=(70, 70, 80), size=20)
+              lambda: wifi_set_kb_page("sym1" if letters else "lower"), fill=MENU_KEY, size=20)
     _draw_key(draw, key_box(2, 3, span=8), "SPACE", buttons, lambda: wifi_type(" "), size=18)
 
 
@@ -4842,7 +4876,7 @@ def _fold_strip(full, slots, w, h, gap=10):
     part_h = max(b[3] - b[1] for b in parts)
     kx, ky = full.width / STRIP_W, full.height / STRIP_H
     pw = int(STRIP_W * scale)
-    img = Image.new("RGB", (2 * pw + gap, int(part_h * scale)), "black")
+    img = Image.new("RGB", (2 * pw + gap, int(part_h * scale)), MAIN_BG)
     for i, (a, b, c, d) in enumerate(parts):
         ph = max(1, int((d - b) * scale))
         piece = full.crop((int(a * kx), int(b * ky), int(c * kx), int(d * ky)))
@@ -5001,7 +5035,7 @@ def render_gallery():
         side_w = 132
         printing = _print_busy.is_set()
         _draw_key(draw, (pad, top, pad + side_w, h - pad), "CANCEL", buttons, gallery_pair_cancel,
-                  fill=(70, 70, 80), size=22)
+                  fill=MENU_KEY, size=22)
         _draw_key(draw, (w - pad - side_w, top, w - pad, h - pad),
                   "PRINTING..." if printing else "PRINT\nTHESE 2", buttons, gallery_pair_print,
                   fill=MENU_BUSY if printing else MENU_ACCENT,
@@ -5061,13 +5095,13 @@ def render_gallery():
         if gallery_reframe is not None:
             half = (bx1 - bx0 - gap) // 2
             _draw_key(draw, (bx0, by0, bx0 + half, by1), "CANCEL", buttons, gallery_reframe_cancel,
-                      fill=(70, 70, 80), size=22)
+                      fill=MENU_KEY, size=22)
             _draw_key(draw, (bx1 - half, by0, bx1, by1), "SAVE\nTHIS FRAME", buttons,
                       gallery_reframe_save, fill=MENU_DONE, size=22)
         elif gallery_pair_first is not None:
             half = (bx1 - bx0 - gap) // 2
             _draw_key(draw, (bx0, by0, bx0 + half, by1), "CANCEL", buttons, gallery_pair_cancel,
-                      fill=(70, 70, 80), size=22)
+                      fill=MENU_KEY, size=22)
             _draw_key(draw, (bx1 - half, by0, bx1, by1),
                       "PRINTING..." if printing else "PRINT\nTHESE 2", buttons, gallery_pair_print,
                       size=22, **(busy if printing else go))
@@ -5077,13 +5111,14 @@ def render_gallery():
             confirming = time.monotonic() < _gallery_delete_until
             reframable = can_reframe(gallery_paths[gallery_index])
             sheet = is_sheet_file(gallery_paths[gallery_index])
-            off = dict(fill=(40, 40, 46), text_fill=(90, 90, 98))
+            off = dict(fill=MENU_OFF, text_fill=MENU_DIM)
             keys = [
                 ("PRINTING..." if printing else "PRINT\nSHEET" if sheet else "PRINT\n2 COPIES",
                  gallery_print, busy if printing else go),
-                ("MIX\n2 STRIPS", gallery_pair_start, off if sheet else dict(fill=(40, 120, 160))),
+                ("MIX\n2 STRIPS", gallery_pair_start, off if sheet else dict(fill=(40, 120, 160), text_fill=(255, 255, 255))),
                 ("CHANGE\nFRAME", gallery_reframe_start,
-                 dict(fill=(110, 70, 160)) if reframable else dict(fill=(40, 40, 46), text_fill=(90, 90, 98))),
+                 dict(fill=(110, 70, 160), text_fill=(255, 255, 255)) if reframable
+                 else dict(fill=MENU_OFF, text_fill=MENU_DIM)),
                 ("DELETE?\nTAP AGAIN" if confirming else "DELETE", gallery_delete,
                  dict(fill=(235, 60, 60) if confirming else MENU_DANGER)),
             ]
@@ -5312,14 +5347,14 @@ def render_update_view(draw, area, buttons):
     if update_state == "checking":
         lines = ["CHECKING..."]
     elif update_state == "up_to_date":
-        lines, color = ["UP TO DATE"], (120, 220, 140)
+        lines, color = ["UP TO DATE"], MENU_GOOD
     elif update_state == "available" and update_info:
         lines, color = ["Your creator has gifted you with an update!",
                         update_info["version"], update_info["subject"]], MENU_ACCENT
     elif update_state == "installing":
         lines, color = ["INSTALLING...", "THE BOOTH WILL RESTART"], MENU_ACCENT
     elif update_state == "error":
-        lines, color = [update_error or "SOMETHING WENT WRONG"], (255, 110, 110)
+        lines, color = [update_error or "SOMETHING WENT WRONG"], MENU_BAD
     elif update_last_result:
         lines = ["LAST UPDATE: " + update_last_result.get("message", "")]
     else:
