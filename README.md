@@ -244,6 +244,19 @@ zoom, then SAVE (it appears in REVIEW like any strip, and CHANGE FRAME works on 
 The booth builds and prints it exactly like its own strips. The page is `web/index.html`; it's only
 reachable from the booth's own network.
 
+## Boot splash
+
+Shows the Snapbox name plate, with a shine sweeping across the chrome, instead of Linux's start-up
+text. Once per booth, with internet, then restart:
+
+    sudo sh ~/photobooth/system/setup-splash.sh
+
+It installs Plymouth, makes the pictures for this booth's screen and its SCREEN setting
+(`system/make_splash.py`; run the setup again after turning the screen round), quietens the start-up
+(`/boot/firmware/cmdline.txt`, a copy is kept as `cmdline.txt.before-splash`) and keeps the splash up
+until the app draws. `--undo` puts everything back. With it on, the booth's screen has no login
+prompt (a keyboard's Alt+F2 still gives one; SSH is unaffected).
+
 ## Updates
 
 Booths install the `stable` branch from the public GitHub repo (github.com/mnueman/snapbox) over HTTPS,
