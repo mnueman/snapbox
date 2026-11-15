@@ -10,7 +10,8 @@
 #   /boot/firmware/cmdline.txt   quiet start-up, messages off the screen (a copy is kept beside it)
 #   /boot/firmware/config.txt    no rainbow square at power-on
 #   Plymouth theme "snapbox"     made for this screen by system/make_splash.py
-#   plymouth-quit                keeps the splash on screen until the photo booth app draws
+#   plymouth-quit                switched off: the app ends the splash itself, the moment it is
+#                                ready to draw (snapbox-splash-quit.service; after 90 s regardless)
 #   getty@tty1                   no login prompt on the booth's screen (Alt+F2 on a keyboard still
 #                                gives one; SSH is unaffected)
 set -e
@@ -25,6 +26,10 @@ if [ "$1" = "--undo" ]; then
     [ -f "$CMDLINE.before-splash" ] && cp "$CMDLINE.before-splash" "$CMDLINE"
     sed -i '/^disable_splash=1  # snapbox$/d' "$CONFIG"
     rm -rf "$QUIT_D"
+    systemctl unmask plymouth-quit.service plymouth-quit-wait.service 2>/dev/null || true
+    systemctl disable snapbox-splash-quit.timer 2>/dev/null || true
+    rm -f /etc/systemd/system/snapbox-splash-quit.service /etc/systemd/system/snapbox-splash-quit.timer \
+        /etc/polkit-1/rules.d/50-photobooth-splash.rules
     systemctl daemon-reload
     systemctl enable getty@tty1.service 2>/dev/null || true
     if command -v plymouth-set-default-theme >/dev/null; then
@@ -83,10 +88,15 @@ else
 fi
 grep -q '^disable_splash=1' "$CONFIG" || echo 'disable_splash=1  # snapbox' >> "$CONFIG"
 
-# Keep the splash up until the app draws its first screen, and no login prompt over it.
-install -d "$QUIT_D"
-printf '[Service]\nExecStart=\nExecStart=-/usr/bin/plymouth quit --retain-splash\n' > "$QUIT_D/snapbox.conf"
+# Keep the splash up until the app is ready to draw: the system no longer ends it part-way
+# through start-up (that left some seconds of black); the app asks for it (photobooth.py:
+# end_boot_splash), and a timer does after 90 s if the app never gets there. No login prompt over it.
+rm -rf "$QUIT_D"
+install -m 0644 snapbox-splash-quit.service snapbox-splash-quit.timer /etc/systemd/system/
+install -m 0644 photobooth-splash.rules /etc/polkit-1/rules.d/50-photobooth-splash.rules
 systemctl daemon-reload
+systemctl mask plymouth-quit.service plymouth-quit-wait.service
+systemctl enable snapbox-splash-quit.timer
 systemctl disable getty@tty1.service 2>/dev/null || true
 
 # Use the theme, and put it in the start-up image so it shows as early as possible.

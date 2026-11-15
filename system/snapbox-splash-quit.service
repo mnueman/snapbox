@@ -1,0 +1,8 @@
+[Unit]
+Description=End the boot splash (the photo booth app asks for this just before it draws)
+# Not started at boot by anything except the fallback timer: the splash stays up until the app is
+# ready, so there's no black screen in between.
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/bin/plymouth quit --retain-splash

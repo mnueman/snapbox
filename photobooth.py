@@ -409,11 +409,27 @@ def to_panel_rotation(rotation, panel_w, panel_h):
     return rotation
 
 
+SPLASH_PICTURE = Path("/usr/share/plymouth/themes/snapbox/bg.png")  # system/setup-splash.sh
+
+
+def end_boot_splash():
+    """The boot splash (system/setup-splash.sh) stays up until the app is about to draw; this ends
+    it, so the screen never sits black in between. Nothing to do when there's no splash."""
+    if not Path("/run/plymouth/pid").exists():
+        return
+    try:
+        subprocess.run(["systemctl", "start", "snapbox-splash-quit.service"], capture_output=True,
+                       timeout=8)
+    except Exception as e:
+        print(f"Could not end the boot splash: {e}")
+
+
 def _fatal_screen(message, seconds=15):
     """Shows a problem on the booth screen before the app's UI exists, then exits so the
     service tries again (the problem may get fixed, e.g. a camera cable pushed back in)."""
     print(message.replace("\n", " "), flush=True)
     try:
+        end_boot_splash()
         pygame.init()
         screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
         pygame.mouse.set_visible(False)
@@ -722,6 +738,7 @@ def set_setting(key, value):
         apply_camera_settings()
 
 
+end_boot_splash()
 pygame.init()
 
 lcd = None
@@ -731,6 +748,15 @@ if USE_LCD:
         lcd = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
         pygame.mouse.set_visible(False)
         print(f"LCD initialized: {lcd.get_size()}")
+        try:
+            # The splash's picture again, until the first real screen is ready (a second or so).
+            if SPLASH_PICTURE.exists():
+                still = pygame.image.load(str(SPLASH_PICTURE))
+                if still.get_size() == lcd.get_size():
+                    lcd.blit(still, (0, 0))
+                    pygame.display.flip()
+        except Exception as e:
+            print(f"Could not show the splash picture: {e}")
     except Exception as e:
         lcd = None
         print(f"LCD not available: {e}")

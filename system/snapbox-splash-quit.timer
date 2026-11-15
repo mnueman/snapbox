@@ -1,0 +1,8 @@
+[Unit]
+Description=End the boot splash anyway if the photo booth app hasn't by now
+
+[Timer]
+OnBootSec=90s
+
+[Install]
+WantedBy=timers.target
