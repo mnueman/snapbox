@@ -1846,7 +1846,7 @@ def _draw_centered_banner(img, text):
     if settings["theme"] == "classic":
         draw.rectangle(box, fill=(0, 0, 0, 190))
     else:
-        draw.rounded_rectangle(box, radius=10, fill=MENU_BG + (225,), outline=MENU_ACCENT + (255,),
+        _rrect(draw, box, radius=10, fill=MENU_BG + (225,), outline=MENU_ACCENT + (255,),
                                width=2)
 
     y = cy - total_h // 2
@@ -3043,7 +3043,7 @@ def _draw_printer_icon(draw, x, y, k, color):
     """A printer, 28k x 24k, top-left at (x, y)."""
     w = max(2, round(2 * k))
     draw.rectangle((x + 7 * k, y, x + 21 * k, y + 9 * k), outline=color, width=w)  # paper in
-    draw.rounded_rectangle((x, y + 7 * k, x + 28 * k, y + 19 * k), radius=3 * k, fill=color)
+    _rrect(draw, (x, y + 7 * k, x + 28 * k, y + 19 * k), radius=3 * k, fill=color)
     draw.rectangle((x + 7 * k, y + 15 * k, x + 21 * k, y + 24 * k), fill=(0, 0, 0, 255),
                    outline=color, width=w)
 
@@ -3057,7 +3057,7 @@ def _draw_pill(draw, img, text, colour):
     box_h = max(th, dot_d) + 2 * pad
     x0 = (img.width - box_w) // 2
     y0 = img.height - box_h - 14
-    draw.rounded_rectangle((x0, y0, x0 + box_w, y0 + box_h), radius=box_h // 2,
+    _rrect(draw, (x0, y0, x0 + box_w, y0 + box_h), radius=box_h // 2,
                            fill=(0, 0, 0, 210))
     cy = y0 + box_h // 2
     draw.ellipse((x0 + pad, cy - dot_d // 2, x0 + pad + dot_d, cy + dot_d // 2), fill=colour)
@@ -3080,7 +3080,7 @@ def _draw_printer_status(img, badge):
         w, h = round(40 * k), round(34 * k)
         right = img.width - 8
         top = 8 if battery_percent is None else 34
-        draw.rounded_rectangle((right - w, top, right, top + h), radius=round(8 * k),
+        _rrect(draw, (right - w, top, right, top + h), radius=round(8 * k),
                                fill=(0, 0, 0, 150))
         icon = (255, 255, 255, 235) if printer_connected else (150, 150, 150, 235)
         _draw_printer_icon(draw, right - w + 4 * k, top + 5 * k, k, icon)
@@ -3687,9 +3687,9 @@ def corner_buttons():
 def _draw_photos_icon(draw, cx, cy, k, color):
     # Two stacked photos, the front one with a mountain and a sun (k: scale from a 44 px button).
     w = max(2, round(2 * k))
-    draw.rounded_rectangle((cx - 9 * k, cy - 12 * k, cx + 13 * k, cy + 6 * k), radius=2 * k,
+    _rrect(draw, (cx - 9 * k, cy - 12 * k, cx + 13 * k, cy + 6 * k), radius=2 * k,
                            outline=color, width=w)
-    draw.rounded_rectangle((cx - 13 * k, cy - 7 * k, cx + 9 * k, cy + 11 * k), radius=2 * k,
+    _rrect(draw, (cx - 13 * k, cy - 7 * k, cx + 9 * k, cy + 11 * k), radius=2 * k,
                            fill=(0, 0, 0, 255), outline=color, width=w)
     draw.polygon([(cx - 10 * k, cy + 9 * k), (cx - 4 * k, cy + 1 * k), (cx + 1 * k, cy + 6 * k),
                   (cx + 3 * k, cy + 4 * k), (cx + 7 * k, cy + 9 * k)], fill=color)
@@ -3697,9 +3697,9 @@ def _draw_photos_icon(draw, cx, cy, k, color):
 
 
 def _draw_camera_icon(draw, cx, cy, k, color):
-    draw.rounded_rectangle((cx - 6 * k, cy - 13 * k, cx + 6 * k, cy - 6 * k), radius=2 * k,
+    _rrect(draw, (cx - 6 * k, cy - 13 * k, cx + 6 * k, cy - 6 * k), radius=2 * k,
                            fill=color)
-    draw.rounded_rectangle((cx - 15 * k, cy - 9 * k, cx + 15 * k, cy + 12 * k), radius=4 * k,
+    _rrect(draw, (cx - 15 * k, cy - 9 * k, cx + 15 * k, cy + 12 * k), radius=4 * k,
                            fill=color)
     draw.ellipse((cx - 8 * k, cy - 6 * k, cx + 8 * k, cy + 10 * k), fill=(0, 0, 0, 255))
     draw.ellipse((cx - 5 * k, cy - 3 * k, cx + 5 * k, cy + 7 * k), fill=color)
@@ -4046,7 +4046,8 @@ def _render_date_keypad(draw, area, buttons):
               date_keypad_save if day else (lambda: None),
               fill=MENU_DONE if day else (90, 40, 40) if full else (50, 50, 58),
               text_fill=MENU_TEXT if day or full else (110, 110, 118), size=22 if day or not full else 15)
-    draw.rounded_rectangle(field, radius=8, fill=MENU_FIELD, outline=MENU_ACCENT, width=2)
+    _rrect(draw, field, radius=8, fill=MENU_FIELD)
+    draw.rounded_rectangle(field, radius=8, outline=MENU_ACCENT, width=2)
     digits = date_entry.ljust(6, "_")
     shown = f"{digits[:2]} / {digits[2:4]} / {digits[4:]}"
     _draw_text_centered(draw, field, shown, _fit_font(draw, "MM / DD / YY", field[2] - field[0] - 16, 34),
@@ -4083,7 +4084,7 @@ def _draw_setting_row(draw, box, key, buttons):
     h = y1 - y0
     arrow_w = min(72, h + 12, (x1 - x0) // 5)
 
-    draw.rounded_rectangle(box, radius=10, fill=MENU_ROW)
+    _rrect(draw, box, radius=10, fill=MENU_ROW)
     for direction, ax0 in ((-1, x0), (1, x1 - arrow_w)):
         abox = (ax0, y0, ax0 + arrow_w, y1)
         color = MENU_ACCENT
@@ -4527,10 +4528,40 @@ def wifi_page_step(step):
     wifi_page = max(0, wifi_page + step)
 
 
+def _skinned():
+    """The look whose buttons and backgrounds the menus use, or None for the original's flat ones."""
+    lk = settings.get("look", "original")
+    return lk if looks is not None and lk in looks.LOOKS else None
+
+
+def _rrect(draw, box, radius=0, fill=None, outline=None, width=1):
+    """A rounded box. In the MODERN and CLASSIC looks, boxes in the menu colours are drawn as that
+    look's buttons and panels (looks.plate): chrome, enamel, soft cards."""
+    lk = _skinned()
+    if lk and fill is not None and outline is None and hasattr(draw, "_image"):
+        rgb = tuple(fill[:3])
+        name = {MENU_ROW: "row", MENU_KEY: "key", MENU_ACCENT: "accent", MENU_DONE: "done",
+                MENU_DANGER: "danger", MENU_OFF: "off", MENU_BUSY: "busy", MENU_FIELD: "field",
+                MENU_INSET: "inset"}.get(rgb)
+        x0, y0, x1, y1 = (round(v) for v in box)
+        if name and x1 - x0 >= 12 and y1 - y0 >= 12:
+            im = looks.plate(lk, x1 - x0, y1 - y0, name, radius)
+            draw._image.paste(im, (x0, y0), im)
+            return
+    draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=width)
+
+
+def _menu_canvas(w, h, fill):
+    lk = _skinned()
+    if lk:
+        return looks.menu_ground(lk, w, h).copy()
+    return Image.new("RGB", (w, h), fill)
+
+
 def _draw_key(draw, box, label, buttons, action, fill=None, text_fill=None, size=22):
     fill = MENU_ROW if fill is None else fill  # looked up now: the theme can change
     text_fill = MENU_TEXT if text_fill is None else text_fill
-    draw.rounded_rectangle(box, radius=8, fill=fill)
+    _rrect(draw, box, radius=8, fill=fill)
     # Anchor on the font's middle so q, g and y line up with the other keys.
     font = _fit_font(draw, max(label.split("\n"), key=len), box[2] - box[0] - 6, size, bold=True)
     draw.multiline_text(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2), label, font=font,
@@ -4557,7 +4588,7 @@ def _draw_network_row(draw, box, net, buttons):
     x0, top, x1, bottom = box
     row_h = bottom - top
     supported = wifi_supported(net)
-    draw.rounded_rectangle(box, radius=10, fill=(40, 90, 55) if net["in_use"] else MENU_ROW)
+    _rrect(draw, box, radius=10, fill=(40, 90, 55) if net["in_use"] else MENU_ROW)
     text_color = MENU_TEXT if supported else MENU_DIM
     _draw_signal_bars(draw, x0 + 12, top + (row_h - 26) // 2, 26, net["signal"], text_color)
     name_x = x0 + 54
@@ -4612,7 +4643,7 @@ def _render_wifi_list(draw, area, buttons):
     if ip and not wifi_connecting:
         # What to type on a computer on the same WiFi; the IP changes with the network.
         ssh_box = (ix0, y, ix1, y + 56)
-        draw.rounded_rectangle(ssh_box, radius=10, fill=MENU_INSET)
+        _rrect(draw, ssh_box, radius=10, fill=MENU_INSET)
         cmd = f"ssh admin@{ip}"
         alt = f"or ssh admin@{socket.gethostname()}.local"
         _draw_text_centered(draw, (ix0, y + 4, ix1, y + 32), cmd,
@@ -4707,7 +4738,8 @@ def _render_wifi_keyboard(draw, area, buttons):
               fill=MENU_DONE if ready else (50, 50, 58), size=20 if ready else 15)
     _draw_key(draw, show, "HIDE" if wifi_show_password else "SHOW", buttons, wifi_toggle_show,
               size=16)
-    draw.rounded_rectangle(field, radius=8, fill=MENU_FIELD, outline=MENU_ACCENT, width=2)
+    _rrect(draw, field, radius=8, fill=MENU_FIELD)
+    draw.rounded_rectangle(field, radius=8, outline=MENU_ACCENT, width=2)
     shown = wifi_password if wifi_show_password else "\u2022" * len(wifi_password)
     font = menu_font(24)
     max_w = field[2] - field[0] - 20
@@ -5143,7 +5175,7 @@ def _draw_pair_sheet(img, draw, area, first, second, arrow_buttons=None):
 def render_gallery():
     global gallery_buttons
     w, h = ui_size()
-    img = Image.new("RGB", (w, h), MAIN_BG)
+    img = _menu_canvas(w, h, MAIN_BG)
     draw = ImageDraw.Draw(img, "RGBA")
     buttons = []
     pad, gap = 8, 6
@@ -5277,9 +5309,9 @@ def render_gallery():
             keys = [
                 ("PRINTING..." if printing else "PRINT\nSHEET" if sheet else "PRINT\n2 COPIES",
                  gallery_print, busy if printing else go),
-                ("MIX\n2 STRIPS", gallery_pair_start, off if sheet else dict(fill=(40, 120, 160), text_fill=(255, 255, 255))),
+                ("MIX\n2 STRIPS", gallery_pair_start, off if sheet else dict(fill=MENU_KEY) if _skinned() else dict(fill=(40, 120, 160), text_fill=(255, 255, 255))),
                 ("CHANGE\nFRAME", gallery_reframe_start,
-                 dict(fill=(110, 70, 160), text_fill=(255, 255, 255)) if reframable
+                 (dict(fill=MENU_KEY) if _skinned() else dict(fill=(110, 70, 160), text_fill=(255, 255, 255))) if reframable
                  else dict(fill=MENU_OFF, text_fill=MENU_DIM)),
                 ("DELETE?\nTAP AGAIN" if confirming else "DELETE", gallery_delete,
                  dict(fill=(235, 60, 60) if confirming else MENU_DANGER)),
@@ -5527,7 +5559,7 @@ def render_phone_view(draw, area):
     num_w = min(76, step_h)
     for i, (label, big, small) in enumerate(steps):
         box = (x0, top, x1, top + step_h)
-        draw.rounded_rectangle(box, radius=14, fill=MENU_ROW)
+        _rrect(draw, box, radius=14, fill=MENU_ROW)
         cy = (box[1] + box[3]) // 2
         r = num_w // 2 - 8
         cx = x0 + 12 + num_w // 2
@@ -5536,11 +5568,14 @@ def render_phone_view(draw, area):
                   anchor="mm")
         tx0, tx1 = x0 + num_w + 22, x1 - 14
         tw = tx1 - tx0
-        lines = [(label, _fit_font(draw, label, tw, 17, bold=False), MENU_DIM),
-                 (big, _fit_font(draw, big, tw, 34), MENU_TEXT)]
-        if small:
-            lines.append((small, _fit_font(draw, small, tw, 22), MENU_TEXT))
-        heights = [f.size + 6 for _, f, _ in lines]
+        for shrink in (1.0, 0.88, 0.78, 0.68, 0.6):
+            lines = [(label, _fit_font(draw, label, tw, round(17 * shrink), bold=False), MENU_DIM),
+                     (big, _fit_font(draw, big, tw, round(34 * shrink)), MENU_TEXT)]
+            if small:
+                lines.append((small, _fit_font(draw, small, tw, round(22 * shrink)), MENU_TEXT))
+            heights = [round(f.size * 1.12) + 4 for _, f, _ in lines]
+            if sum(heights) <= step_h - 2:
+                break
         y = cy - sum(heights) // 2
         for (text, font, fill), lh in zip(lines, heights):
             draw.text((tx0, y + lh // 2), text, font=font, fill=fill, anchor="lm")
@@ -5688,7 +5723,7 @@ HELP_LINES = [
 def render_menu(cam=None):
     global menu_buttons
     w, h = ui_size()
-    img = Image.new("RGB", (w, h), MENU_BG)
+    img = _menu_canvas(w, h, MENU_BG)
     draw = ImageDraw.Draw(img)
     buttons = []
     pad = 8
@@ -5715,13 +5750,13 @@ def render_menu(cam=None):
     for tab, text in tabs:
         box = (x, pad, x + tab_w, bar_h - 4)
         active = tab == menu_tab
-        draw.rounded_rectangle(box, radius=10, fill=MENU_ACCENT if active else MENU_ROW)
+        _rrect(draw, box, radius=10, fill=MENU_ACCENT if active else MENU_ROW)
         _draw_text_centered(draw, box, text, _fit_font(draw, text, tab_w - 10, 22),
                             (0, 0, 0) if active else MENU_TEXT)
         buttons.append((box, lambda t=tab: set_menu_tab(t)))
         x += tab_w + pad
     done = (w - pad - done_w, pad, w - pad, bar_h - 4)
-    draw.rounded_rectangle(done, radius=10, fill=MENU_DONE)
+    _rrect(draw, done, radius=10, fill=MENU_DONE)
     _draw_text_centered(draw, done, "DONE", menu_font(22, True), MENU_TEXT)
     buttons.append((done, close_menu))
     top = bar_h + 4

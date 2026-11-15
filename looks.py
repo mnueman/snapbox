@@ -24,7 +24,7 @@ THEMES = {
     "modern": dict(bg=(238, 240, 244), row=(255, 255, 255), text=(13, 16, 23), dim=(75, 85, 101),
                    accent=(91, 134, 255), done=(60, 196, 120), danger=(240, 100, 88),
                    off=(226, 229, 235), busy=(200, 205, 214), key=(222, 226, 233),
-                   field=(255, 255, 255), inset=(226, 229, 235), good=(11, 122, 64),
+                   field=(254, 254, 254), inset=(228, 231, 237), good=(11, 122, 64),
                    bad=(197, 40, 28), disc=(13, 16, 23), main=(238, 240, 244)),
     "classic": dict(bg=(23, 23, 23), row=(52, 52, 52), text=(241, 241, 238), dim=(185, 186, 184),
                     accent=(217, 218, 216), done=(92, 94, 96), danger=(200, 30, 37),
@@ -798,6 +798,100 @@ def _classic(w, h, st):
     for r in rects:
         p.hole(r, 0)
     return p.done(), g
+
+
+# ------------------------------------------------------- menus and the review screen: the skin
+
+_plates = {}
+GUNMETAL = [(0, (98, 100, 102)), (0.08, (70, 72, 74)), (0.6, (48, 49, 51)), (1, (30, 31, 32))]
+ENAMEL = [(0, (246, 96, 100)), (0.12, (226, 50, 57)), (0.6, (200, 30, 37)), (1, (140, 18, 24))]
+STEEL = [(0, (150, 152, 154)), (0.1, (112, 114, 116)), (0.6, (88, 90, 92)), (1, (62, 63, 65))]
+
+
+def plate(look, w, h, name, radius=8):
+    """A button or row background, w x h screen px (RGBA), for this look. `name`: row, key, accent,
+    done, danger, off, busy, field or inset. Cached: menus redraw many times a second."""
+    key = (look, w, h, name, radius)
+    if key in _plates:
+        return _plates[key]
+    if len(_plates) > 400:
+        _plates.clear()
+    p = Pen(w, h)
+    full = (0, 0, w, h)
+    if look == "modern":
+        rad = min(max(radius, 12), h / 2, 18)
+        col = {"row": (255, 255, 255), "key": (222, 226, 233), "accent": (105, 146, 255),
+               "done": (60, 196, 120), "danger": (240, 100, 88), "off": (226, 229, 235),
+               "busy": (200, 205, 214), "field": (255, 255, 255), "inset": (226, 229, 235)}[name]
+        if name in ("row", "field"):
+            # a white card with a soft lower edge, like a sheet lying on the grey ground
+            p.rrect((0, 1.5, w, h), rad, fill=(201, 206, 216, 255))
+            p.rrect((0, 0, w, h - 1.5), rad, fill=col + (255,))
+            if name == "field":
+                p.rrect((0, 0, w, h - 1.5), rad, outline=(105, 146, 255, 255), width=2)
+        elif name in ("accent", "done", "danger"):
+            dark = tuple(max(0, c - 34) for c in col)
+            p.rrect((0, 2, w, h), rad, fill=dark + (255,))
+            p.rrect((0, 0, w, h - 2), rad, fill=col + (255,))
+        else:
+            p.rrect(full, rad, fill=col + (255,))
+    else:
+        rad = min(max(radius, 5), 8, h / 2)
+        if name == "accent":      # the chosen thing: polished chrome, dark type on it
+            _metal(p, full, CHROME, rad)
+            p.rrect(full, rad, outline=(70, 71, 72, 255), width=1)
+            p.rect((rad, 1, w - rad, 2), fill=(255, 255, 255, 235))
+        elif name == "danger":    # red enamel
+            _metal(p, full, ENAMEL, rad)
+            p.rrect(full, rad, outline=(70, 10, 14, 255), width=1)
+            p.rrect((1.5, 1.5, w - 1.5, h - 1.5), rad - 1, outline=(255, 255, 255, 60), width=0.8)
+        elif name in ("done", "busy"):
+            _metal(p, full, STEEL, rad)
+            p.rrect(full, rad, outline=(20, 20, 20, 255), width=1)
+            p.rect((rad, 1, w - rad, 2), fill=(255, 255, 255, 110))
+        elif name == "key":
+            _metal(p, full, GUNMETAL, rad)
+            p.rrect(full, rad, outline=(12, 12, 12, 255), width=1)
+            p.rect((rad, 1, w - rad, 2), fill=(255, 255, 255, 70))
+        elif name == "row":       # a black panel in a thin chrome rim
+            _metal(p, full, [(0, (236, 236, 234)), (0.5, (120, 122, 123)), (1, (200, 201, 199))], rad)
+            p.rrect((1.6, 1.6, w - 1.6, h - 1.6), max(1, rad - 1.2), fill=(20, 20, 20, 255))
+            p.rect((rad, 2.2, w - rad, 3.4), fill=(0, 0, 0, 255))
+        elif name == "field":     # a window: black glass, shadowed at the top
+            _metal(p, full, [(0, (150, 152, 153)), (1, (236, 236, 234))], rad)
+            p.rrect((1.6, 1.6, w - 1.6, h - 1.6), max(1, rad - 1.2), fill=(8, 8, 8, 255))
+            p.rect((rad, 1.6, w - rad, 5), fill=(0, 0, 0, 255))
+        else:                     # off, inset: dull, pressed into the body
+            p.rrect(full, rad, fill=(14, 14, 14, 255))
+            p.rrect((1, 1, w - 1, h - 1), max(1, rad - 1), fill=(34, 34, 34, 255) if name == "off" else (40, 40, 41, 255))
+    _plates[key] = p.done()
+    return _plates[key]
+
+
+def menu_ground(look, w, h):
+    """What's behind the menus and the review screen (RGB)."""
+    key = ("ground", look, w, h)
+    if key not in _plates:
+        if look == "classic":
+            _plates[key] = _leather(w * SS, h * SS, h / 480.0).resize((w, h), Image.LANCZOS).convert("RGB")
+        else:
+            _plates[key] = Image.new("RGB", (w, h), THEMES[look]["bg"])
+    return _plates[key]
+
+
+def film_edge(w, h):
+    """A band of film edge with sprocket holes, w x h px (RGBA), for the classic review screen."""
+    key = ("film", w, h)
+    if key not in _plates:
+        p = Pen(w, h)
+        p.rect((0, 0, w, h), fill=(28, 23, 20, 255))
+        hole_w, hole_h, step = h * 0.62, h * 0.52, h * 1.5
+        x = step * 0.3
+        while x + hole_w < w:
+            p.rrect((x, (h - hole_h) / 2, x + hole_w, (h + hole_h) / 2), hole_h * 0.22, fill=(236, 232, 220, 255))
+            x += step
+        _plates[key] = p.done()
+    return _plates[key]
 
 
 def render_main(look, w, h, st):
