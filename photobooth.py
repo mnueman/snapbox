@@ -1620,58 +1620,123 @@ def _render_effects(w, h, seed, opts, text, bw, corner="br", soft=1.0):
         add(layer.filter(ImageFilter.GaussianBlur(sm * 0.14)).resize((w, h), Image.BILINEAR))
 
     if spots:
+        # Light on film: no hard discs. Each orb is a hot, slightly pale core falling off smoothly
+        # into a wide faint halo, a touch out of round; rings are soft, uneven and doubled like a
+        # lens reflection. Built from smooth maths at a small size (it is all blur), then enlarged.
         items = SPOT_STYLES[spots - 1][1]
-        orbs = Image.new("RGB", (sw, sh), "black")
-        od = ImageDraw.Draw(orbs)
-        rings = None
+        gw, gh = max(24, w // 3), max(24, h // 3)
+        gm = min(gw, gh)
+        yy, xx = np.mgrid[0:gh, 0:gw].astype(np.float32)
+        acc = np.zeros((gh, gw, 3), np.float32)
+        rs = np.random.default_rng(500 + spots)
         for kind, x, y, r, colour, k in items:
+            cx, cy, rr = x * gw, y * gh, r * gm
+            squash = 1 + rs.uniform(-0.12, 0.12)   # never a perfect circle
+            turn = rs.uniform(0, math.pi)
+            dx, dy = xx - cx, yy - cy
+            u = dx * math.cos(turn) + dy * math.sin(turn)
+            v = (-dx * math.sin(turn) + dy * math.cos(turn)) * squash
+            d = np.sqrt(u * u + v * v) / max(1.0, rr)
+            col = np.array(colour, np.float32) / 255.0
             if kind == "orb":
-                cx, cy, rr = x * sw, y * sh, r * sm
-                od.ellipse((cx - rr, cy - rr, cx + rr, cy + rr), fill=tint(colour, k))
+                core = np.exp(-(d / 0.55) ** 2)             # the hot middle
+                body = np.exp(-(d / 1.0) ** 2.4) * 0.75      # the orb itself, soft-edged
+                halo = np.exp(-(d / 2.3) ** 1.6) * 0.22      # the glow around it
+                pale = col + (1 - col) * 0.55                 # the middle burns towards white
+                acc += (core[..., None] * pale * 0.55 + (body + halo)[..., None] * col) * k
             else:
-                # Rings are drawn at full size so they stay perfectly round and smooth.
-                if rings is None:
-                    rings = Image.new("RGB", (w, h), "black")
-                cx, cy, rr = x * w, y * h, r * m
-                ImageDraw.Draw(rings).ellipse((cx - rr, cy - rr, cx + rr, cy + rr), outline=tint(colour, k),
-                                              width=max(2, int(m * 0.016)))
-        add(orbs.filter(ImageFilter.GaussianBlur(sm * 0.05)).resize((w, h), Image.BILINEAR))
-        if rings is not None:
-            add(rings.filter(ImageFilter.GaussianBlur(max(1.0, m * 0.006))))
+                side = 0.72 + 0.28 * np.cos(np.arctan2(v, u) - turn)   # brighter on one side
+                band = np.exp(-((d - 1.0) / 0.055) ** 2)
+                glow = np.exp(-((d - 1.0) / 0.16) ** 2) * 0.35
+                ghost = np.exp(-((d - 0.86) / 0.04) ** 2) * 0.3         # a fainter inner reflection
+                warm = np.clip(col * np.array([1.0, 1.5, 1.2], np.float32), 0, 1)
+                acc += ((band + glow)[..., None] * col + ghost[..., None] * warm) * side[..., None] * k
+        acc *= soft
+        layer = Image.fromarray((np.clip(acc, 0, 1) * 255).astype(np.uint8), "RGB")
+        add(layer.resize((w, h), Image.BICUBIC))
 
     overlay = None
     if lines:
         spec = LINE_STYLES[lines - 1][1]
         rnd = random.Random(1000 + lines)  # fixed: the dust lands in the same places every time
         if spec.get("streaks"):
-            streaks = Image.new("RGB", (w, h), "black")
-            sd = ImageDraw.Draw(streaks)
+            # A light streak is a thin bright thread inside a wider soft glow, wandering a little
+            # and fading in and out along its length; never a ruled line.
+            rs = np.random.default_rng(2000 + lines)
+            ys = np.arange(h, dtype=np.float32)
+            xs = np.arange(w, dtype=np.float32)
+            acc = np.zeros((h, w), np.float32)
             for x, width, k in spec["streaks"]:
-                sd.line((x * w, 0, x * w + 0.01 * w, h), fill=tint((255, 200, 150), k),
-                        width=max(1, int(m * width)))
-            add(streaks.filter(ImageFilter.GaussianBlur(max(0.5, m * 0.003))))
-        overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        od = ImageDraw.Draw(overlay)
-        big = 2.0 if spec.get("big") else 1.0
-        for _ in range(count(spec.get("dust", 0))):  # little dark and light specks
-            x, y = rnd.uniform(0, w), rnd.uniform(0, h)
-            r = m * rnd.uniform(0.001, 0.004) * big
-            c = (20, 16, 12, rnd.randint(90, 200)) if rnd.random() < 0.6 else (255, 250, 240, rnd.randint(70, 160))
-            od.ellipse((x - r, y - r, x + r, y + r), fill=c)
-        for _ in range(count(spec.get("hairs", 0))):  # hairs on the negative
-            x, y = rnd.uniform(0, w), rnd.uniform(0, h)
-            pts, ang = [(x, y)], rnd.uniform(0, 2 * math.pi)
-            for _ in range(5):
-                ang += rnd.uniform(-0.7, 0.7)
-                step = m * rnd.uniform(0.01, 0.025)
+                drift = (x * w + 0.01 * w * ys / max(1, h)
+                         + m * 0.004 * np.sin(ys / h * rs.uniform(2, 5) + rs.uniform(0, 6))
+                         + m * 0.0012 * np.sin(ys / h * rs.uniform(11, 19) + rs.uniform(0, 6)))
+                # strength along the streak: a few slow waves, so it breathes and breaks
+                along = 0.55 + 0.45 * np.sin(ys / h * rs.uniform(1.5, 3.5) + rs.uniform(0, 6))
+                along *= 0.8 + 0.2 * np.sin(ys / h * rs.uniform(7, 13) + rs.uniform(0, 6))
+                along = np.clip(along, 0.08, 1.0)
+                core_w = max(0.6, m * width * 0.22)
+                glow_w = max(1.5, m * width * 1.3)
+                dist = xs[None, :] - drift[:, None]
+                acc += (np.exp(-(dist / core_w) ** 2) * 0.9 + np.exp(-(dist / glow_w) ** 2) * 0.4) * along[:, None] * k
+            acc = np.clip(acc * soft, 0, 1)
+            warm = np.array([255, 205, 160], np.float32)
+            add(Image.fromarray((acc[..., None] * warm).astype(np.uint8), "RGB"))
+        # Dust, hairs and scratches are drawn three times the size and shrunk, so they come out as
+        # fine as the real thing: specks are irregular and mostly tiny, hairs curl, scratches waver
+        # and break up.
+        q = 3 if max(w, h) <= 1400 else 2
+        big_layer = Image.new("RGBA", (w * q, h * q), (0, 0, 0, 0))
+        od = ImageDraw.Draw(big_layer, "RGBA")
+        big = 1.6 if spec.get("big") else 1.0
+        mq = m * q
+        for _ in range(count(spec.get("dust", 0)) * 3):
+            x, y = rnd.uniform(0, w * q), rnd.uniform(0, h * q)
+            # mostly pin-pricks, now and then a bigger fleck
+            r = mq * (rnd.uniform(0.0004, 0.0014) if rnd.random() < 0.82 else rnd.uniform(0.0016, 0.0034)) * big
+            dark = rnd.random() < 0.6
+            c = (22, 17, 13, rnd.randint(70, 170)) if dark else (255, 250, 240, rnd.randint(50, 130))
+            ang = rnd.uniform(0, math.pi)
+            pts = []
+            for i in range(7):   # a lumpy little shape, not a circle
+                a = ang + i * 2 * math.pi / 7
+                rr = r * rnd.uniform(0.55, 1.25)
+                pts.append((x + rr * math.cos(a) * rnd.uniform(0.7, 1.5), y + rr * math.sin(a)))
+            od.polygon(pts, fill=c)
+        for _ in range(count(spec.get("hairs", 0))):   # hairs and fibres: long gentle curls
+            x, y = rnd.uniform(0, w * q), rnd.uniform(0, h * q)
+            ang, bend = rnd.uniform(0, 2 * math.pi), rnd.uniform(-0.16, 0.16)
+            length = rnd.randint(18, 34)
+            step = mq * rnd.uniform(0.0035, 0.006)
+            alpha = rnd.randint(70, 130)
+            wid = max(1, round(mq * rnd.uniform(0.0007, 0.0012)))
+            pts = [(x, y)]
+            for i in range(length):
+                bend += rnd.uniform(-0.035, 0.035)
+                ang += bend
                 x, y = x + step * math.cos(ang), y + step * math.sin(ang)
                 pts.append((x, y))
-            od.line(pts, fill=(25, 20, 15, rnd.randint(90, 160)), width=max(1, int(m * 0.0025)))
-        for _ in range(count(spec.get("scratches", 0))):  # long vertical scratches in the emulsion
-            x = rnd.uniform(0, w)
-            top, bottom = sorted((rnd.uniform(-0.2, 0.5) * h, rnd.uniform(0.5, 1.2) * h))
-            od.line((x, top, x + rnd.uniform(-0.01, 0.01) * w, bottom), fill=(255, 255, 255, rnd.randint(50, 110)),
-                    width=max(1, int(m * 0.0015)))
+            for i in range(len(pts) - 1):   # thinner and fainter towards both ends
+                t = i / (len(pts) - 1)
+                fade = min(1.0, 4 * t * (1 - t) + 0.25)
+                od.line((pts[i], pts[i + 1]), fill=(28, 22, 17, int(alpha * fade)), width=wid)
+        for _ in range(count(spec.get("scratches", 0))):   # scratches down the emulsion
+            x = rnd.uniform(0, w * q)
+            top, bottom = sorted((rnd.uniform(-0.2, 0.5) * h * q, rnd.uniform(0.5, 1.2) * h * q))
+            lean = rnd.uniform(-0.008, 0.008) * w * q
+            alpha = rnd.randint(40, 95)
+            wid = max(1, round(mq * 0.0006))
+            phase, wob = rnd.uniform(0, 6), mq * rnd.uniform(0.0003, 0.0009)
+            y = top
+            while y < bottom:
+                seg = mq * rnd.uniform(0.01, 0.07)
+                if rnd.random() < 0.82:   # the rest are gaps: a scratch skips
+                    y2 = min(bottom, y + seg)
+                    t0, t1 = (y - top) / (bottom - top), (y2 - top) / (bottom - top)
+                    x0 = x + lean * t0 + wob * math.sin(phase + y / mq * 40)
+                    x1 = x + lean * t1 + wob * math.sin(phase + y2 / mq * 40)
+                    od.line((x0, y, x1, y2), fill=(255, 252, 244, int(alpha * rnd.uniform(0.5, 1.0))), width=wid)
+                y += seg * rnd.uniform(1.0, 1.25)
+        overlay = big_layer.resize((w, h), Image.LANCZOS)
 
     if screen is not None and bw:
         screen = screen.convert("L").convert("RGB")  # light on black and white film is grey
