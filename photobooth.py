@@ -13,6 +13,7 @@ import shutil
 import socket
 import time
 import subprocess
+import sys
 import tempfile
 import threading
 import traceback
@@ -3265,12 +3266,20 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
                 pass
 
 
+class _WebServer(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # A phone dropping its connection is normal; don't fill the journal with tracebacks.
+        if not isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+            print(f"Phone page error from {client_address[0]}: {sys.exc_info()[1]}")
+
+
 def _web_serve(addr=None):
     """Serves the phone page on the booth's own network, whenever that network is up."""
     while True:
         try:
-            server = http.server.ThreadingHTTPServer((addr or WEB_ADDR, WEB_PORT), _WebHandler)
-            server.daemon_threads = True
+            server = _WebServer((addr or WEB_ADDR, WEB_PORT), _WebHandler)
             print(f"Phone page: http://{addr or WEB_ADDR}:{WEB_PORT}")
             server.serve_forever()
         except OSError:
