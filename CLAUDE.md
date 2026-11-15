@@ -1,7 +1,9 @@
 # Photobooth (snapbox)
 
 A portable photo booth on a Raspberry Pi 5: camera, small touchscreen, one shutter button, a printer.
-`photobooth.py` is the whole app. README.md explains every feature; read it before changing one.
+`photobooth.py` is the app; `looks.py` draws the MODERN and CLASSIC CAMERA looks (pure drawing, no app
+state: `python3 looks.py out.png` renders them; fonts in `ui/fonts/`); `web/index.html` is the phone page.
+README.md explains every feature; read it before changing one.
 
 ## Who are you helping?
 

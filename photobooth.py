@@ -26,6 +26,12 @@ from libcamera import controls, Transform
 import numpy as np
 import pygame
 
+try:
+    import looks  # the MODERN and CLASSIC CAMERA looks (looks.py); without it, the original look
+except Exception as e:  # a broken or missing file must not stop the booth
+    print(f"Looks unavailable ({e}); using the original look.")
+    looks = None
+
 
 # GPIO 16 is reserved for the Geekworm X1200 UPS; keep the button off it.
 BUTTON_GPIO = 26
@@ -273,6 +279,10 @@ BOOTH_SETTINGS = [
         (0, "NO SHIFT"), (1, "1 MM"), (2, "2 MM"), (3, "3 MM"), (4, "4 MM"), (5, "5 MM"),
         (6, "6 MM"),
     ], 2),
+    # The whole look of the screens (looks.py). ORIGINAL is the one MENU COLOURS applies to.
+    ("look", "LOOK", [
+        ("original", "ORIGINAL"), ("modern", "MODERN"), ("classic", "CLASSIC CAMERA"),
+    ], "original"),
     # Colours of the menus and buttons (THEMES, further down).
     ("theme", "MENU COLOURS", [
         ("classic", "CLASSIC"), ("sunshine", "SUNSHINE"), ("bubblegum", "BUBBLEGUM"),
@@ -360,15 +370,31 @@ THEMES = {
 }
 
 
+def look():
+    """The look of the main screen: "original", "modern" or "classic". The new looks are laid out
+    for a screen on its side; upright, the main screen stays original (menus keep the look's
+    colours and type)."""
+    lk = settings.get("look", "original")
+    if looks is None or lk not in looks.LOOKS or settings["rotation"] not in (0, 180):
+        return "original"
+    return lk
+
+
 def apply_theme():
     global MENU_BG, MENU_ROW, MENU_TEXT, MENU_DIM, MENU_ACCENT, MENU_DONE, MENU_DANGER, MENU_OFF
     global MENU_BUSY, MENU_KEY, MENU_FIELD, MENU_INSET, MENU_GOOD, MENU_BAD, MENU_DISC, MAIN_BG
-    t = THEMES.get(settings["theme"], THEMES["classic"])
+    lk = settings.get("look", "original")
+    if looks is not None and lk in looks.THEMES:
+        t = looks.THEMES[lk]
+    else:
+        t = THEMES.get(settings["theme"], THEMES["classic"])
     MENU_BG, MENU_ROW, MENU_TEXT, MENU_DIM = t["bg"], t["row"], t["text"], t["dim"]
     MENU_ACCENT, MENU_DONE, MENU_DANGER = t["accent"], t["done"], t["danger"]
     MENU_OFF, MENU_BUSY, MENU_KEY, MENU_FIELD = t["off"], t["busy"], t["key"], t["field"]
     MENU_INSET, MENU_GOOD, MENU_BAD, MENU_DISC, MAIN_BG = (t["inset"], t["good"], t["bad"],
                                                             t["disc"], t["main"])
+    if look() != "original":
+        MAIN_BG = looks.STAGE_BG[look()]  # behind the strip, inside the look's frame
 
 
 apply_theme()
@@ -685,8 +711,9 @@ def set_setting(key, value):
     print(f"Setting {key} = {value}")
     if key == "rotation":
         screen_rotation = value
+        apply_theme()  # the new looks only apply on its side
         _invalidate_live_preview()
-    elif key == "theme":
+    elif key in ("theme", "look"):
         apply_theme()
         _invalidate_live_preview()
     elif key == "edge" or key in EFFECT_KEYS:
@@ -1166,14 +1193,20 @@ def strip_halves(slots):
 def display_layout(slots=None, size=(STRIP_W, STRIP_H)):
     """[(strip box, UI box)] pairs: where each piece of the strip (or sheet) goes on screen."""
     ui_w, ui_h = ui_size()
+    # The part of the screen the strip may use: beside the round buttons, or inside the look's frame.
+    if look() != "original":
+        rx0, ry0, rx1, ry1 = (round(v) for v in looks.geometry(look(), ui_w, ui_h)["stage"])
+        pad = round(10 * ui_h / 480)
+    else:
+        rx0, ry0, rx1, ry1 = ICON_SIZE + 2 * ICON_MARGIN, 0, ui_w, ui_h
+        pad = LANDSCAPE_CELL_PAD
+    rw, rh = rx1 - rx0, ry1 - ry0
 
     if is_sheet_size(size):
-        # A sheet is shown whole, beside the round buttons.
-        left = ICON_SIZE + 2 * ICON_MARGIN
-        pad = LANDSCAPE_CELL_PAD
-        scale = min((ui_w - left - 2 * pad) / size[0], (ui_h - 2 * pad) / size[1])
+        # A sheet is shown whole.
+        scale = min((rw - 2 * pad) / size[0], (rh - 2 * pad) / size[1])
         sw, sh = max(1, int(size[0] * scale)), max(1, int(size[1] * scale))
-        dest = (left + (ui_w - left - sw) // 2, (ui_h - sh) // 2, sw, sh)
+        dest = (rx0 + (rw - sw) // 2, ry0 + (rh - sh) // 2, sw, sh)
         return [((0, 0) + tuple(size), dest)]
 
     if not is_landscape() or not slots:
@@ -1186,26 +1219,30 @@ def display_layout(slots=None, size=(STRIP_W, STRIP_H)):
     # Landscape: the strip cut in half between the middle photos, halves side by side,
     # so the frame's header and footer stay visible.
     halves = strip_halves(slots)
-    left = ICON_SIZE + 2 * ICON_MARGIN  # the round buttons' column
-    cell_w = (ui_w - left) // len(halves)
+    cell_w = rw // len(halves)
     half_h = max(b[3] - b[1] for b in halves)
     scale = min(
-        (cell_w - 2 * LANDSCAPE_CELL_PAD) / STRIP_W,
-        (ui_h - 2 * LANDSCAPE_CELL_PAD) / half_h,
+        (cell_w - 2 * pad) / STRIP_W,
+        (rh - 2 * pad) / half_h,
     )
 
     layout = []
     for col, half in enumerate(halves):
         dw = max(1, int((half[2] - half[0]) * scale))
         dh = max(1, int((half[3] - half[1]) * scale))
-        dx = left + col * cell_w + (cell_w - dw) // 2
+        dx = rx0 + col * cell_w + (cell_w - dw) // 2
         # Left half hangs from the top, right half sits on the bottom: one strip, folded.
-        dy = LANDSCAPE_CELL_PAD if col == 0 else ui_h - LANDSCAPE_CELL_PAD - dh
+        dy = ry0 + pad if col == 0 else ry1 - pad - dh
         layout.append((half, (dx, dy, dw, dh)))
     return layout
 
 
+_main_layout_rects = ()  # where the strip's pieces are on the main screen right now
+
+
 def render_strip_to_ui(strip, layout, resample, transparent=False):
+    global _main_layout_rects
+    _main_layout_rects = tuple((dx, dy, dx + dw, dy + dh) for _, (dx, dy, dw, dh) in layout)
     if transparent:
         canvas = Image.new("RGBA", ui_size(), (0, 0, 0, 0))
     else:
@@ -1845,18 +1882,24 @@ def update_lcd(img=None, overlay_text=None, fast=False):
         img = img.copy()
         if overlay_text is None and auto_off_banner is not None:
             overlay_text = auto_off_banner
+        on_main = not menu_open and not gallery_open and not fullscreen_view
+        framed = on_main and look() != "original" and img.size == ui_size()
+        if framed:
+            # MODERN / CLASSIC: everything around the strip is one cached picture (looks.py).
+            chrome = _look_chrome()
+            img.paste(chrome, (0, 0), chrome)
         if countdown_value is not None:
             _draw_countdown(img)
         if overlay_text is not None:
             _draw_centered_banner(img, overlay_text)
-        elif not menu_open and not gallery_open and not fullscreen_view:
+        elif on_main and not framed:
             if in_review() and review_started is not None:
                 _draw_review_hint(img, review_seconds_left())
             _draw_corner_buttons(img)
-        _draw_battery_indicator(img)
+        if not framed:
+            _draw_battery_indicator(img)
         if overlay_text is None:
-            _draw_printer_status(img, badge=not menu_open and not gallery_open
-                                 and not fullscreen_view)
+            _draw_printer_status(img, badge=on_main and not framed)
 
         inset = ui_inset()
         if inset:
@@ -2136,6 +2179,10 @@ def _draw_countdown(img):
     box = _fullscreen_box if fullscreen_view else _live_preview_slot_box
     if box is None:
         box = (0, 0, img.width, img.height)
+    if look() != "original" and fullscreen_view:
+        overlay = _look_countdown(img.size)
+        img.paste(overlay, (0, 0), overlay)
+        return
     x, y, w, h = box
     size = max(40, int(min(w, h) * 0.75))
     draw = ImageDraw.Draw(img, "RGBA")
@@ -3555,13 +3602,24 @@ SHUTDOWN_CONFIRM_SECONDS = 4
 _fonts = {}
 
 
-def menu_font(size, bold=False):
-    key = (size, bold)
+def menu_font(size, bold=False, plain=False):
+    """`plain`: the original font whatever the look (it has the arrow shapes the others lack)."""
+    lk = settings.get("look", "original")
+    if plain or looks is None or lk not in looks.LOOKS:
+        lk = "original"
+    key = (size, bold, lk)
     if key not in _fonts:
-        name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
         try:
-            _fonts[key] = ImageFont.truetype(f"/usr/share/fonts/truetype/dejavu/{name}", size)
-        except OSError:
+            if lk != "original":
+                name, weight, factor = looks.menu_font_file(lk, bold)
+                font = ImageFont.truetype(str(looks.FONT_DIR / name), max(8, round(size * factor)))
+                if weight:
+                    font.set_variation_by_axes([weight])
+                _fonts[key] = font
+            else:
+                name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+                _fonts[key] = ImageFont.truetype(f"/usr/share/fonts/truetype/dejavu/{name}", size)
+        except Exception:
             _fonts[key] = ImageFont.load_default(size=size)
     return _fonts[key]
 
@@ -3575,13 +3633,14 @@ def _draw_text_centered(draw, box, text, font, fill):
 
 
 def _fit_font(draw, text, max_w, size, bold=True):
+    plain = any(ch in text for ch in "\u25c0\u25b6\u25b2\u25bc")
     while size > 10:
-        font = menu_font(size, bold)
+        font = menu_font(size, bold, plain)
         bbox = draw.textbbox((0, 0), text, font=font)
         if bbox[2] - bbox[0] <= max_w:
             return font
         size -= 1
-    return menu_font(size, bold)
+    return menu_font(size, bold, plain)
 
 
 def _draw_gear(draw, cx, cy, r, color, bg):
@@ -3614,6 +3673,9 @@ def corner_buttons():
     """[(kind, (x0, y0, x1, y1))] in UI coordinates: settings, review, then quick effects (or in
     browse mode the camera)."""
     kinds = ["menu", "gallery"] + (["camera"] if mode == "browse" else ["fx", "layout"])
+    if look() != "original":
+        rail = looks.geometry(look(), *ui_size())["rail"]
+        return [(kind, tuple(round(v) for v in rail[i])) for i, kind in enumerate(kinds)]
     buttons = []
     for i, kind in enumerate(kinds):
         top = ICON_MARGIN + i * (ICON_SIZE + ICON_GAP)
@@ -3660,6 +3722,98 @@ def _draw_layout_icon(draw, cx, cy, k, color, kind):
     w = max(2, round(1.6 * k))
     for name, box in boxes.items():
         draw.rectangle(box, fill=color if name == kind else None, outline=color, width=w)
+
+
+_look_cache = {}  # "chrome": (key, picture); "count": (key, picture)
+_look_slow = {"t": 0.0, "saved": 0, "wifi": False}
+
+
+def _look_state():
+    """What the MODERN / CLASSIC main screen shows right now, as plain values (looks.py draws it)."""
+    now = time.monotonic()
+    if now - _look_slow["t"] > 10:  # things that change rarely and cost a little to look up
+        _look_slow["t"] = now
+        try:
+            _look_slow["saved"] = sum(1 for _ in ARCHIVE_DIR.glob("*.jpg"))
+        except OSError:
+            pass
+        try:
+            _look_slow["wifi"] = Path(f"/sys/class/net/{WIFI_IFACE}/operstate").read_text().strip() == "up"
+        except OSError:
+            _look_slow["wifi"] = False
+    kind = current_kind()
+    cap = max(1, current_capacity())
+    group = indices_for_kind(kind)
+    pos = group.index(current_frame_index) + 1 if current_frame_index in group else 1
+    browsing = mode == "browse" and bool(browse_strips)
+    reviewing = in_review() and review_started is not None
+    st = {"kinds": [k for k, _ in corner_buttons()], "effects_on": effects_on(),
+          "saved": _look_slow["saved"], "wifi": _look_slow["wifi"],
+          "battery": None if battery_percent is None else round(battery_percent),
+          "design": pos, "designs": len(group), "layout": "strip" if kind == "strip" else "sheet",
+          "phone": bool(PRINTER_WIFI), "strip_rects": list(_main_layout_rects),
+          "date": tuple(datetime.now().strftime("%m %d %y").split())}
+    if browsing:
+        when = datetime.fromtimestamp(browse_strips[browse_index].stat().st_mtime)
+        st.update(title=when.strftime("%b %-d · %-I:%M %p"), chip="saved print",
+                  switch_text=f"{browse_index + 1} of {len(browse_strips)} · swipe",
+                  design=browse_index + 1, designs=len(browse_strips),
+                  count_label="SAVED", count=browse_index + 1, count_of=len(browse_strips),
+                  count_side="", segments=[], cta=["1 press older · 2 newer", "3 presses print it"],
+                  tape="1 OLDER · 2 NEWER · 3 PRINT",
+                  plate_text=f"SAVED · {browse_index + 1} OF {len(browse_strips)}")
+    else:
+        taken = sum(p is not None for p in live_photos)
+        n = min(current_slot + 1, cap)
+        name = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", frames[current_frame_index].stem).title() if frames else "No designs"
+        shape = {"strip": "2x6 strip", "sheet": "6x4 sheet", "psheet": "4x6 sheet"}[kind]
+        st.update(title=name, chip=f"{shape} · {cap} photo{'s' if cap != 1 else ''}",
+                  switch_text=f"{pos} of {len(group)} · swipe to change",
+                  count_label="PHOTO", count=n, count_of=cap,
+                  count_side="all taken" if taken >= cap else f"{cap - taken} left",
+                  segments=["done" if i < current_slot else "now" if i == current_slot else "todo"
+                            for i in range(cap)],
+                  plate_text=f"No. {pos} · {'STRIP' if kind == 'strip' else 'SHEET'} OF {cap}")
+        if reviewing:
+            left = review_seconds_left()
+            st.update(cta=["1 press keeps it", "2 retake · 3 new frame"], cta_seconds=left,
+                      cta_frac=left / max(1, settings["review"]),
+                      tape=f"1 KEEP · 2 RETAKE · {left}s")
+        else:
+            st.update(cta=["Press the big button", f"for photo {n}"], tape="PRESS THE SHUTTER")
+    if printer_connected is None:
+        st["printer"] = None
+    elif printer_alert:
+        st.update(printer="alert", printer_title=printer_alert.capitalize(), printer_sub="Fix it to print")
+    elif not printer_connected:
+        st.update(printer="off", printer_title="Printer off", printer_sub="Tap for help")
+    elif print_jobs or _print_busy.is_set():
+        n = len(print_jobs)
+        st.update(printer="printing", printer_title="Printing",
+                  printer_sub="1 on its way" if n <= 1 else f"{n} waiting")
+    else:
+        st.update(printer="ready", printer_title="Printer ready", printer_sub="Nothing waiting")
+    return st
+
+
+def _look_chrome():
+    """The picture of everything around the strip, redrawn only when something on it changes."""
+    st = _look_state()
+    key = (look(), ui_size(), json.dumps(st, sort_keys=True, default=str))
+    if _look_cache.get("chrome", (None,))[0] != key:
+        _look_cache["chrome"] = (key, looks.render_main(look(), *ui_size(), st)[0])
+    return _look_cache["chrome"][1]
+
+
+def _look_countdown(size):
+    cap = max(1, current_capacity())
+    total = max(1, settings["countdown"] or 1)
+    key = (look(), size, countdown_value, current_slot, cap, total)
+    if _look_cache.get("count", (None,))[0] != key:
+        _look_cache["count"] = (key, looks.render_countdown(
+            look(), size[0], size[1], countdown_value, min(current_slot + 1, cap), cap,
+            countdown_value / total))
+    return _look_cache["count"][1]
 
 
 def _draw_corner_buttons(img):
@@ -5657,6 +5811,15 @@ def handle_tap(point):
                 {"menu": open_menu, "gallery": open_gallery, "camera": enter_creation_mode,
                  "fx": open_quick_effects, "layout": toggle_layout}[kind]()
                 return
+        if look() != "original":
+            geo = looks.geometry(look(), *ui_size())
+            for name, action in (("prev", lambda: handle_swipe(1)), ("next", lambda: handle_swipe(-1)),
+                                 ("printer", open_phone_help), ("phone", open_phone_help)):
+                x0, y0, x1, y1 = geo.get(name, (0, 0, -1, -1))
+                if x0 <= x <= x1 and y0 <= y <= y1:
+                    action()
+                    return
+            return
         # The printer in the top right corner: how to print from a phone.
         if PRINTER_WIFI and x >= ui_size()[0] - 110 and y <= 110:
             open_phone_help()

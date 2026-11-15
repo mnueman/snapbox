@@ -1,0 +1,12 @@
+Fonts for the app's own screens (the MODERN and CLASSIC looks), from Google Fonts
+(https://github.com/google/fonts), redistributed under their licenses.
+
+PlusJakartaSans.ttf: Copyright 2020 The Plus Jakarta Sans Project Authors
+  (https://github.com/tokotype/PlusJakartaSans). SIL Open Font License 1.1.
+BarlowCondensed-*.ttf: Copyright 2017 The Barlow Project Authors (https://github.com/jpt/barlow).
+  SIL Open Font License 1.1.
+Yellowtail.ttf: Copyright (c) 2011 by Brian J. Bonislawsky DBA Astigmatic (AOETI). Apache License 2.0
+  (https://www.apache.org/licenses/LICENSE-2.0).
+
+The SIL Open Font License 1.1 text: https://openfontlicense.org/open-font-license-official-text/
+(also in full in ../../frames/fonts/FONTS.txt).
