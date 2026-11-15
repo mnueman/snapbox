@@ -3768,7 +3768,6 @@ def cycle_screen_rotation():
 # Touchscreen settings menu (opened with the gear icon in the top-left corner)
 # ---------------------------------------------------------------------------
 
-SHUTDOWN_CONFIRM_SECONDS = 4
 
 _fonts = {}
 
@@ -4029,7 +4028,7 @@ menu_focus = {"camera": "brightness", "effects": "stamp"}  # setting shown under
 menu_buttons = []  # [((x0, y0, x1, y1) in UI coords, callback)]
 _menu_last_cam = None
 _menu_last_ts = 0.0
-_shutdown_confirm_until = 0.0
+_power_back = "booth"
 _lcd_xform = None  # (x, y, scale) of the last frame drawn on the panel
 
 
@@ -4243,13 +4242,55 @@ def _render_date_keypad(draw, area, buttons):
             _draw_key(draw, box, label, buttons, lambda ch=label: date_keypad_type(ch), size=34)
 
 
-def press_shutdown():
-    global _shutdown_confirm_until
-    if time.monotonic() < _shutdown_confirm_until:
-        close_menu(redraw=False)
-        shutdown_pi()
-    else:
-        _shutdown_confirm_until = time.monotonic() + SHUTDOWN_CONFIRM_SECONDS
+def open_power_confirm():
+    """The red power key (top of every menu tab) and BOOTH > SHUT DOWN both ask here first."""
+    global _power_back
+    if menu_tab != "power":
+        _power_back = menu_tab if menu_tab in ("camera", "effects", "booth", "wifi") else "booth"
+    set_menu_tab("power")
+
+
+def confirm_shutdown():
+    close_menu(redraw=False)
+    shutdown_pi()
+
+
+def _draw_power_icon(draw, box, fill):
+    """The power symbol: a ring open at the top with a bar through the gap."""
+    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    r = min(box[2] - box[0], box[3] - box[1]) * 0.27
+    wd = max(3, round(r * 0.3))
+    draw.arc((cx - r, cy - r + 2, cx + r, cy + r + 2), 305, 235, fill=fill, width=wd)
+    draw.line((cx, cy - r - 3, cx, cy + 1), fill=fill, width=wd)
+
+
+def render_power_confirm(draw, area, buttons):
+    x0, y0, x1, y1 = area
+    w = x1 - x0
+    title = "SHUT DOWN THE BOOTH?"
+    _draw_text_centered(draw, (x0, y0, x1, y0 + 40), title, _fit_font(draw, title, w - 20, 28),
+                        MENU_TEXT)
+    lines = [
+        ("The booth switches itself off safely.", MENU_TEXT),
+        ("Your photos are kept.", MENU_TEXT),
+        ("Wait for the screen to go dark before unplugging.", MENU_DIM),
+        ("To start again: unplug and plug the power back in.", MENU_DIM),
+    ]
+    key_h = 76
+    box = (x0, y0 + 48, x1, y1 - key_h - 10)
+    _rrect(draw, box, radius=12, fill=MENU_ROW)
+    lh = min(34, (box[3] - box[1] - 20) // len(lines))
+    longest = max((text for text, _ in lines), key=len)
+    font = _fit_font(draw, longest, w - 28, max(12, int(lh * 0.62)), bold=False)
+    y = box[1] + (box[3] - box[1] - lh * len(lines)) // 2
+    for text, fill in lines:
+        _draw_text_centered(draw, (x0 + 10, y, x1 - 10, y + lh), text, font, fill)
+        y += lh
+    half = (w - 10) // 2
+    _draw_key(draw, (x0, y1 - key_h, x0 + half, y1), "CANCEL", buttons,
+              lambda: set_menu_tab(_power_back), fill=MENU_ACCENT, text_fill=(0, 0, 0), size=24)
+    _draw_key(draw, (x1 - half, y1 - key_h, x1, y1), "YES, SHUT DOWN", buttons, confirm_shutdown,
+              fill=MENU_DANGER, size=22)
 
 
 def _draw_setting_row(draw, box, key, buttons):
@@ -5972,7 +6013,8 @@ def render_menu(cam=None):
 
     tabs = (("camera", "CAMERA"), ("effects", "EFFECTS"), ("booth", "BOOTH"), ("wifi", "WIFI"))
     done_w = 100 if is_landscape() else 80
-    tab_w = min(170, (w - done_w - pad * (len(tabs) + 2)) // len(tabs))
+    power_w = 62 if is_landscape() else 50
+    tab_w = min(170, (w - done_w - power_w - pad * (len(tabs) + 3)) // len(tabs))
     x = pad
     for tab, text in tabs:
         box = (x, pad, x + tab_w, bar_h - 4)
@@ -5982,6 +6024,11 @@ def render_menu(cam=None):
                             (0, 0, 0) if active else MENU_TEXT)
         buttons.append((box, lambda t=tab: set_menu_tab(t)))
         x += tab_w + pad
+    # Shut down, on every tab: red, with the power symbol everyone knows.
+    power = (w - 2 * pad - done_w - power_w, pad, w - 2 * pad - done_w, bar_h - 4)
+    _rrect(draw, power, radius=10, fill=MENU_DANGER)
+    _draw_power_icon(draw, power, MENU_TEXT)
+    buttons.append((power, open_power_confirm))
     done = (w - pad - done_w, pad, w - pad, bar_h - 4)
     _rrect(draw, done, radius=10, fill=MENU_DONE)
     _draw_text_centered(draw, done, "DONE", menu_font(22, True), MENU_TEXT)
@@ -5998,6 +6045,8 @@ def render_menu(cam=None):
         render_phone_view(draw, (pad, top, w - pad, h - pad))
     elif menu_tab == "console":
         render_console_confirm(draw, (pad, top, w - pad, h - pad), buttons)
+    elif menu_tab == "power":
+        render_power_confirm(draw, (pad, top, w - pad, h - pad), buttons)
     else:
         keys = [k for k, _, _, _ in BOOTH_SETTINGS]
         action_h = 70
@@ -6016,15 +6065,13 @@ def render_menu(cam=None):
             for line in HELP_LINES:
                 _draw_text_centered(draw, (pad, y, w - pad, y + 20), line, help_font, MENU_DIM)
                 y += 22
-        confirming = time.monotonic() < _shutdown_confirm_until
         half = (w - 3 * pad) // 2
         ubox = (pad, action_top, pad + half, action_top + action_h)
         _draw_key(draw, ubox, "UPDATE READY" if update_state == "available" else "UPDATES",
                   buttons, lambda: set_menu_tab("update"),
                   fill=MENU_DONE if update_state == "available" else MENU_ROW, size=22)
         sbox = (w - pad - half, action_top, w - pad, action_top + action_h)
-        _draw_key(draw, sbox, "TAP AGAIN TO\nSHUT DOWN" if confirming else "SHUT DOWN",
-                  buttons, press_shutdown, fill=MENU_DANGER, size=22)
+        _draw_key(draw, sbox, "SHUT DOWN", buttons, open_power_confirm, fill=MENU_DANGER, size=22)
 
     menu_buttons = buttons
     return img
