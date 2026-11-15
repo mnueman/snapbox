@@ -205,6 +205,42 @@ Layers that keep it running:
 - Raw captures left by an interrupted strip are cleared at startup.
 - Logs survive reboots (capped at 50 MB): `journalctl -u photobooth -b -1` shows the previous boot.
 
+## Printer (Canon SELPHY CP1500)
+
+The printer connects over WiFi to a network the booth makes itself, so it works anywhere, with or
+without other WiFi. Once per booth, with internet:
+
+    sudo sh ~/photobooth/system/setup-printer.sh
+
+It installs the print system (CUPS; printing uses AirPrint, no driver), makes the booth's printer
+network and prints its name and password at the end. They're kept in `/etc/snapbox/printer-wifi`
+(edit it and run `sudo systemctl restart photobooth-hotspot` to change them) and shown in the app's
+WIFI tab. Then, once per printer, on the SELPHY: Wi-Fi settings > Connection Settings > Other > Via
+Wireless Router > Find wireless routers, pick the booth's network and type the password (the Menu
+button opens the keyboard). The printer remembers it.
+
+- The app finds the printer and adds it by itself. Top right of the main screen: a printer with a dot.
+  Green: ready. Amber with a number: printing, and how many prints are waiting. Red: not connected, or
+  it needs paper or ink (the screen says which along the bottom).
+- "PRINT SENT" means the print is on its way; "PRINT FINISHED" shows when it has come out. The same
+  print can't be sent again until it's out (a sheet takes about a minute), and at most 3 wait at once.
+  If the printer goes away, waiting prints are cancelled so they don't come out later by surprise.
+- The printer only does 2.4 GHz WiFi, and the Pi's WiFi chip runs both networks on one channel. So
+  the booth keeps its own WiFi on 2.4 GHz; on a WiFi that is 5 GHz only it can't print, and says so.
+  TURN WIFI OFF switches the printer network off too.
+- Prints are fitted to where this printer really cuts (`PRINT_TRIM_MM`, `PRINT_SLANT`,
+  `PRINT_BLEED_MM` in `photobooth.py`), measured with `system/print_calibration.py` (prints a ruler
+  sheet) and `system/measure_calibration.py` (reads a photo of it); `system/print_fit_sim.py` checks
+  every design shape against them.
+
+### Photos from a phone
+
+Join the booth's printer network on the phone (name and password: WIFI tab) and open
+`http://10.42.0.1:8080`. Pick a design, tap each box to add a photo, drag to move it and pinch to
+zoom, then SAVE (it appears in REVIEW like any strip, and CHANGE FRAME works on it) or SAVE & PRINT.
+The booth builds and prints it exactly like its own strips. The page is `web/index.html`; it's only
+reachable from the booth's own network.
+
 ## Updates
 
 Booths install the `stable` branch from the public GitHub repo (github.com/mnueman/snapbox) over HTTPS,

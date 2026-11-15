@@ -7,6 +7,9 @@ Wants=NetworkManager.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/snapbox-hotspot
+# Couldn't start (the WiFi chip wasn't ready, NetworkManager was busy): try again.
+Restart=on-failure
+RestartSec=15
 
 [Install]
 WantedBy=multi-user.target

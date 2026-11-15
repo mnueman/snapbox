@@ -18,6 +18,13 @@ install -m 0644 snapbox-wifi-watchdog.service snapbox-wifi-watchdog.timer /etc/s
 install -m 0755 snapbox-wifi-nosteer.sh /usr/local/sbin/snapbox-wifi-nosteer
 install -m 0644 snapbox-wifi-nosteer.service /etc/systemd/system/
 install -m 0755 snapbox-wifi-nosteer.dispatcher /etc/NetworkManager/dispatcher.d/40-snapbox-wifi-nosteer
+# Booths with a printer (set up once with setup-printer.sh): keep the printer network's scripts
+# up to date too. They take effect the next time the network starts; it isn't restarted here.
+if [ -e /etc/snapbox/printer-wifi ]; then
+    install -m 0755 snapbox-hotspot.sh /usr/local/sbin/snapbox-hotspot
+    install -m 0755 snapbox-hotspot.dispatcher /etc/NetworkManager/dispatcher.d/50-snapbox-hotspot
+    install -m 0644 photobooth-hotspot.service /etc/systemd/system/
+fi
 install -d /etc/systemd/journald.conf.d
 install -m 0644 photobooth-journald.conf /etc/systemd/journald.conf.d/50-photobooth.conf
 systemctl restart systemd-journald

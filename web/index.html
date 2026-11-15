@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Photobooth</title>
+<style>
+  :root { --bg:#16161a; --row:#2e2e36; --text:#fff; --dim:#9a9aa6; --accent:#ffbe28; --done:#28964a; --bad:#eb4b4b; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; background:var(--bg); color:var(--text);
+    font:16px/1.35 -apple-system, "Segoe UI", Roboto, sans-serif; overscroll-behavior:none; }
+  header { padding:14px 16px 6px; }
+  h1 { margin:0; font-size:20px; letter-spacing:.04em; }
+  #status { color:var(--dim); font-size:13px; margin-top:2px; }
+  #status.bad { color:var(--bad); }
+  main { padding:8px 16px 110px; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+  .chip { background:var(--row); color:var(--text); border:0; border-radius:999px; padding:9px 14px; font:inherit; font-size:14px; }
+  .chip.on { background:var(--accent); color:#000; font-weight:700; }
+  #grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(96px, 1fr)); gap:10px; margin-top:10px; }
+  .card { background:#3a3a44; border:0; border-radius:10px; padding:6px; display:flex; align-items:center; justify-content:center; min-height:96px; }
+  .card img { max-width:100%; max-height:180px; display:block;
+    background:repeating-conic-gradient(#8a8a94 0 25%, #a2a2ac 0 50%) 0 0/16px 16px; }
+  #editor { display:none; }
+  #stageWrap { display:flex; justify-content:center; margin-top:8px; }
+  #stage { position:relative; background:#fff; touch-action:none; user-select:none; -webkit-user-select:none; }
+  .slot { position:absolute; overflow:hidden; background:#4a4a56; touch-action:none; }
+  .slot.empty::after { content:"+"; position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    font-size:34px; color:#fff; opacity:.85; }
+  .slot.sel { outline:3px solid var(--accent); outline-offset:-3px; z-index:1; }
+  .slot img { position:absolute; max-width:none; pointer-events:none; }
+  #frame { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:2; }
+  .hint { color:var(--dim); font-size:13px; text-align:center; margin:10px 0 0; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:rgba(22,22,26,.96); padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+    display:none; gap:10px; }
+  .btn { flex:1; border:0; border-radius:12px; padding:14px 8px; font:inherit; font-weight:700; font-size:15px; color:var(--text); background:var(--row); }
+  .btn.go { background:var(--accent); color:#000; }
+  .btn.ok { background:var(--done); }
+  .btn:disabled { opacity:.45; }
+  #msg { position:fixed; left:16px; right:16px; top:40%; background:#000; border:2px solid var(--accent); border-radius:14px;
+    padding:18px; text-align:center; display:none; z-index:10; font-size:17px; }
+  #msg button { margin-top:14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PHOTOBOOTH</h1>
+  <div id="status">Connecting to the booth…</div>
+</header>
+<main>
+  <section id="picker">
+    <div>1. Pick a design</div>
+    <div class="chips" id="layouts"></div>
+    <div class="chips" id="counts"></div>
+    <div id="grid"></div>
+  </section>
+  <section id="editor">
+    <div>2. Tap a box to add a photo. Drag to move it, pinch to zoom.</div>
+    <div id="stageWrap"><div id="stage"><img id="frame" alt=""></div></div>
+    <p class="hint" id="hint"></p>
+  </section>
+</main>
+<div class="bar" id="bar">
+  <button class="btn" id="back">Back</button>
+  <button class="btn" id="add">Add photos</button>
+  <button class="btn ok" id="save" disabled>Save</button>
+  <button class="btn go" id="print" disabled>Save &amp; print</button>
+</div>
+<div id="msg"><div id="msgText"></div><button class="btn go" id="msgOk">OK</button></div>
+<input type="file" id="file" accept="image/*" multiple hidden>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const NAMES = {strip: "Strips", sheet: "Big: landscape", psheet: "Big: portrait"};
+let designs = [], layout = "strip", count = 4, design = null, slots = [], target = null, busy = false;
+
+function say(text, after) {
+  $("msgText").textContent = text; $("msg").style.display = "block";
+  $("msgOk").onclick = () => { $("msg").style.display = "none"; if (after) after(); };
+}
+
+async function status() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    const el = $("status");
+    el.className = s.printer && !s.alert ? "" : "bad";
+    el.textContent = s.alert ? "Printer: " + s.alert.toLowerCase()
+      : !s.printer ? "Printer not connected (you can still save to the booth)"
+      : s.waiting ? "Printer busy: " + s.waiting + " waiting" : "Printer ready";
+  } catch (e) { $("status").className = "bad"; $("status").textContent = "Can't reach the booth. Are you on its WiFi?"; }
+}
+
+function chips(el, items, current, pick) {
+  el.innerHTML = "";
+  for (const [value, label] of items) {
+    const b = document.createElement("button");
+    b.className = "chip" + (value === current ? " on" : ""); b.textContent = label;
+    b.onclick = () => pick(value); el.appendChild(b);
+  }
+}
+
+function showPicker() {
+  design = null;
+  $("editor").style.display = "none"; $("bar").style.display = "none"; $("picker").style.display = "block";
+  const kinds = ["strip", "sheet", "psheet"].filter(k => designs.some(d => d.kind === k));
+  if (!kinds.includes(layout)) layout = kinds[0];
+  chips($("layouts"), kinds.map(k => [k, NAMES[k]]), layout, v => { layout = v; showPicker(); });
+  const counts = [...new Set(designs.filter(d => d.kind === layout).map(d => d.slots.length))].sort();
+  if (!counts.includes(count)) count = counts[counts.length - 1];
+  chips($("counts"), counts.map(c => [c, c + (c === 1 ? " photo" : " photos")]), count, v => { count = v; showPicker(); });
+  const grid = $("grid"); grid.innerHTML = "";
+  for (const d of designs.filter(d => d.kind === layout && d.slots.length === count)) {
+    const b = document.createElement("button"); b.className = "card";
+    const img = new Image(); img.loading = "lazy"; img.alt = d.name;
+    img.src = "/design.png?id=" + encodeURIComponent(d.id);
+    b.appendChild(img); b.onclick = () => openDesign(d); grid.appendChild(b);
+  }
+  window.scrollTo(0, 0);
+}
+
+function openDesign(d) {
+  const old = slots.map(s => s.photo).filter(Boolean);  // photos carry over to the new design
+  design = d;
+  $("picker").style.display = "none"; $("editor").style.display = "block"; $("bar").style.display = "flex";
+  const stage = $("stage");
+  const maxW = Math.min(window.innerWidth - 32, 520), maxH = window.innerHeight * 0.72;
+  const k = Math.min(maxW / d.w, maxH / d.h);
+  stage.style.width = d.w * k + "px"; stage.style.height = d.h * k + "px";
+  stage.querySelectorAll(".slot").forEach(e => e.remove());
+  $("frame").src = "/design.png?big=1&id=" + encodeURIComponent(d.id);
+  slots = d.slots.map(([x, y, w, h], i) => {
+    const el = document.createElement("div"); el.className = "slot empty";
+    Object.assign(el.style, {left: x * k + "px", top: y * k + "px", width: w * k + "px", height: h * k + "px"});
+    stage.appendChild(el);
+    const s = {el, w: w * k, h: h * k, pw: w, ph: h, photo: null, img: null, zoom: 1, cx: .5, cy: .5};
+    gestures(s); return s;
+  });
+  old.slice(0, slots.length).forEach((p, i) => setPhoto(slots[i], p));
+  refresh(); window.scrollTo(0, 0);
+}
+
+function setPhoto(s, photo) {
+  s.photo = photo; s.zoom = 1; s.cx = .5; s.cy = .5;
+  if (s.img) s.img.remove();
+  s.img = new Image(); s.img.src = photo.url; s.el.appendChild(s.img); s.el.classList.remove("empty");
+  place(s);
+}
+
+function place(s) {
+  const p = s.photo, base = Math.max(s.w / p.w, s.h / p.h) * s.zoom;
+  const dw = p.w * base, dh = p.h * base;
+  s.cx = Math.min(Math.max(s.cx, s.w / 2 / dw), 1 - s.w / 2 / dw);
+  s.cy = Math.min(Math.max(s.cy, s.h / 2 / dh), 1 - s.h / 2 / dh);
+  Object.assign(s.img.style, {width: dw + "px", height: dh + "px", left: s.w / 2 - s.cx * dw + "px", top: s.h / 2 - s.cy * dh + "px"});
+}
+
+function gestures(s) {
+  const pts = new Map(); let moved = 0, lastDist = 0;
+  const el = s.el;
+  el.addEventListener("pointerdown", e => { el.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]); if (pts.size === 1) moved = 0; lastDist = 0; });
+  el.addEventListener("pointermove", e => {
+    if (!pts.has(e.pointerId)) return;
+    const [px, py] = pts.get(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]);
+    if (!s.photo) return;
+    const base = Math.max(s.w / s.photo.w, s.h / s.photo.h) * s.zoom;
+    if (pts.size === 1) {
+      const dx = e.clientX - px, dy = e.clientY - py; moved += Math.abs(dx) + Math.abs(dy);
+      s.cx -= dx / (s.photo.w * base); s.cy -= dy / (s.photo.h * base);
+    } else if (pts.size === 2) {
+      const [a, b] = [...pts.values()], dist = Math.hypot(a[0] - b[0], a[1] - b[1]);
+      if (lastDist) s.zoom = Math.min(6, Math.max(1, s.zoom * dist / lastDist));
+      lastDist = dist; moved += 10;
+    }
+    place(s);
+  });
+  const up = e => {
+    if (!pts.delete(e.pointerId)) return; lastDist = 0;
+    if (pts.size === 0 && moved < 8 && e.type === "pointerup") { target = s; $("file").multiple = false; $("file").click(); }
+  };
+  el.addEventListener("pointerup", up); el.addEventListener("pointercancel", up);
+}
+
+function loadPhoto(file) {
+  return new Promise((ok, bad) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => ok({url, w: img.naturalWidth, h: img.naturalHeight, img});
+    img.onerror = () => bad(new Error("That file isn't a photo the phone can open."));
+    img.src = url;
+  });
+}
+
+$("file").onchange = async e => {
+  const files = [...e.target.files]; e.target.value = "";
+  let order = target ? [target, ...slots.filter(s => s !== target && !s.photo)] : slots.filter(s => !s.photo);
+  if (!target && !order.length) order = slots;
+  target = null;
+  for (let i = 0; i < files.length && i < order.length; i++) {
+    try { setPhoto(order[i], await loadPhoto(files[i])); } catch (err) { say(err.message); }
+  }
+  refresh();
+};
+
+function refresh() {
+  const filled = slots.filter(s => s.photo).length, full = filled === slots.length;
+  $("save").disabled = $("print").disabled = !full || busy;
+  $("hint").textContent = full ? "Looks good? Save it to the booth, or save and print."
+    : filled + " of " + slots.length + " photos added";
+}
+
+function crop(s) {
+  const p = s.photo, base = Math.max(s.w / p.w, s.h / p.h) * s.zoom;
+  const vw = s.w / base, vh = s.h / base, sx = s.cx * p.w - vw / 2, sy = s.cy * p.h - vh / 2;
+  const scale = Math.min(1, 1600 / Math.max(s.pw, s.ph));
+  const cw = Math.round(s.pw * scale), ch = Math.round(s.ph * scale);
+  const c = document.createElement("canvas"); c.width = cw; c.height = ch;
+  c.getContext("2d").drawImage(p.img, sx, sy, vw, vh, 0, 0, cw, ch);
+  return c.toDataURL("image/jpeg", 0.92);
+}
+
+async function send(print) {
+  if (busy) return; busy = true; refresh();
+  $("hint").textContent = "Sending to the booth…";
+  try {
+    const body = JSON.stringify({design: design.id, print, photos: slots.map(crop)});
+    const r = await fetch("/api/make", {method: "POST", headers: {"Content-Type": "application/json"}, body});
+    const out = await r.json();
+    busy = false;
+    say(out.message, out.ok ? () => { slots.forEach(s => { s.photo = null; }); showPicker(); } : null);
+  } catch (e) { busy = false; say("Couldn't reach the booth. Are you still on its WiFi?"); }
+  refresh(); status();
+}
+
+$("back").onclick = showPicker;
+$("add").onclick = () => { target = null; $("file").multiple = true; $("file").click(); };
+$("save").onclick = () => send(false);
+$("print").onclick = () => send(true);
+
+(async () => {
+  try {
+    designs = (await (await fetch("/api/designs")).json()).designs;
+    showPicker();
+  } catch (e) { say("Can't reach the booth. Join its WiFi and reload."); }
+  status(); setInterval(status, 5000);
+})();
+</script>
+</body>
+</html>

@@ -31,6 +31,8 @@ systemctl daemon-reload
 systemctl enable photobooth-hotspot.service
 /usr/local/sbin/snapbox-hotspot || true
 sync
+# The app only learns it may add printers, and that it has a printer network, when it starts.
+systemctl try-restart photobooth.service || true
 
 echo
 iw dev | grep -E "Interface|channel|type"

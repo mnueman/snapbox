@@ -1,6 +1,9 @@
 from pathlib import Path
 from datetime import datetime
 from queue import Queue
+import base64
+import http.server
+import io
 import json
 import math
 import os
@@ -13,9 +16,10 @@ import subprocess
 import tempfile
 import threading
 import traceback
+import urllib.parse
 
 from gpiozero import Button, InputDevice
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 from picamera2 import Picamera2
 from libcamera import controls, Transform
 import numpy as np
@@ -546,6 +550,10 @@ def camera_failed(what):
     # A stalled camera doesn't recover in-process (even stop() can hang), so exit and
     # let photobooth.service start a fresh process, which gets a working camera.
     print(f"Camera stalled during {what}; exiting so the service restarts the app.", flush=True)
+    try:
+        save_partial_strip_before_shutdown()  # startup deletes leftover captures
+    except Exception as e:
+        print(f"Could not save the strip in progress: {e}", flush=True)
     restore_backlight_if_dark()
     os._exit(1)
 
@@ -1938,6 +1946,8 @@ def flash_message(text, seconds=1.0):
     wake_screen()
     update_lcd(overlay_text=text)
     time.sleep(seconds)
+    # Taps made while the message was up would all act now (PRINT tapped five times = more sheets).
+    pygame.event.clear()
     update_lcd()
 
 
@@ -2507,13 +2517,14 @@ def detect_printer():
     except Exception:
         return None
 
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and parts[0] == "printer":
-            name = parts[1]
-            low = name.lower()
-            if "selphy" in low or "cp1500" in low or "canon" in low:
-                return name
+    names = [parts[1] for parts in (line.split() for line in result.stdout.splitlines())
+             if len(parts) >= 2 and parts[0] == "printer"]
+    if PRINTER_QUEUE in names:
+        return PRINTER_QUEUE  # the one the app set up and watches (the dot on screen)
+    for name in names:
+        low = name.lower()
+        if "selphy" in low or "cp1500" in low or "canon" in low:
+            return name
 
     return None
 
@@ -2565,23 +2576,23 @@ def fit_print(img):
 
 
 def _prepare_print_image(path):
+    tmp_path = None
     try:
         canvas = fit_print(Image.open(path))
-    except Exception as e:
-        print(f"Could not prepare print image {path}: {e}")
-        return str(path), None
-
-    try:
         fd, tmp_path = tempfile.mkstemp(prefix="print_", suffix=".jpg")
         os.close(fd)
         canvas.save(tmp_path, quality=95)
         return tmp_path, tmp_path
     except Exception as e:
-        print(f"Could not write fitted print image: {e}")
+        print(f"Could not prepare print image {path}: {e}")
+        if tmp_path is not None:
+            Path(tmp_path).unlink(missing_ok=True)
         return str(path), None
 
 
 def send_to_printer(path):
+    """Hands the print to CUPS. Returns its job id ("SELPHY-12"), or None if that failed.
+    Whether it then really prints is watched by _printer_watch."""
     printer = detect_printer()
 
     print_path, temp_path = _prepare_print_image(path)
@@ -2595,10 +2606,10 @@ def send_to_printer(path):
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     except FileNotFoundError:
         print("Print failed: `lp` not found (is CUPS installed?)")
-        return False
+        return None
     except Exception as e:
         print(f"Print failed: {e}")
-        return False
+        return None
     finally:
         if temp_path is not None:
             try:
@@ -2608,13 +2619,14 @@ def send_to_printer(path):
 
     if result.returncode != 0:
         print(f"Print failed (rc={result.returncode}): {result.stderr.strip()}")
-        return False
+        return None
 
     print(f"Print submitted: {result.stdout.strip()}")
-    return True
+    found = re.search(r"request id is (\S+)", result.stdout)
+    return found.group(1) if found else "?"
 
 
-_print_busy = threading.Event()
+_print_busy = threading.Event()  # building a print and handing it to CUPS (a few seconds)
 
 
 def _build_and_send_print(paths):
@@ -2623,15 +2635,15 @@ def _build_and_send_print(paths):
             sheet = make_sheet_print(Image.open(paths[0]))  # a sheet prints on its own
         except Exception as e:
             print(f"Could not open saved sheet: {e}")
-            return False
+            return None
         build = sheet
     else:
         if is_sheet_file(paths[1]):
             print("A sheet can't share a print with a strip.")
-            return False
+            return None
         strips = [load_strip_image(p) for p in paths]
         if any(strip is None for strip in strips):
-            return False
+            return None
         build = make_pair_print(*strips)
 
     fd, tmp = tempfile.mkstemp(prefix="print_", suffix=".jpg")
@@ -2650,20 +2662,20 @@ def _build_and_send_print(paths):
 
 def _print_worker(paths):
     # Runs off the UI thread; reports back via action_queue, never touches pygame.
-    ok = False
+    job = None
     try:
-        ok = _build_and_send_print(paths)
+        job = _build_and_send_print(paths)
     except Exception as e:
         print(f"Print failed: {e}")
     finally:
         _print_busy.clear()
-        action_queue.put(("print_done", ok))
+        action_queue.put(("print_done", (job, _print_key(*paths))))
 
 
 # ---------------------------------------------------------------------------
 # Printer over the booth's own WiFi (system/setup-printer.sh): the SELPHY joins the booth's network
-# (uap0). A background thread spots it, adds it to CUPS by itself (AirPrint, no driver) and tells
-# the screen whether it's connected.
+# (uap0). A background thread spots it, adds it to CUPS by itself (AirPrint, no driver), follows
+# each print until it has really come out, and tells the screen what's going on.
 # ---------------------------------------------------------------------------
 
 PRINTER_WIFI_IFACE = "uap0"
@@ -2671,29 +2683,63 @@ PRINTER_QUEUE = "SELPHY"
 PRINTER_POLL_SECONDS = 5
 PRINTER_GONE_POLLS = 2  # missed checks in a row before it counts as disconnected
 PRINTER_TOAST_SECONDS = 3
+PRINT_QUEUE_MAX = 3  # prints waiting at once
+PRINT_STUCK_SECONDS = 300  # a print at the front this long, with no word from the printer: failed
+HOTSPOT_STATUS_FILE = Path("/run/snapbox/hotspot-status")  # why there's no printer WiFi, if known
 
 printer_connected = None  # True / False; None: not known yet, or this booth has no printer WiFi
+printer_reason = None  # why not: "wifi_off", "5ghz", "hotspot_down", "queue", or None (printer off)
+printer_alert = None  # what the printer says is wrong: "OUT OF PAPER", ...
 printer_toast = None  # (text, ok, until): "PRINTER CONNECTED" etc. along the bottom
+print_jobs = {}  # CUPS job id -> (which print, when sent): sent and not out of the printer yet
+
+PRINTER_ALERTS = [  # (in the printer's own status words, what the screen says)
+    ("media-empty", "OUT OF PAPER"), ("media-needed", "OUT OF PAPER"), ("input-tray", "CHECK THE PAPER TRAY"),
+    ("media-jam", "PAPER JAM"), ("marker-supply-empty", "OUT OF INK"), ("marker-supply", "CHECK THE INK"),
+    ("toner", "CHECK THE INK"), ("cover-open", "PRINTER COVER IS OPEN"), ("door-open", "PRINTER COVER IS OPEN"),
+    ("media-", "CHECK THE PAPER"), ("other-error", "PRINTER NEEDS ATTENTION"),
+]
+PRINTER_REASON_TEXT = {
+    "wifi_off": "WIFI IS OFF\nTurn WiFi on to print\n(settings > WIFI)",
+    "5ghz": "CAN'T PRINT ON THIS WIFI\nIt is 5 GHz only: the printer\ncan't share it. Use another WiFi",
+    "hotspot_down": "PRINTER WIFI IS DOWN\nSwitch the booth off and on",
+    "queue": "PRINTER SETUP FAILED\nSwitch the booth off and on",
+    None: "PRINTER NOT CONNECTED\nTurn the printer on and\nwait for the green dot",
+}
+
+
+def _run_quiet(cmd, timeout=10):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
 
 
 def _printer_wifi_stations():
     """MAC addresses of the devices on the printer WiFi; None if it isn't running."""
-    try:
-        result = subprocess.run(["iw", "dev", PRINTER_WIFI_IFACE, "station", "dump"],
-                                capture_output=True, text=True, timeout=5)
-    except Exception:
-        return None
-    if result.returncode != 0:
+    result = _run_quiet(["iw", "dev", PRINTER_WIFI_IFACE, "station", "dump"], 5)
+    if result is None or result.returncode != 0:
         return None
     return [line.split()[1] for line in result.stdout.splitlines() if line.startswith("Station ")]
 
 
+def _no_printer_wifi_reason():
+    """Why the printer network isn't up, on a booth that has one."""
+    try:
+        if HOTSPOT_STATUS_FILE.read_text().strip() == "5ghz":
+            return "5ghz"
+    except OSError:
+        pass
+    radio = _run_quiet(["nmcli", "radio", "wifi"], 5)
+    if radio is not None and "disabled" in radio.stdout:
+        return "wifi_off"
+    return "hotspot_down"
+
+
 def _find_selphy():
     """(address, resource) of a SELPHY offering AirPrint on the printer WiFi, or None."""
-    try:
-        result = subprocess.run(["avahi-browse", "-rptk", "_ipp._tcp"],
-                                capture_output=True, text=True, timeout=15)
-    except Exception:
+    result = _run_quiet(["avahi-browse", "-rptk", "_ipp._tcp"], 15)
+    if result is None:
         return None
     for line in result.stdout.splitlines():
         # =;interface;protocol;name;type;domain;host;address;port;txt
@@ -2725,14 +2771,16 @@ def _ensure_printer_queue(address, resource):
             # "everywhere" asks the printer what it can do: no driver needed.
             result = subprocess.run(
                 ["lpadmin", "-p", PRINTER_QUEUE, "-E", "-v", uri, "-m", "everywhere",
-                 "-D", "Canon SELPHY CP1500", "-L", "Booth printer WiFi",
-                 "-o", "printer-error-policy=abort-job"],
+                 "-D", "Canon SELPHY CP1500", "-L", "Booth printer WiFi"],
                 capture_output=True, text=True, timeout=90)
             if result.returncode != 0:
                 print(f"Could not add the printer ({uri}): {result.stderr.strip()}")
                 return False
             print(f"Printer added: {PRINTER_QUEUE} at {uri}")
-        # A queue CUPS stopped after an error would hold every later print.
+        # A print that hits a problem waits and is tried again (paper added: it prints); the app
+        # cancels it if that takes too long. CUPS's own default would stop the whole queue.
+        subprocess.run(["lpadmin", "-p", PRINTER_QUEUE, "-o", "printer-error-policy=retry-current-job"],
+                       capture_output=True, timeout=30)
         subprocess.run(["cupsenable", PRINTER_QUEUE], capture_output=True, timeout=10)
         subprocess.run(["cupsaccept", PRINTER_QUEUE], capture_output=True, timeout=10)
         return True
@@ -2741,53 +2789,167 @@ def _ensure_printer_queue(address, resource):
         return False
 
 
+def _queued_jobs():
+    """Ids of the prints CUPS still holds for the printer, oldest first."""
+    result = _run_quiet(["lpstat", "-o", PRINTER_QUEUE])
+    if result is None or result.returncode != 0:
+        return []
+    ids = [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
+    return sorted(ids, key=lambda j: int(j.rsplit("-", 1)[-1]) if j.rsplit("-", 1)[-1].isdigit() else 0)
+
+
+def _printer_alert_text():
+    """What the printer says is wrong (paper, ink...), or None."""
+    result = _run_quiet(["lpstat", "-l", "-p", PRINTER_QUEUE])
+    if result is None:
+        return None
+    found = re.search(r"^\s*Alerts:\s*(.*)$", result.stdout, re.M)
+    words = found.group(1).lower() if found else ""
+    for key, text in PRINTER_ALERTS:
+        if key in words:
+            return text
+    return None
+
+
+def _cancel_prints(job=None):
+    _run_quiet(["cancel", job] if job else ["cancel", "-a", PRINTER_QUEUE])
+
+
 def _printer_watch():
     # Runs off the UI thread; reports changes via action_queue, never touches pygame.
     found = None  # (address, resource)
     queued = None  # the `found` the print queue was last set up for
+    next_queue_try = 0.0
     reported = None
     missed = 0
+    jobs_reported = None
+    front, front_since = None, 0.0
+    has_wifi = PRINTER_WIFI is not None
+    # Prints left over from before (the booth was switched off mid-print, the printer went away)
+    # must not come out by surprise later.
+    for old in Path(tempfile.gettempdir()).glob("print_*.jpg"):
+        old.unlink(missing_ok=True)
+    if _queued_jobs():
+        print("Cancelling prints left over from last time.")
+        _cancel_prints()
     while True:
         try:
             stations = _printer_wifi_stations()
+            reason = None
             if stations is None:
-                now = None
+                # No printer network. On a booth that has one, that's a fault to show.
+                now = False if has_wifi else None
+                reason = _no_printer_wifi_reason() if has_wifi else None
             elif not stations:
                 now = False
+                if has_wifi and _no_printer_wifi_reason() == "5ghz":
+                    reason = "5ghz"
             else:
                 if found is None or not _printer_answers(found[0]):
                     found = _find_selphy()
                 now = found is not None and _printer_answers(found[0])
-                if now and queued != found and _ensure_printer_queue(*found):
-                    queued = found
-            if now is False and reported:
+                if now and queued != found:
+                    if time.monotonic() >= next_queue_try and _ensure_printer_queue(*found):
+                        queued = found
+                    elif queued != found:
+                        # Connected but can't be printed to: not a green dot.
+                        next_queue_try = max(next_queue_try, time.monotonic() + 60)
+                        now, reason = False, "queue"
+            if now is False and reported and reported[0]:
                 missed += 1
                 if missed < PRINTER_GONE_POLLS:
                     now = True  # a missed check or two isn't a disconnect
             else:
                 missed = 0
-            if now != reported:
-                print(f"Printer: {'connected' if now else 'not connected' if now is False else 'no printer WiFi'}")
-                reported = now
-                action_queue.put(("printer", now))
+            if (now, reason) != reported:
+                print("Printer: " + ("connected" if now else "no printer WiFi on this booth"
+                                     if now is None else f"not connected ({reason or 'printer off'})"))
+                reported = (now, reason)
+                action_queue.put(("printer", reported))
+
+            jobs = _queued_jobs() if now is not None else []
+            alert = _printer_alert_text() if now else None
+            if jobs and not now:
+                # The printer is gone: a print that waits would come out at some random later time.
+                print(f"Printer gone with {len(jobs)} print(s) waiting: cancelled.")
+                _cancel_prints()
+                action_queue.put(("print_cancelled", "PRINT CANCELLED\nThe printer disconnected"))
+                jobs = []
+            if jobs and jobs[0] != front:
+                front, front_since = jobs[0], time.monotonic()
+            elif not jobs:
+                front = None
+            if front and not alert and time.monotonic() - front_since > PRINT_STUCK_SECONDS:
+                print(f"Print {front} never came out: cancelled.")
+                _cancel_prints(front)
+                action_queue.put(("print_cancelled", "PRINT FAILED\nCheck the printer"))
+                jobs, front = jobs[1:], None
+            if (jobs, alert) != jobs_reported:
+                jobs_reported = (list(jobs), alert)
+                action_queue.put(("printer_jobs", (list(jobs), alert)))
         except Exception as e:
             print(f"Printer check failed: {e}")
         time.sleep(PRINTER_POLL_SECONDS)
 
 
-def note_printer(connected):
-    """Main thread: the printer connected or went away."""
-    global printer_connected, printer_toast
-    before = printer_connected
-    printer_connected = connected
-    # At startup, only announce a printer that's there.
-    if connected is None or (before is None and not connected):
-        printer_toast = None
-    else:
-        printer_toast = ("PRINTER CONNECTED" if connected else "PRINTER DISCONNECTED", connected,
-                         time.monotonic() + PRINTER_TOAST_SECONDS)
+def _printer_toast(text, ok, seconds=PRINTER_TOAST_SECONDS):
+    global printer_toast
+    printer_toast = (text, ok, time.monotonic() + seconds)
+    wake_screen(activity=False)
     if not should_show_live_preview():
         update_lcd()
+
+
+def note_printer(state):
+    """Main thread: the printer connected or went away."""
+    global printer_connected, printer_reason, printer_toast, printer_alert
+    connected, reason = state
+    before = printer_connected
+    printer_connected, printer_reason = connected, reason
+    if not connected:
+        printer_alert = None
+    # At startup, only announce a printer that's there.
+    if connected is None or (before is None and not connected) or before == connected:
+        if not should_show_live_preview():
+            update_lcd()
+        return
+    _printer_toast("PRINTER CONNECTED" if connected else "PRINTER DISCONNECTED", connected)
+
+
+def note_print_jobs(state):
+    """Main thread: which prints CUPS still holds, and what the printer says is wrong."""
+    global printer_alert
+    jobs, alert = state
+    finished = [j for j, (_, sent) in print_jobs.items()
+                if j not in jobs and time.monotonic() - sent > 8]  # not just too new to be listed
+    for j in finished:
+        del print_jobs[j]
+    changed = alert != printer_alert
+    printer_alert = alert
+    if finished and not alert:
+        left = len(print_jobs)
+        _printer_toast("PRINT FINISHED" + (f"  \u00b7  {left} MORE TO GO" if left else ""), True)
+    elif changed or finished:
+        if alert:
+            wake_screen(activity=False)
+        if not should_show_live_preview():
+            update_lcd()
+
+
+def note_print_cancelled(text):
+    print_jobs.clear()
+    wake_screen()
+    flash_message(text, seconds=2.5)
+
+
+def note_print_sent(result):
+    job, key = result
+    if job is None:
+        flash_message("PRINT FAILED", seconds=1.0)
+        return
+    print_jobs[job] = (key, time.monotonic())
+    waiting = len(print_jobs)
+    flash_message("PRINT SENT" if waiting <= 1 else f"PRINT SENT\n{waiting} PRINTS WAITING", seconds=1.0)
 
 
 def tick_printer():
@@ -2807,13 +2969,33 @@ def _draw_printer_icon(draw, x, y, k, color):
                    outline=color, width=w)
 
 
+def _draw_pill(draw, img, text, colour):
+    font = _fit_font(draw, text, img.width - 80, 26)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    pad, dot_d = 14, 18
+    box_w = tw + dot_d + 3 * pad
+    box_h = max(th, dot_d) + 2 * pad
+    x0 = (img.width - box_w) // 2
+    y0 = img.height - box_h - 14
+    draw.rounded_rectangle((x0, y0, x0 + box_w, y0 + box_h), radius=box_h // 2,
+                           fill=(0, 0, 0, 210))
+    cy = y0 + box_h // 2
+    draw.ellipse((x0 + pad, cy - dot_d // 2, x0 + pad + dot_d, cy + dot_d // 2), fill=colour)
+    draw.text((x0 + 2 * pad + dot_d - bbox[0], cy - th // 2 - bbox[1]), text, font=font,
+              fill=(255, 255, 255, 255))
+
+
 def _draw_printer_status(img, badge):
-    """Top right (under the battery): the printer, with a green or red dot. Along the bottom: a
-    few seconds of PRINTER CONNECTED / DISCONNECTED when that changes."""
+    """Top right (under the battery): the printer, with a dot: green ready, amber printing (with
+    how many are waiting), red not connected or needing paper/ink. Along the bottom: what the
+    printer needs for as long as it needs it, or a few seconds of news (PRINTER CONNECTED,
+    PRINT FINISHED...)."""
     if printer_connected is None:
         return
     draw = ImageDraw.Draw(img, "RGBA")
-    green, red = (60, 210, 90, 255), (235, 60, 60, 255)
+    green, amber, red = (60, 210, 90, 255), (255, 180, 40, 255), (235, 60, 60, 255)
+    printing = len(print_jobs) + (1 if _print_busy.is_set() else 0)
     if badge:
         k = 1.6
         w, h = round(40 * k), round(34 * k)
@@ -2823,27 +3005,17 @@ def _draw_printer_status(img, badge):
                                fill=(0, 0, 0, 150))
         icon = (255, 255, 255, 235) if printer_connected else (150, 150, 150, 235)
         _draw_printer_icon(draw, right - w + 4 * k, top + 5 * k, k, icon)
-        dot = green if printer_connected else red
+        dot = red if not printer_connected or printer_alert else amber if printing else green
         d = round(14 * k)
-        draw.ellipse((right - d - 3, top + h - d - 3, right - 3, top + h - 3), fill=dot,
-                     outline=(0, 0, 0, 255), width=3)
-    if printer_toast is not None:
-        text, ok, _ = printer_toast
-        font = _fit_font(draw, text, img.width - 80, 26)
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        pad, dot_d = 14, 18
-        box_w = tw + dot_d + 3 * pad
-        box_h = max(th, dot_d) + 2 * pad
-        x0 = (img.width - box_w) // 2
-        y0 = img.height - box_h - 14
-        draw.rounded_rectangle((x0, y0, x0 + box_w, y0 + box_h), radius=box_h // 2,
-                               fill=(0, 0, 0, 210))
-        cy = y0 + box_h // 2
-        draw.ellipse((x0 + pad, cy - dot_d // 2, x0 + pad + dot_d, cy + dot_d // 2),
-                     fill=green if ok else red)
-        draw.text((x0 + 2 * pad + dot_d - bbox[0], cy - th // 2 - bbox[1]), text, font=font,
-                  fill=(255, 255, 255, 255))
+        box = (right - d - 3, top + h - d - 3, right - 3, top + h - 3)
+        draw.ellipse(box, fill=dot, outline=(0, 0, 0, 255), width=3)
+        if printing and printer_connected and not printer_alert:
+            draw.text(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2), str(printing),
+                      font=menu_font(14, True), fill=(0, 0, 0, 255), anchor="mm")
+    if printer_alert:
+        _draw_pill(draw, img, printer_alert, red)
+    elif printer_toast is not None:
+        _draw_pill(draw, img, printer_toast[0], green if printer_toast[1] else red)
 
 
 def print_current_browsed_item():
@@ -2851,20 +3023,231 @@ def print_current_browsed_item():
         start_print(browse_strips[browse_index])
 
 
+def _print_key(path, other):
+    return (str(path), str(other))
+
+
 def start_print(path, other=None):
-    """Prints one 4x6 sheet: the strip twice, or with `other` beside it."""
+    """Prints one 4x6 sheet: the strip twice, or with `other` beside it. True if it's on its way."""
     if _print_busy.is_set():
         print("Print already in progress; ignoring.")
         flash_message("ALREADY PRINTING", seconds=0.8)
-        return
+        return False
 
     if printer_connected is False:
-        flash_message("PRINTER NOT CONNECTED\nTurn the printer on and\nwait for the green dot", seconds=2.0)
-        return
+        flash_message(PRINTER_REASON_TEXT.get(printer_reason, PRINTER_REASON_TEXT[None]), seconds=2.5)
+        return False
+
+    if printer_alert:
+        flash_message(f"{printer_alert}\nFix that first, then print", seconds=2.0)
+        return False
+
+    # A sheet takes about a minute: the same one again before it's out is an impatient tap.
+    key = _print_key(path, other or path)
+    if any(k == key for k, _ in print_jobs.values()):
+        flash_message("ALREADY PRINTING THIS ONE\nIt takes about a minute", seconds=1.5)
+        return False
+    if len(print_jobs) >= PRINT_QUEUE_MAX:
+        flash_message(f"{len(print_jobs)} PRINTS WAITING\nLet the printer catch up", seconds=1.5)
+        return False
 
     _print_busy.set()
     threading.Thread(target=_print_worker, args=((path, other or path),), daemon=True).start()
     flash_message("PRINTING...", seconds=0.6)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Photos from a phone. A phone on the booth's own WiFi (the printer network) opens
+# http://10.42.0.1:8080, picks a design, drops its photos into the openings (drag and pinch to
+# line them up) and sends them. The booth builds the strip or sheet exactly like one it took
+# itself: saved with the others (REVIEW shows it, CHANGE FRAME works) and printed through the same
+# fitting. Only reachable from the booth's own network, which has a password.
+# The page is web/index.html. Web threads only read designs and queue work; the main loop builds
+# and saves (web_make_strip), like everything else.
+# ---------------------------------------------------------------------------
+
+WEB_DIR = BASE / "web"
+WEB_MAX_BYTES = 48 * 1024 * 1024
+WEB_NEUTRAL_FX = {"seed": 0, "opts": [], "stamp": "", "bw": False}  # phone photos: as they are
+_web_images = {}  # (design id, mtime, size) -> image bytes
+
+
+def _web_designs():
+    out = []
+    kinds = dict(_frame_kinds)
+    for path in list(frames):
+        kind = kinds.get(path, "strip")
+        slots, _ = read_design_slots(path, kind)
+        if not slots:
+            continue
+        w, h = {"sheet": (SHEET_W, SHEET_H), "psheet": (PSHEET_W, PSHEET_H)}.get(kind, (STRIP_W, STRIP_H))
+        out.append({"id": design_id(path), "name": path.stem, "kind": kind, "w": w, "h": h,
+                    "slots": slots})
+    return out
+
+
+def _web_design_image(ident, size):
+    """The design as a PNG, see-through where the photos go, at most `size` px on its long side."""
+    path = next((f for f in list(frames) if design_id(f) == ident), None)
+    if path is None:
+        return None
+    key = (ident, _mtime(path), size)
+    if key not in _web_images:
+        if len(_web_images) > 400:
+            _web_images.clear()
+        with Image.open(path) as img:
+            img = img.convert("RGBA")
+            img.thumbnail((size, size), Image.BILINEAR)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=False)
+        _web_images[key] = buf.getvalue()
+    return _web_images[key]
+
+
+def web_make_strip(job):
+    """Main thread: builds and saves what a phone sent; prints it if asked. Fills job["result"]."""
+    try:
+        index = next((i for i, f in enumerate(frames) if design_id(f) == job["design"]), None)
+        if index is None:
+            raise ValueError("That design isn't on the booth any more. Pick another.")
+        photos = (job["photos"] + [None] * 8)[:frame_slot_count(index)]
+        if not any(p is not None for p in photos):
+            raise ValueError("No photos arrived.")
+        stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        path = ARCHIVE_DIR / f"strip_{stamp}.jpg"
+        n = 1
+        while path.exists():
+            n += 1
+            path = ARCHIVE_DIR / f"strip_{stamp}_{n}.jpg"
+        strip = compose_single_strip(photos, index, fx=WEB_NEUTRAL_FX)
+        _forget_slot_cache(photos)
+        save_strip_photos(path, photos)
+        meta = strip_meta(frame_slots(index)[:len(photos)], index, WEB_NEUTRAL_FX)
+        write_file_durably(path, lambda f: strip.convert("RGB").save(
+            f, format="JPEG", quality=95, comment=meta))
+        print(f"Saved a strip sent from a phone: {path.name} ({frames[index].name})")
+        note_activity()
+        message = "Saved on the booth. Find it in REVIEW."
+        if job.get("print"):
+            if start_print(path):
+                message = "Saved, and printing now (about a minute)."
+            elif printer_connected is False:
+                message = "Saved on the booth, but the printer isn't connected. Print it from REVIEW later."
+            else:
+                message = "Saved on the booth, but it couldn't print right now. Print it from REVIEW."
+        else:
+            flash_message("PHOTOS FROM A PHONE\nSAVED", seconds=1.0)
+        job["result"] = {"ok": True, "message": message}
+    except OSError as e:
+        print(f"Could not save the phone's strip: {e}")
+        job["result"] = {"ok": False, "message": "The booth couldn't save it (storage full?)."}
+    except Exception as e:
+        print(f"Could not build the phone's strip: {e}")
+        job["result"] = {"ok": False, "message": str(e) if isinstance(e, ValueError)
+                         else "The booth couldn't build that one."}
+    finally:
+        job["done"].set()
+
+
+class _WebHandler(http.server.BaseHTTPRequestHandler):
+    server_version = "snapbox"
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass  # the journal is on the SD card
+
+    def _send(self, code, body, ctype, cache=False):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "max-age=600" if cache else "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json(self, code, data):
+        self._send(code, json.dumps(data).encode(), "application/json")
+
+    def do_GET(self):
+        url = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(url.query)
+        try:
+            if url.path in ("/", "/index.html"):
+                self._send(200, (WEB_DIR / "index.html").read_bytes(), "text/html; charset=utf-8")
+            elif url.path == "/api/designs":
+                self._json(200, {"designs": _web_designs(), "layouts": LAYOUT_NAMES})
+            elif url.path == "/api/status":
+                self._json(200, {"printer": bool(printer_connected), "alert": printer_alert,
+                                 "waiting": len(print_jobs)})
+            elif url.path == "/design.png":
+                size = 900 if query.get("big") else 260
+                body = _web_design_image((query.get("id") or [""])[0], size)
+                if body is None:
+                    self._send(404, b"gone", "text/plain")
+                else:
+                    self._send(200, body, "image/png", cache=True)
+            else:
+                # Phones probe for internet on a new WiFi; anything else gets the page.
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            print(f"Phone page error ({url.path}): {e}")
+            try:
+                self._send(500, b"error", "text/plain")
+            except OSError:
+                pass
+
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if self.path != "/api/make" or not 0 < length <= WEB_MAX_BYTES:
+                self._json(400, {"ok": False, "message": "Too big, or not understood."})
+                return
+            data = json.loads(self.rfile.read(length))
+            photos = []
+            for item in data.get("photos", [])[:8]:
+                if not item:
+                    photos.append(None)
+                    continue
+                raw = base64.b64decode(item.split(",", 1)[-1])
+                img = Image.open(io.BytesIO(raw))
+                img = ImageOps.exif_transpose(img).convert("RGB")
+                img.thumbnail((2400, 2400), Image.LANCZOS)
+                photos.append(img)
+            job = {"design": str(data.get("design", "")), "photos": photos,
+                   "print": bool(data.get("print")), "done": threading.Event(), "result": None}
+            action_queue.put(("web_strip", job))
+            if not job["done"].wait(60):
+                self._json(503, {"ok": False, "message": "The booth is busy. Try again in a moment."})
+                return
+            self._json(200 if job["result"]["ok"] else 400, job["result"])
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            print(f"Phone upload failed: {e}")
+            try:
+                self._json(400, {"ok": False, "message": "The booth couldn't read those photos."})
+            except OSError:
+                pass
+
+
+def _web_serve(addr=None):
+    """Serves the phone page on the booth's own network, whenever that network is up."""
+    while True:
+        try:
+            server = http.server.ThreadingHTTPServer((addr or WEB_ADDR, WEB_PORT), _WebHandler)
+            server.daemon_threads = True
+            print(f"Phone page: http://{addr or WEB_ADDR}:{WEB_PORT}")
+            server.serve_forever()
+        except OSError:
+            pass  # the printer network isn't up (yet)
+        except Exception as e:
+            print(f"Phone page stopped: {e}")
+        time.sleep(15)
 
 
 def shutdown_pi(message="Shutting down..."):
@@ -3030,7 +3413,7 @@ def tick_auto_off():
     """Shuts down after the chosen idle time (BOOTH tab), with a minute's warning on screen."""
     global auto_off_banner
     limit = settings["auto_off"]
-    if _print_busy.is_set() or update_state == "installing" or wifi_connecting:
+    if _print_busy.is_set() or print_jobs or update_state == "installing" or wifi_connecting:
         note_activity()  # busy isn't idle
     idle = time.monotonic() - last_activity
     if limit is None or idle < limit - AUTO_OFF_WARNING_SECONDS:
@@ -3576,6 +3959,23 @@ def _draw_setting_rows(draw, area, keys, buttons, page_id):
 # ---------------------------------------------------------------------------
 
 WIFI_IFACE = "wlan0"
+# The booth's own network for the printer and phones (system/setup-printer.sh), if it has one.
+PRINTER_WIFI_CONF = Path("/etc/snapbox/printer-wifi")
+PRINTER_WIFI_PROFILE = "SnapBox printer WiFi"
+WEB_ADDR, WEB_PORT = "10.42.0.1", 8080  # phone prints: http://10.42.0.1:8080 on that network
+
+
+def _read_printer_wifi():
+    """(name, password) of the printer network, or None on a booth without one."""
+    try:
+        conf = dict(line.split("=", 1) for line in PRINTER_WIFI_CONF.read_text().splitlines()
+                    if "=" in line)
+        return (conf["SSID"], conf["PASSWORD"]) if conf.get("SSID") else None
+    except (OSError, KeyError):
+        return None
+
+
+PRINTER_WIFI = _read_printer_wifi()
 WIFI_CONNECT_SECONDS = 45
 WIFI_PROFILE_PRIORITY = 10  # networks joined from the booth win over older saved ones
 
@@ -3626,7 +4026,7 @@ def wifi_supported(net):
 
 def _scan_wifi():
     result = _nmcli(["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY",
-                     "device", "wifi", "list", "--rescan", "yes"], timeout=40)
+                     "device", "wifi", "list", "ifname", WIFI_IFACE, "--rescan", "yes"], timeout=40)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "scan failed")
     best = {}
@@ -3634,6 +4034,8 @@ def _scan_wifi():
         fields = _nmcli_fields(line)
         if len(fields) < 4 or not fields[1]:
             continue  # hidden network: no name to show
+        if PRINTER_WIFI and fields[1] == PRINTER_WIFI[0]:
+            continue  # the booth's own printer network
         in_use, ssid, security = fields[0] == "*", fields[1], fields[3].strip()
         try:
             signal = int(fields[2])
@@ -3650,7 +4052,8 @@ def _scan_wifi():
 
 def _wifi_status():
     ssid = ip = None
-    result = _nmcli(["-t", "-f", "ACTIVE,SSID", "device", "wifi", "list", "--rescan", "no"])
+    result = _nmcli(["-t", "-f", "ACTIVE,SSID", "device", "wifi", "list", "ifname", WIFI_IFACE,
+                     "--rescan", "no"])
     for line in result.stdout.splitlines():
         fields = _nmcli_fields(line)
         if len(fields) >= 2 and fields[0] == "yes" and fields[1]:
@@ -3667,12 +4070,12 @@ def _wifi_status():
 
 def _wifi_profiles(ssid=None, active=False):
     """UUIDs of saved WiFi profiles, optionally only for one network or only active ones."""
-    args = ["-t", "-f", "UUID,TYPE", "connection", "show"] + (["--active"] if active else [])
+    args = ["-t", "-f", "UUID,TYPE,NAME", "connection", "show"] + (["--active"] if active else [])
     uuids = []
     for line in _nmcli(args).stdout.splitlines():
-        uuid, _, ctype = line.partition(":")
-        if ctype != "802-11-wireless":
-            continue
+        uuid, ctype, name = (_nmcli_fields(line) + ["", "", ""])[:3]
+        if ctype != "802-11-wireless" or name == PRINTER_WIFI_PROFILE:
+            continue  # never the printer network: re-joining it would drop the printer
         if ssid is not None:
             got = _nmcli(["-g", "802-11-wireless.ssid", "connection", "show", uuid])
             if got.returncode != 0 or "".join(_nmcli_fields(got.stdout.strip())) != ssid:
@@ -4015,6 +4418,17 @@ def _render_wifi_list(draw, area, buttons):
         _draw_text_centered(draw, (ix0, y + 32, ix1, y + 52), alt,
                             _fit_font(draw, alt, iw - 14, 14, bold=False), MENU_DIM)
         y += 62
+    if PRINTER_WIFI and not wifi_connecting and y + 62 + 32 < iy1 - 60 - 70 - 2 * gap:
+        # Printing photos from a phone, and what to type into a printer to pair it.
+        box = (ix0, y, ix1, y + 56)
+        draw.rounded_rectangle(box, radius=10, fill=MENU_ROW)
+        l1 = f"PHONE PRINTS: JOIN WIFI {PRINTER_WIFI[0]}"
+        l2 = f"password {PRINTER_WIFI[1]}  then open {WEB_ADDR}:{WEB_PORT}"
+        _draw_text_centered(draw, (ix0, y + 4, ix1, y + 30), l1,
+                            _fit_font(draw, l1, iw - 14, 16), MENU_ACCENT)
+        _draw_text_centered(draw, (ix0, y + 30, ix1, y + 52), l2,
+                            _fit_font(draw, l2, iw - 14, 14, bold=False), MENU_TEXT)
+        y += 62
     if wifi_message:
         text, ok = wifi_message
         _draw_text_centered(draw, (ix0, y, ix1, y + 28), text, _fit_font(draw, text, iw, 18),
@@ -4027,13 +4441,16 @@ def _render_wifi_list(draw, area, buttons):
         _draw_key(draw, (ix0, radio_top, ix1, iy1), "TURNING ON..." if wifi_radio_busy else "TURN WIFI ON",
                   buttons, wifi_toggle_radio, fill=MENU_DONE, size=20)
         lx0, ly0, lx1, ly1 = lst if lst is not None else (x0, y, x1, radio_top - gap)
-        _draw_text_centered(draw, (lx0, ly0, lx1, ly0 + 40), "NO WIFI: SSH AND UPDATES ARE OFF TOO",
-                            _fit_font(draw, "NO WIFI: SSH AND UPDATES ARE OFF TOO", lx1 - lx0, 16, False), MENU_DIM)
+        off = ("NO WIFI: PRINTING, SSH AND UPDATES ARE OFF TOO" if PRINTER_WIFI
+               else "NO WIFI: SSH AND UPDATES ARE OFF TOO")
+        _draw_text_centered(draw, (lx0, ly0, lx1, ly0 + 40), off,
+                            _fit_font(draw, off, lx1 - lx0, 16, False), MENU_DIM)
         return
     confirming = time.monotonic() < _wifi_off_confirm_until
     _draw_key(draw, (ix0, radio_top, ix1, iy1),
               "TURNING OFF..." if wifi_radio_busy else
-              "TAP AGAIN: WIFI OFF\n(NO SSH OR UPDATES)" if confirming else "TURN WIFI OFF",
+              ("TAP AGAIN: WIFI OFF\n(NO PRINTING, SSH, UPDATES)" if PRINTER_WIFI else
+               "TAP AGAIN: WIFI OFF\n(NO SSH OR UPDATES)") if confirming else "TURN WIFI OFF",
               buttons, wifi_toggle_radio, fill=MENU_DANGER if confirming else (70, 70, 80), size=18)
     scan_top = radio_top - gap - scan_h
     busy = wifi_scanning or wifi_connecting
@@ -4815,8 +5232,11 @@ def check_for_updates(announce=False):
     threading.Thread(target=_update_check_worker, args=(announce,), daemon=True).start()
 
 
+_update_install_started = 0.0
+
+
 def install_update():
-    global update_state, update_error
+    global update_state, update_error, _update_install_started
     if update_state != "available":
         return
     try:
@@ -4833,6 +5253,7 @@ def install_update():
         return
     print("Updater started; the app will restart.")
     update_state = "installing"
+    _update_install_started = time.monotonic()
 
 
 def _booth_idle():
@@ -4842,8 +5263,13 @@ def _booth_idle():
 
 def tick_updates():
     global _update_next_check, _update_next_result_poll, _update_announce_pending
-    global update_last_result
+    global update_last_result, update_state
     now = time.monotonic()
+    if update_state == "installing" and now - _update_install_started > 900:
+        # The updater restarts the app when it works; still here = it didn't. Without this the
+        # booth would count as busy forever: no auto shut-down, no screen sleep.
+        print("The updater never finished; back to normal.")
+        update_state = "idle"
     if now >= _update_next_check:
         _update_next_check = now + UPDATE_CHECK_SECONDS
         check_for_updates(announce=True)
@@ -4860,6 +5286,8 @@ def tick_updates():
                 UPDATE_RESULT_FILE.unlink()
             except OSError:
                 pass
+            if update_state == "installing":
+                update_state = "idle"  # it ended without restarting the app (e.g. no internet)
             if update_last_result:
                 text = update_last_result.get("message", "")
                 if update_last_result.get("version"):
@@ -5231,6 +5659,8 @@ print("")
 poll_battery()
 save_preview()
 threading.Thread(target=_printer_watch, daemon=True).start()
+if PRINTER_WIFI:
+    threading.Thread(target=_web_serve, daemon=True).start()
 
 pending_short_time = None
 short_press_count = 0
@@ -5303,8 +5733,17 @@ try:
                 if action == "printer":
                     note_printer(payload)
                     continue
+                if action == "printer_jobs":
+                    note_print_jobs(payload)
+                    continue
+                if action == "print_cancelled":
+                    note_print_cancelled(payload)
+                    continue
+                if action == "web_strip":
+                    web_make_strip(payload)
+                    continue
                 if action == "print_done":
-                    flash_message("PRINT SENT" if payload else "PRINT FAILED", seconds=1.0)
+                    note_print_sent(payload)
                 elif action == "shutdown":
                     pending_short_time = None
                     short_press_count = 0

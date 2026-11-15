@@ -19,6 +19,9 @@ PASSWORD=$(sed -n 's/^PASSWORD=//p' "$CONF")
 # The boot service and the dispatcher can run at the same moment.
 exec 9>/run/snapbox-hotspot.lock
 flock -w 60 9 || exit 1
+# Why there's no printer network, for the app to show (only "5ghz" so far); empty when it's up.
+STATUS=/run/snapbox/hotspot-status
+mkdir -p /run/snapbox
 
 if ! iw dev "$AP" info >/dev/null 2>&1; then
     if ! iw dev "$STA" interface add "$AP" type __ap; then
@@ -43,6 +46,8 @@ elif [ -n "$freq" ]; then
     con=$(nmcli -g GENERAL.CONNECTION device show "$STA")
     ssid=$(nmcli -g 802-11-wireless.ssid connection show "$con" 2>/dev/null)
     esc=$(printf '%s' "$ssid" | sed 's/[\\:]/\\&/g')
+    # Look again first: an old list could miss the network's 2.4 GHz side.
+    nmcli device wifi rescan ifname "$STA" >/dev/null 2>&1 && sleep 4
     if [ -n "$con" ] && nmcli -t -f SSID,CHAN device wifi list ifname "$STA" --rescan no \
             | grep -qxE "$(printf '%s' "$esc" | sed 's/[][\.*^$+?(){}|]/\\&/g'):([1-9]|1[0-3])"; then
         echo "snapbox-hotspot: moving $STA ($ssid) from $freq MHz to 2.4 GHz so the printer hotspot can run"
@@ -52,8 +57,12 @@ elif [ -n "$freq" ]; then
         exit 0
     fi
     echo "snapbox-hotspot: $STA is on $freq MHz and $ssid has no 2.4 GHz; no printer hotspot on this network" >&2
+    # Take it down properly (it can't work here) and tell the app why, so the screen can say.
+    nmcli connection down "$CON" >/dev/null 2>&1
+    echo 5ghz > "$STATUS"
     exit 0
 fi
+: > "$STATUS"
 
 if ! nmcli -t -f NAME connection show | grep -qxF "$CON"; then
     nmcli connection add type wifi ifname "$AP" con-name "$CON" autoconnect yes ssid "$SSID" \

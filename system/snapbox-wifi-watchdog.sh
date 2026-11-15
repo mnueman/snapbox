@@ -13,6 +13,16 @@ RUN=/run/snapbox-wifi-watchdog            # this boot only
 REBOOTS=/var/lib/snapbox-wifi-watchdog-reboots  # survives the reboot, so it can't reboot forever
 MAX_REBOOTS=3
 
+# The printer network (booths set up with setup-printer.sh): if it should be up and isn't, start
+# it again. Nothing else does that when there's no known WiFi around to reconnect to.
+if [ -r /etc/snapbox/printer-wifi ] && [ "$(cat /run/snapbox/hotspot-status 2>/dev/null)" != 5ghz ] \
+        && [ "$(cut -d. -f1 /proc/uptime)" -gt 90 ] \
+        && ! iw dev uap0 info 2>/dev/null | grep -q 'type AP' \
+        && [ "$(systemctl show -p SubState --value photobooth-hotspot.service)" != start ]; then
+    echo "snapbox-wifi-watchdog: the printer network is down; starting it again"
+    systemctl restart --no-block photobooth-hotspot.service
+fi
+
 if [ "$(cat /sys/class/net/$STA/operstate 2>/dev/null)" = up ]; then
     # Healthy. Forget earlier trouble (only touches files if there are any).
     [ -e "$RUN" ] && rm -rf "$RUN"
@@ -31,6 +41,12 @@ fails=$(journalctl -q -o cat -u wpa_supplicant --since=-2min 2>/dev/null | grep 
 mkdir -p "$RUN"
 if [ "$fails" -lt 10 ]; then
     rm -f "$RUN/suspect"
+    exit 0
+fi
+# Never in the middle of a print: restarting the driver drops the printer, and a reboot loses the
+# sheet. Look again next minute.
+if lpstat -o 2>/dev/null | grep -q .; then
+    echo "snapbox-wifi-watchdog: WiFi chip looks stuck, but a print is going; waiting"
     exit 0
 fi
 # Act only when it's still stuck a minute later.
