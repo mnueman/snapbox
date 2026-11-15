@@ -3784,8 +3784,7 @@ def _look_state():
                       tape=f"1 KEEP · 2 RETAKE · {left}s", tape_narrow=f"KEEP? {left}s")
         else:
             st.update(cta=["Press the big button", f"for photo {n}"],
-                      cta_narrow=["Press", "the big", "button"],
-                      tape="PRESS THE SHUTTER", tape_narrow="SHUTTER")
+                      cta_narrow=["Press", "the big", "button"], tape="", tape_narrow="")
     if printer_connected is None:
         st["printer"] = None
     elif printer_alert:
@@ -5847,7 +5846,8 @@ def handle_tap(point):
                     update_menu(force=True)
                 return
     else:
-        pad = ICON_GAP // 2  # forgiving: half the gap around each button counts
+        # Forgiving: half the gap around each button counts (the looks' tap areas are whole cells).
+        pad = ICON_GAP // 2 if look() == "original" else 0
         for kind, (x0, y0, x1, y1) in corner_buttons():
             if x0 - pad <= x <= x1 + pad and y0 - pad <= y <= y1 + pad:
                 {"menu": open_menu, "gallery": open_gallery, "camera": enter_creation_mode,

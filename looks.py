@@ -191,9 +191,11 @@ def geometry(look, w, h):
         g["stage"] = (m + rail + 8 * k, 0, w, h)
         g["pad"] = 7 * k
     else:
-        col = 82 * k
+        col = 96 * k
         cell = h / 4
-        g["rail"] = [(col / 2 - 31 * k, i * cell + 12 * k, col / 2 + 31 * k, i * cell + 74 * k) for i in range(4)]
+        # Big keys, and the whole cell around each one answers a tap.
+        g["rail"] = [(0, i * cell, col, (i + 1) * cell) for i in range(4)]
+        g["keys"] = [(col / 2 - 1 * k, i * cell + 47 * k, 37 * k) for i in range(4)]
         g["stage"] = (col, 0, w, h)
         g["pad"] = 10 * k  # room for each window's chrome bezel
     return g
@@ -678,7 +680,7 @@ def _classic(w, h, st):
     stage = g["stage"]
     rects = st.get("strip_rects", [])
     area_a, area_b = free_areas(stage, rects, 9 * k)
-    card_a, mode_a = _fit_card(area_a, 250 * k, 84 * k, 150 * k, 40 * k, 3 * k, "tr", 150 * k)
+    card_a, mode_a = _fit_card(area_a, 260 * k, 96 * k, 150 * k, 40 * k, 3 * k, "tr", 170 * k)
     card_b, mode_b = _fit_card(area_b, 250 * k, 88 * k, 150 * k, 40 * k, 3 * k, "bl", 190 * k)
     g["status"] = card_b
 
@@ -689,8 +691,8 @@ def _classic(w, h, st):
     kinds = st["kinds"]
     names = {"menu": "MENU", "gallery": "ROLL", "fx": "EFFECTS", "layout": "FORMAT", "camera": "CAMERA"}
     for i, kind in enumerate(kinds):
-        r = g["rail"][i]
-        cx, cy, rad = (r[0] + r[2]) / 2, (r[1] + r[3]) / 2, (r[2] - r[0]) / 2
+        cx, cy, rad = g["keys"][i]
+        r = (cx - rad, cy - rad, cx + rad, cy + rad)
         pressed = (kind == "fx" and st["effects_on"]) or kind == "camera"
         p.shadows([((cx - rad - 5 * k, cy - rad - 5 * k, cx + rad + 5 * k, cy + rad + 5 * k), rad + 5 * k, 4 * k, 4 * k, 0.7)])
         p.circle(cx, cy, rad + 5.5 * k, fill=(172, 174, 174, 255))
@@ -705,8 +707,8 @@ def _classic(w, h, st):
             p.circle(cx, cy, rr, outline=(0, 0, 0, al), width=0.8 * k)
             p.arc((cx - rr - 0.8 * k, cy - rr - 0.8 * k, cx + rr + 0.8 * k, cy + rr + 0.8 * k), 20, 110, (255, 255, 255, 150), 0.8 * k)
         if kind == "fx":
-            _jewel(p, r[2] + 1 * k, r[1] + 1 * k, 5.5 * k, lit=st["effects_on"])
-        p.text((cx, r[3] + 17 * k), names[kind], font(BC_S, 12.5 * k), (228, 228, 225, 255), "mm", 2.2 * k)
+            _jewel(p, r[2] - 3 * k, r[1] + 3 * k, 6 * k, lit=st["effects_on"])
+        p.text((cx, r[3] + 18 * k), names[kind], font(BC_B, 14 * k), (236, 236, 233, 255), "mm", 2.0 * k)
 
     # ---------------- each piece of the strip in its own chrome-rimmed window
     for r in rects:
@@ -732,29 +734,29 @@ def _classic(w, h, st):
             for sx_, sy_, ang in ((x0 + 7 * k, y0 + 7 * k, 30), (x0 + 7 * k, y1 - 7 * k, 110)):
                 _screw(p, sx_, sy_, 2.8 * k, ang)
             tw = ccx - rad - 10 * k - (x0 + 16 * k)
-            size = min(31 * k, ch * 0.42)
+            size = min(52 * k, ch * 0.66)
             script = font("Yellowtail.ttf", size)
-            while p.text_w("Snapbox", script) > tw - 20 * k and size > 12 * k:
+            while p.text_w("Snapbox", script) > tw - size * 0.5 and size > 12 * k:
                 size -= 1 * k
                 script = font("Yellowtail.ttf", size)
-            ty = y0 + ch * (0.40 if ch >= 64 * k else 0.5)
+            ty = y0 + ch * (0.43 if ch >= 72 * k else 0.5)
             p.text((x0 + 16 * k, ty + 1 * k), "Snapbox", script, (255, 255, 255, 200), "lm")
             p.text((x0 + 16 * k, ty), "Snapbox", script, ENGRAVE, "lm")
             bw = p.text_w("Snapbox", script)
             dr = size * 0.24
             p.paste(_disc(p.s(dr * 2), (255, 140, 140), (216, 35, 42), (130, 16, 22)), (x0 + 16 * k + bw + 5 * k, ty - dr - 4 * k))
-            if ch >= 64 * k:
+            if ch >= 72 * k:
                 sub = f"{st['count_label']} {st['count']} OF {st['count_of']} · {fmt}"
-                _engraved(p, (x0 + 17 * k, y0 + ch * 0.76), sub, p.fit(sub, BC_B, 10.5 * k, tw, spacing=1.6 * k), "lm", 1.6 * k, k=k)
+                _engraved(p, (x0 + 17 * k, y1 - 11 * k), sub, p.fit(sub, BC_B, 9.5 * k, tw, spacing=1.5 * k), "lm", 1.5 * k, k=k)
         else:
             cx = (x0 + x1) / 2
             rad = min(cw / 2 - 8 * k, 32 * k)
             _counter(p, cx, y0 + 12 * k + rad, rad, k, st["count"], st["count_of"])
             sub = f"OF {st['count_of']} · {fmt}"
             _engraved(p, (cx, y0 + 24 * k + 2 * rad), sub, p.fit(sub, BC_B, 10.5 * k, cw - 12 * k, spacing=1.4 * k), "mm", 1.4 * k, k=k)
-            size = 24 * k
+            size = 34 * k
             script = font("Yellowtail.ttf", size)
-            while p.text_w("Snapbox", script) > cw - 14 * k and size > 11 * k:
+            while p.text_w("Snapbox", script) > cw - 10 * k and size > 11 * k:
                 size -= 1 * k
                 script = font("Yellowtail.ttf", size)
             if y0 + 46 * k + 2 * rad + size <= y1:
@@ -766,7 +768,15 @@ def _classic(w, h, st):
         x0, y0, x1, y1 = card_b
         cw, ch = x1 - x0, y1 - y0
         has_gauge = st["printer"] is not None
-        if mode_b == "h":
+        tape = st.get("tape") or ""
+        if mode_b == "h" and not tape:
+            gw = min(ch * 1.62, cw * 0.56) if has_gauge else 0
+            if has_gauge:
+                _gauge(p, (x0, y0, x0 + gw, y1), k, st["printer"])
+            dw, dh = min(108 * k, cw - gw - 10 * k), min(40 * k, ch)
+            if dw >= 70 * k:
+                _date_wheels(p, (x1 - dw, y0 + (ch - dh) / 2, x1, y0 + (ch + dh) / 2), k, st["date"])
+        elif mode_b == "h":
             if ch >= 78 * k:
                 _tape(p, (x0, y0 + 2 * k, x1, y0 + 28 * k), st["tape"], k)
                 row = (x0, y0 + 36 * k, x1, y1)
@@ -791,8 +801,8 @@ def _classic(w, h, st):
             if y - 36 * k >= y0:
                 _date_wheels(p, (x0, y - 36 * k, x1, y), k, st["date"])
                 y -= 46 * k
-            if y - 28 * k >= y0:
-                _tape(p, (x0, y - 28 * k, x1, y - 2 * k), st.get("tape_narrow", "SHUTTER"), k)
+            if st.get("tape_narrow") and y - 28 * k >= y0:
+                _tape(p, (x0, y - 28 * k, x1, y - 2 * k), st["tape_narrow"], k)
 
     # ---------------- the strip shows through its windows
     for r in rects:
@@ -1007,7 +1017,7 @@ if __name__ == "__main__":
                 count_side="2 left", segments=["done", "now", "todo", "todo"], printer="ready",
                 printer_title="Printer ready", printer_sub="Nothing waiting", phone=True,
                 cta=["Press the big button", "for photo 2"], cta_narrow=["Press", "the big", "button"],
-                layout="strip", tape="PRESS THE SHUTTER", tape_narrow="SHUTTER",
+                layout="strip", tape="", tape_narrow="",
                 plate_text="", date=("11", "14", "26"))
     tiles = []
     for look in LOOKS:
