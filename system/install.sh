@@ -18,6 +18,15 @@ install -m 0644 snapbox-wifi-watchdog.service snapbox-wifi-watchdog.timer /etc/s
 install -m 0755 snapbox-wifi-nosteer.sh /usr/local/sbin/snapbox-wifi-nosteer
 install -m 0644 snapbox-wifi-nosteer.service /etc/systemd/system/
 install -m 0755 snapbox-wifi-nosteer.dispatcher /etc/NetworkManager/dispatcher.d/40-snapbox-wifi-nosteer
+# The WiFi chip must not change access point by itself. Routers that "steer" devices to 5 GHz did
+# it anyway (the chip's own firmware roams, whatever wpa_supplicant is told): with the printer
+# network on 2.4 GHz the chip then jams, every scan fails, and there's no internet until a restart
+# (seen 2026-11-14 and 15). roamoff=1 turns the chip's own roaming off; a booth doesn't move.
+# The driver is in the start-up image too, so that is rebuilt when the setting is new.
+if [ "$(cat /etc/modprobe.d/snapbox-wifi.conf 2>/dev/null)" != "options brcmfmac roamoff=1" ]; then
+    echo "options brcmfmac roamoff=1" > /etc/modprobe.d/snapbox-wifi.conf
+    update-initramfs -u || true
+fi
 # Booths with a printer (set up once with setup-printer.sh): keep the printer network's scripts
 # up to date too. They take effect the next time the network starts; it isn't restarted here.
 if [ -e /etc/snapbox/printer-wifi ]; then
