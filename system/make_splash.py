@@ -3,10 +3,12 @@
 the chrome and a red lamp that glows. Writes a Plymouth theme (pictures + script) to a folder;
 system/setup-splash.sh installs it.
 
-    python3 system/make_splash.py OUT_DIR [PANEL_W PANEL_H [ROTATION]]
+    python3 system/make_splash.py OUT_DIR [PANEL_W PANEL_H [ROTATION [EXTRA_TURN]]]
 
 The pictures are drawn for the screen as it is mounted and then turned to the panel's own
-orientation, the same way the app turns its screens (ROTATION: screen_rotation.txt).
+orientation, the way the app turns its screens (ROTATION: screen_rotation.txt), plus EXTRA_TURN
+degrees: Plymouth draws this booth's panel the other way up from the app (seen on booth-1's 2.8
+inch DSI panel), so setup-splash.sh passes 180 unless told otherwise (its --flip).
 """
 import sys
 from pathlib import Path
@@ -43,9 +45,9 @@ def turn_box(box, deg, w, h):
     return box
 
 
-def build(out, pw, ph, rotation):
+def build(out, pw, ph, rotation, extra=0):
     out.mkdir(parents=True, exist_ok=True)
-    deg = panel_turn(rotation, pw, ph)
+    deg = (panel_turn(rotation, pw, ph) + extra) % 360
     w, h = (ph, pw) if deg % 180 else (pw, ph)  # the screen as you look at it
     k = h / 480.0
 
@@ -148,7 +150,8 @@ if __name__ == "__main__":
     out = Path(sys.argv[1])
     pw, ph = (int(sys.argv[2]), int(sys.argv[3])) if len(sys.argv) > 3 else (480, 640)
     rotation = int(sys.argv[4]) if len(sys.argv) > 4 else 180
-    bg, mask, shine, glow, start, end, glow_box, (w, h) = build(out, pw, ph, rotation)
+    extra = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+    bg, mask, shine, glow, start, end, glow_box, (w, h) = build(out, pw, ph, rotation, extra)
     # A preview of three moments, as you'd see them on the screen.
     frames = []
     for t in (0.25, 0.55, 0.85):
@@ -164,4 +167,4 @@ if __name__ == "__main__":
     for i, f in enumerate(frames):
         sheet.paste(f, (i * (w + 10), 0))
     sheet.save(out / "preview.png")
-    print(f"Splash for a {pw}x{ph} panel (screen setting {rotation}) written to {out}")
+    print(f"Splash for a {pw}x{ph} panel (screen setting {rotation}, extra turn {extra}) written to {out}")

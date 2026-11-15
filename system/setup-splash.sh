@@ -3,6 +3,7 @@
 # Run with sudo, with internet (it installs Plymouth, the boot-splash program). Needs a reboot.
 #
 #   sudo sh ~/photobooth/system/setup-splash.sh           install it (safe to run again)
+#   sudo sh ~/photobooth/system/setup-splash.sh --flip    the logo was upside down: turn it over
 #   sudo sh ~/photobooth/system/setup-splash.sh --undo    back to the normal text start-up
 #
 # What it changes, all undone by --undo:
@@ -35,8 +36,19 @@ if [ "$1" = "--undo" ]; then
     exit 0
 fi
 
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends plymouth plymouth-themes
+if ! command -v plymouth-set-default-theme >/dev/null || [ ! -e /usr/share/plymouth/themes/script ]; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends plymouth plymouth-themes
+fi
+
+# Which way up: Plymouth and the app don't agree on this panel, so the splash gets a half turn
+# more than the app's screens. --flip changes that for a booth where it comes out upside down.
+install -d -m 0755 /etc/snapbox
+[ -s /etc/snapbox/splash-turn ] || echo 180 > /etc/snapbox/splash-turn
+if [ "$1" = "--flip" ]; then
+    if [ "$(cat /etc/snapbox/splash-turn)" = 180 ]; then echo 0 > /etc/snapbox/splash-turn; else echo 180 > /etc/snapbox/splash-turn; fi
+fi
+extra=$(cat /etc/snapbox/splash-turn)
 
 # The pictures, turned for this booth's screen.
 size=$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null || echo 480,640)
@@ -45,7 +57,7 @@ ph=${size#*,}
 rot=$(cat ../screen_rotation.txt 2>/dev/null || echo 0)
 tmp=$(mktemp -d)
 chown "$OWNER" "$tmp"
-sudo -u "$OWNER" python3 make_splash.py "$tmp" "$pw" "$ph" "$rot"
+sudo -u "$OWNER" python3 make_splash.py "$tmp" "$pw" "$ph" "$rot" "$extra"
 install -d "$THEME"
 install -m 0644 "$tmp"/bg.png "$tmp"/mask.png "$tmp"/shine.png "$tmp"/glow.png \
     "$tmp"/snapbox.plymouth "$tmp"/snapbox.script "$THEME"/
