@@ -4451,18 +4451,10 @@ def _render_wifi_list(draw, area, buttons):
         _draw_text_centered(draw, (ix0, y + 32, ix1, y + 52), alt,
                             _fit_font(draw, alt, iw - 14, 14, bold=False), MENU_DIM)
         y += 62
-    if PRINTER_WIFI and not wifi_connecting and y + 62 + 32 < iy1 - 60 - 70 - 2 * gap:
-        # Printing photos from a phone, and what to type into a printer to pair it.
-        box = (ix0, y, ix1, y + 56)
-        draw.rounded_rectangle(box, radius=10, fill=MENU_ROW)
-        l1 = f"PHONE PRINTS: JOIN WIFI {PRINTER_WIFI[0]}"
-        l2 = f"password {PRINTER_WIFI[1]}  then open {WEB_ADDR}:{WEB_PORT}"
-        _draw_text_centered(draw, (ix0, y + 4, ix1, y + 30), l1,
-                            _fit_font(draw, l1, iw - 14, 16),
-                            MENU_ACCENT if sum(MENU_BG) < 380 else MENU_TEXT)
-        _draw_text_centered(draw, (ix0, y + 30, ix1, y + 52), l2,
-                            _fit_font(draw, l2, iw - 14, 14, bold=False), MENU_TEXT)
-        y += 62
+    if PRINTER_WIFI and not wifi_connecting and y + 58 + 32 < iy1 - 60 - 70 - 2 * gap:
+        _draw_key(draw, (ix0, y, ix1, y + 52), "PRINT FROM A PHONE: HOW?", buttons,
+                  lambda: set_menu_tab("phone"), size=18)
+        y += 58
     if wifi_message:
         text, ok = wifi_message
         _draw_text_centered(draw, (ix0, y, ix1, y + 28), text, _fit_font(draw, text, iw, 18),
@@ -5335,6 +5327,59 @@ def tick_updates():
         flash_message(UPDATE_ANNOUNCEMENT, seconds=6.0)
 
 
+def open_phone_help():
+    """From the main screen (a tap on the printer in the corner): how to print from a phone."""
+    if not PRINTER_WIFI:
+        return
+    open_menu()
+    set_menu_tab("phone")
+    update_menu(force=True)
+
+
+def render_phone_view(draw, area):
+    """How to print photos from a phone: three big steps, one thing to do in each."""
+    x0, y0, x1, y1 = area
+    w = x1 - x0
+    title = "PRINT PHOTOS FROM YOUR PHONE"
+    _draw_text_centered(draw, (x0, y0, x1, y0 + 40), title, _fit_font(draw, title, w - 20, 28),
+                        MENU_TEXT)
+    ssid, password = PRINTER_WIFI
+    steps = [
+        ("ON YOUR PHONE, JOIN THIS WIFI", ssid, f"password:  {password}"),
+        ("THEN OPEN THIS IN THE PHONE'S BROWSER", f"{WEB_ADDR}:{WEB_PORT}", None),
+        ("PICK A DESIGN, ADD YOUR PHOTOS", "SAVE & PRINT", None),
+    ]
+    note = "If the phone says the WiFi has no internet, stay connected anyway."
+    gap = 10
+    top = y0 + 48
+    note_h = 28
+    step_h = (y1 - note_h - top - gap * (len(steps) - 1)) // len(steps)
+    num_w = min(76, step_h)
+    for i, (label, big, small) in enumerate(steps):
+        box = (x0, top, x1, top + step_h)
+        draw.rounded_rectangle(box, radius=14, fill=MENU_ROW)
+        cy = (box[1] + box[3]) // 2
+        r = num_w // 2 - 8
+        cx = x0 + 12 + num_w // 2
+        draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=MENU_ACCENT)
+        draw.text((cx, cy), str(i + 1), font=menu_font(max(18, int(r * 1.2)), True), fill=(0, 0, 0),
+                  anchor="mm")
+        tx0, tx1 = x0 + num_w + 22, x1 - 14
+        tw = tx1 - tx0
+        lines = [(label, _fit_font(draw, label, tw, 17, bold=False), MENU_DIM),
+                 (big, _fit_font(draw, big, tw, 34), MENU_TEXT)]
+        if small:
+            lines.append((small, _fit_font(draw, small, tw, 22), MENU_TEXT))
+        heights = [f.size + 6 for _, f, _ in lines]
+        y = cy - sum(heights) // 2
+        for (text, font, fill), lh in zip(lines, heights):
+            draw.text((tx0, y + lh // 2), text, font=font, fill=fill, anchor="lm")
+            y += lh
+        top += step_h + gap
+    _draw_text_centered(draw, (x0, y1 - note_h, x1, y1), note,
+                        _fit_font(draw, note, w, 16, bold=False), MENU_DIM)
+
+
 def render_update_view(draw, area, buttons):
     x0, y0, x1, y1 = area
     w = x1 - x0
@@ -5517,6 +5562,8 @@ def render_menu(cam=None):
         render_wifi_tab(draw, (pad, top, w - pad, h - pad), buttons)
     elif menu_tab == "update":
         render_update_view(draw, (pad, top, w - pad, h - pad), buttons)
+    elif menu_tab == "phone":
+        render_phone_view(draw, (pad, top, w - pad, h - pad))
     else:
         keys = [k for k, _, _, _ in BOOTH_SETTINGS]
         action_h = 70
@@ -5601,6 +5648,9 @@ def handle_tap(point):
                 {"menu": open_menu, "gallery": open_gallery, "camera": enter_creation_mode,
                  "fx": open_quick_effects, "layout": toggle_layout}[kind]()
                 return
+        # The printer in the top right corner: how to print from a phone.
+        if PRINTER_WIFI and x >= ui_size()[0] - 110 and y <= 110:
+            open_phone_help()
 
 
 def handle_swipe(dx):

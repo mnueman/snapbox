@@ -235,7 +235,8 @@ button opens the keyboard). The printer remembers it.
 
 ### Photos from a phone
 
-Join the booth's printer network on the phone (name and password: WIFI tab) and open
+Tap the printer in the top right corner of the main screen (or WIFI tab > PRINT FROM A PHONE: HOW?)
+for the three steps on screen: join the booth's printer network on the phone, open
 `http://10.42.0.1:8080`. Pick a design, tap each box to add a photo, drag to move it and pinch to
 zoom, then SAVE (it appears in REVIEW like any strip, and CHANGE FRAME works on it) or SAVE & PRINT.
 The booth builds and prints it exactly like its own strips. The page is `web/index.html`; it's only
