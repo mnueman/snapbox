@@ -295,6 +295,9 @@ BOOTH_SETTINGS = [
         (None, "OFF"), (900, "AFTER 15 MIN"), (1800, "AFTER 30 MIN"), (3600, "AFTER 1 HOUR"),
         (7200, "AFTER 2 HOURS"), (14400, "AFTER 4 HOURS"),
     ], None),
+    # Not a setting: a way out to a text login on the booth's own screen (it asks first). The
+    # last row of the tab, where it's hard to hit by accident.
+    ("console", "COMMAND LINE (NEEDS A KEYBOARD)", [(0, "TAP TO SWITCH")], 0),
 ]
 SETTING_DEFS = {key: (label, choices, default)
                 for key, label, choices, default in CAMERA_SETTINGS + EFFECT_SETTINGS + BOOTH_SETTINGS}
@@ -4090,6 +4093,9 @@ def menu_focus_step(step):
 
 
 def step_setting(key, step):
+    if key == "console":
+        open_console_confirm()
+        return
     for tab, defs in PREVIEW_TABS.items():
         if key in {k for k, _, _, _ in defs}:
             menu_focus[tab] = key  # the full-screen preview opens on the last one changed
@@ -4133,7 +4139,8 @@ def setting_title(key):
 
 
 # Tapping the middle of these setting rows (between the arrows) does something extra.
-ROW_TAPS = {"stamp": lambda: open_date_keypad(), "random": lambda: reroll_random()}
+ROW_TAPS = {"stamp": lambda: open_date_keypad(), "random": lambda: reroll_random(),
+            "console": lambda: open_console_confirm()}
 
 
 # ---------------------------------------------------------------------------
@@ -5696,6 +5703,59 @@ def tick_updates():
         flash_message(UPDATE_ANNOUNCEMENT, seconds=6.0)
 
 
+def open_console_confirm():
+    set_menu_tab("console")
+
+
+def switch_to_console():
+    """Hands the screen to a text login (system/snapbox-console.sh). The app is stopped by that
+    service; a restart of the booth, or 5 minutes with nobody logged in, brings it back."""
+    print("Switching to the command line.")
+    try:
+        result = subprocess.run(["systemctl", "start", "--no-block", "snapbox-console.service"],
+                                capture_output=True, text=True, timeout=15)
+        ok, err = result.returncode == 0, result.stderr.strip()
+    except Exception as e:
+        ok, err = False, str(e)
+    if not ok:
+        print(f"Could not switch to the command line: {err}")
+        set_menu_tab("booth")
+        flash_message("NOT SET UP ON THIS BOOTH\nRun system/install.sh once", seconds=2.5)
+        return
+    flash_message("SWITCHING TO THE\nCOMMAND LINE...", seconds=1.0)
+
+
+def render_console_confirm(draw, area, buttons):
+    """Asks before leaving the app for the command line, and says how to get back."""
+    x0, y0, x1, y1 = area
+    w = x1 - x0
+    title = "SWITCH TO THE COMMAND LINE?"
+    _draw_text_centered(draw, (x0, y0, x1, y0 + 40), title, _fit_font(draw, title, w - 20, 28),
+                        MENU_TEXT)
+    lines = [
+        ("The photo booth stops and this screen shows a text login.", MENU_TEXT),
+        ("You need a USB keyboard plugged in to use it.", MENU_TEXT),
+        ("To come back: restart the booth (type  sudo reboot ,", MENU_DIM),
+        ("or switch it off and on). It also comes back by itself", MENU_DIM),
+        ("if nobody has logged in after 5 minutes.", MENU_DIM),
+    ]
+    key_h = 76
+    box = (x0, y0 + 48, x1, y1 - key_h - 10)
+    _rrect(draw, box, radius=12, fill=MENU_ROW)
+    lh = min(34, (box[3] - box[1] - 20) // len(lines))
+    longest = max((text for text, _ in lines), key=len)
+    font = _fit_font(draw, longest, w - 28, max(12, int(lh * 0.62)), bold=False)
+    y = box[1] + (box[3] - box[1] - lh * len(lines)) // 2
+    for text, fill in lines:
+        _draw_text_centered(draw, (x0 + 10, y, x1 - 10, y + lh), text, font, fill)
+        y += lh
+    half = (w - 10) // 2
+    _draw_key(draw, (x0, y1 - key_h, x0 + half, y1), "CANCEL", buttons,
+              lambda: set_menu_tab("booth"), fill=MENU_ACCENT, text_fill=(0, 0, 0), size=24)
+    _draw_key(draw, (x1 - half, y1 - key_h, x1, y1), "YES, SWITCH", buttons, switch_to_console,
+              fill=MENU_DANGER, size=22)
+
+
 def open_phone_help():
     """From the main screen (a tap on the printer in the corner): how to print from a phone."""
     if not PRINTER_WIFI:
@@ -5936,6 +5996,8 @@ def render_menu(cam=None):
         render_update_view(draw, (pad, top, w - pad, h - pad), buttons)
     elif menu_tab == "phone":
         render_phone_view(draw, (pad, top, w - pad, h - pad))
+    elif menu_tab == "console":
+        render_console_confirm(draw, (pad, top, w - pad, h - pad), buttons)
     else:
         keys = [k for k, _, _, _ in BOOTH_SETTINGS]
         action_h = 70

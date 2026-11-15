@@ -245,6 +245,14 @@ zoom, then SAVE (it appears in REVIEW like any strip, and CHANGE FRAME works on 
 The booth builds and prints it exactly like its own strips. The page is `web/index.html`; it's only
 reachable from the booth's own network.
 
+## Command line on the booth's screen
+
+For when there's no WiFi to reach the booth over SSH: BOOTH tab, last row, COMMAND LINE. It explains
+and asks first, then stops the app and shows a text login on the booth's own screen, turned the way
+the screen is mounted and in big letters (`system/snapbox-console.sh`; plug in a USB keyboard). Nothing
+about it lasts: `sudo reboot`, or switching the booth off and on, brings the app back, and so does
+5 minutes with nobody logged in. Needs `system/install.sh` run once since this was added.
+
 ## Boot splash
 
 Shows the Snapbox name plate, with a shine sweeping across the chrome, instead of Linux's start-up

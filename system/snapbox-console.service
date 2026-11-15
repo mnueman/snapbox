@@ -1,0 +1,7 @@
+[Unit]
+Description=Switch the booth's screen to the command line (BOOTH tab > COMMAND LINE)
+# Started by the photo booth app, never at boot: a restart always brings the app back.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/snapbox-console

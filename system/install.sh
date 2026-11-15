@@ -18,6 +18,10 @@ install -m 0644 snapbox-wifi-watchdog.service snapbox-wifi-watchdog.timer /etc/s
 install -m 0755 snapbox-wifi-nosteer.sh /usr/local/sbin/snapbox-wifi-nosteer
 install -m 0644 snapbox-wifi-nosteer.service /etc/systemd/system/
 install -m 0755 snapbox-wifi-nosteer.dispatcher /etc/NetworkManager/dispatcher.d/40-snapbox-wifi-nosteer
+# BOOTH tab > COMMAND LINE: lets the app hand the screen over to a text login (snapbox-console.sh).
+install -m 0755 snapbox-console.sh /usr/local/sbin/snapbox-console
+install -m 0644 snapbox-console.service /etc/systemd/system/
+install -m 0644 photobooth-console.rules /etc/polkit-1/rules.d/50-photobooth-console.rules
 # The WiFi chip must not change access point by itself. Routers that "steer" devices to 5 GHz did
 # it anyway (the chip's own firmware roams, whatever wpa_supplicant is told): with the printer
 # network on 2.4 GHz the chip then jams, every scan fails, and there's no internet until a restart
