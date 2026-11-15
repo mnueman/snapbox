@@ -96,7 +96,7 @@ CAPTURE_W, CAPTURE_H = 2304, 1296
 # blur, but dim scenes get brighter via gain instead, so they look grainier. Menu default.
 MAX_EXPOSURE_US = 20000
 PREVIEW_W, PREVIEW_H = 640, 360
-LIVE_PREVIEW_FPS = 30  # the camera on screen; each frame costs about 15 ms to draw
+LIVE_PREVIEW_FPS = 20  # the camera on screen. Measured on booth-1: 8 fps 4.2 W, 30 fps 4.9 W
 SLOT_BLEED = 5
 # A camera call that takes longer than this means the camera has stalled.
 CAMERA_TIMEOUT_SECONDS = 5
