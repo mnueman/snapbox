@@ -96,7 +96,7 @@ CAPTURE_W, CAPTURE_H = 2304, 1296
 # blur, but dim scenes get brighter via gain instead, so they look grainier. Menu default.
 MAX_EXPOSURE_US = 20000
 PREVIEW_W, PREVIEW_H = 640, 360
-LIVE_PREVIEW_FPS = 8
+LIVE_PREVIEW_FPS = 30  # the camera on screen; each frame costs about 15 ms to draw
 SLOT_BLEED = 5
 # A camera call that takes longer than this means the camera has stalled.
 CAMERA_TIMEOUT_SECONDS = 5
@@ -1277,7 +1277,7 @@ def render_strip_to_ui(strip, layout, resample, transparent=False):
         strip = strip.convert("RGB")
 
     for src, (dx, dy, dw, dh) in layout:
-        piece = strip.crop(src).resize((dw, dh), resample)
+        piece = strip.crop(src).resize((dw, dh), resample, reducing_gap=2.0)
         canvas.paste(piece, (dx, dy), piece if transparent else None)
     return canvas
 
@@ -1310,24 +1310,101 @@ def saved_strip_slots(img):
     return None
 
 
+# The main screen is built at the screen's own size, not at print size and then shrunk: a 2.8 inch
+# panel shows a strip about a fifth as big as it prints, and building it full size made every
+# swipe to another design take a third of a second or more. (Saving and printing still build the
+# real thing: compose_single_strip.)
+_ui_frame_cache = {}  # (design, its mtime, layout, screen size) -> the design drawn for the screen
+_screen_photos = {}   # id(photo) -> (photo, a copy small enough to fit to the screen quickly)
+_warm_designs = []    # designs to get ready while nothing else is happening (the ones next door)
+
+
+def _screen_photo(photo):
+    kept = _screen_photos.get(id(photo))
+    if kept is None or kept[0] is not photo:
+        if len(_screen_photos) > 8:
+            _screen_photos.clear()
+        small = photo.reduce(max(1, photo.width // 800)) if photo.width > 1000 else photo
+        kept = _screen_photos[id(photo)] = (photo, small.convert("RGB"))
+    return kept[1]
+
+
+def ui_frame_canvas(frame_index, layout):
+    """The design itself (see-through where the photos go) drawn for the screen; kept for the
+    last few designs, so coming back to one costs nothing."""
+    path = frames[frame_index]
+    key = (path, _mtime(path), tuple(layout), ui_size())
+    if key not in _ui_frame_cache:
+        frame = load_frame_image(frame_index)
+        while len(_ui_frame_cache) >= 12:
+            del _ui_frame_cache[next(iter(_ui_frame_cache))]
+        _ui_frame_cache[key] = (None if frame is None else
+                                render_strip_to_ui(frame, layout, Image.BILINEAR, transparent=True))
+    return _ui_frame_cache[key]
+
+
+def ui_photos_canvas(photos, frame_index, layout, fx=None):
+    """The photos taken so far, each fitted straight into its opening at screen size."""
+    global _main_layout_rects
+    _main_layout_rects = tuple((dx, dy, dx + dw, dy + dh) for _, (dx, dy, dw, dh) in layout)
+    canvas = Image.new("RGB", ui_size(), MAIN_BG)
+    for _, (dx, dy, dw, dh) in layout:
+        canvas.paste((255, 255, 255), (dx, dy, dx + dw, dy + dh))  # the paper
+    slots = frame_slots(frame_index)
+    size = frame_size(frame_index)
+    corner = frame_stamp_corner(frame_index)
+    for i, photo in enumerate(photos):
+        if photo is None or i >= len(slots):
+            continue
+        x, y, w, h = slots[i]
+        box = map_strip_box_to_ui((max(0, x - SLOT_BLEED), max(0, y - SLOT_BLEED),
+                                   min(size[0], x + w + SLOT_BLEED), min(size[1], y + h + SLOT_BLEED)),
+                                  layout)
+        if box is None:
+            continue
+        bx, by, bw, bh = box
+        fitted = center_crop_to_slot(_screen_photo(photo), bw, bh, resample=Image.BILINEAR)
+        canvas.paste(apply_effects(fitted, i, fx, corner).convert("RGB"), (bx, by))
+    return canvas
+
+
+def tick_warm_designs():
+    """Gets the designs either side of the current one ready for the screen during a quiet moment,
+    so the next swipe shows at once. One per call: each costs about a tenth of a second."""
+    if not _warm_designs or time.monotonic() - last_activity < 0.3:
+        return
+    index = _warm_designs.pop(0)
+    if 0 <= index < len(frames) and frame_kind(index) == current_kind():
+        try:
+            ui_frame_canvas(index, display_layout(frame_slots(index), frame_size(index)))
+        except Exception as e:
+            print(f"Could not prepare design {index}: {e}")
+
+
 def compose_display():
-    strip = None
-    slots = None
     if mode == "browse" and browse_strips:
         browse_path = browse_strips[browse_index]
         try:
             with Image.open(browse_path) as saved:
                 slots = saved_strip_slots(saved)
+                full = saved.size
+                saved.draft("RGB", (full[0] // 2, full[1] // 2))  # decodes small: much quicker
                 strip = saved.convert("RGB")
+            k = strip.width / full[0]
+            layout = [(tuple(int(v * k) for v in src), dest)
+                      for src, dest in display_layout(slots, full)]
+            return render_strip_to_ui(strip, layout, Image.BILINEAR)
         except Exception as e:
             print(f"Could not open saved strip: {e}")
-            strip = None
 
-    if strip is None:
-        strip = compose_single_strip(live_photos)
-        slots = current_frame_slots()
-
-    return render_strip_to_ui(strip, display_layout(slots, strip.size), Image.LANCZOS)
+    layout = display_layout(current_frame_slots(), frame_size(current_frame_index))
+    canvas = ui_photos_canvas(live_photos, current_frame_index, layout)
+    frame = ui_frame_canvas(current_frame_index, layout) if frames else None
+    if frame is not None:
+        canvas = canvas.convert("RGBA")
+        canvas.alpha_composite(frame)
+        canvas = canvas.convert("RGB")
+    return canvas
 
 
 def should_show_live_preview():
@@ -1373,13 +1450,8 @@ def _ensure_live_preview_base():
 
     size = frame_size(current_frame_index)
     layout = display_layout(slots, size)
-    photos_strip = compose_single_strip(live_photos, include_frame=False)
-    photos_canvas = render_strip_to_ui(photos_strip, layout, Image.BILINEAR)
-
-    frame = load_current_frame()
-    frame_canvas = None
-    if frame is not None:
-        frame_canvas = render_strip_to_ui(frame, layout, Image.BILINEAR, transparent=True)
+    photos_canvas = ui_photos_canvas(live_photos, current_frame_index, layout)
+    frame_canvas = ui_frame_canvas(current_frame_index, layout)
 
     x, y, w, h = slots[current_slot]
     slot_box = map_strip_box_to_ui((
@@ -2009,7 +2081,8 @@ def update_lcd(img=None, overlay_text=None, fast=False):
         new_h = int(img_h * scale)
 
         resample = Image.BILINEAR if fast else Image.LANCZOS
-        img = img.resize((new_w, new_h), resample)
+        if (new_w, new_h) != img.size:  # normally the same size: nothing to do
+            img = img.resize((new_w, new_h), resample)
         surface = pil_to_pygame_surface(img)
 
         lcd.fill((0, 0, 0))
@@ -2118,14 +2191,10 @@ def flash_message(text, seconds=1.0):
 
 
 def save_preview():
+    """Redraws the main screen. (It used to save the picture to current_preview.jpg as well; nothing
+    read that file, and writing it on every swipe was slow and wore the SD card.)"""
     _invalidate_live_preview()
     preview = compose_display()
-
-    path = BASE / "current_preview.jpg"
-    preview.save(path, quality=90)
-
-    print(f"Preview updated: {path}")
-
     if _photo_show_img is None:
         update_lcd(preview)
 
@@ -2525,6 +2594,8 @@ def next_frame_same_capacity(step=1):
         resize_live_photos(current_capacity())
         _clear_photo_cache()
 
+    pos = group.index(current_frame_index)
+    _warm_designs[:] = [group[(pos + step) % len(group)], group[(pos - step) % len(group)]]
     print(
         f"Changed frame to: {frames[current_frame_index].name} "
         f"(slots={current_capacity()})"
@@ -2611,7 +2682,7 @@ def toggle_layout():
     _clear_photo_cache()
     print(f"Layout: {target} ({frames[current_frame_index].name})")
     save_preview()
-    flash_message(LAYOUT_NAMES[target], seconds=0.8)
+    flash_message(LAYOUT_NAMES[target], seconds=0.35)
 
 
 def toggle_strip_capacity():
@@ -3894,7 +3965,8 @@ def _look_state():
 def _look_chrome():
     """The picture of everything around the strip, redrawn only when something on it changes."""
     st = _look_state()
-    key = (look(), ui_size(), json.dumps(st, sort_keys=True, default=str))
+    drawn = {k: v for k, v in st.items() if k not in looks.NOT_DRAWN[look()]}
+    key = (look(), ui_size(), json.dumps(drawn, sort_keys=True, default=str))
     if _look_cache.get("chrome", (None,))[0] != key:
         picture, geo = looks.render_main(look(), *ui_size(), st)
         _look_cache["chrome"] = (key, picture)
@@ -6158,6 +6230,7 @@ try:
                 update_lcd()
 
             tick_photo_show()
+            tick_warm_designs()
             tick_printer()
             tick_review()
             tick_updates()
@@ -6184,7 +6257,8 @@ try:
             else:
                 update_live_slot_preview()
             watchdog_ping()
-            time.sleep(0.03)
+            # The camera on screen paces itself (LIVE_PREVIEW_FPS); don't add to its wait.
+            time.sleep(0.004 if should_show_live_preview() or menu_open else 0.02)
         except Exception:
             # One bad moment shouldn't end the event: log it and carry on. If errors keep
             # coming, exit so the service starts a fresh app.

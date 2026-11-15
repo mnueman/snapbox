@@ -33,6 +33,16 @@ THEMES = {
                     disc=(10, 10, 10), main=(23, 23, 23)),
 }
 
+# What each look's main screen doesn't draw from the app's state (photobooth.py: _look_state), so
+# a change to it (swiping to another design, say) doesn't mean redrawing everything.
+NOT_DRAWN = {
+    "classic": {"title", "chip", "switch_text", "plate_text", "design", "designs", "saved", "wifi",
+                "battery", "cta", "cta_narrow", "cta_seconds", "cta_frac", "count_side", "segments",
+                "phone", "printer_title", "printer_sub"},
+    "modern": {"plate_text", "tape", "tape_narrow", "date", "layout", "design", "designs",
+               "switch_text", "wifi", "battery", "printer_sub"},
+}
+
 _fonts = {}
 
 
@@ -130,24 +140,27 @@ class Pen:
         return font(name, size, weight)
 
     def shadows(self, items):
-        """Soft drop shadows: items = [(rect, radius, blur, dy, strength)]. Each is blurred in its
-        own small patch (a blur of the whole screen per shadow is far too slow)."""
+        """Soft drop shadows: items = [(rect, radius, blur, dy, strength)]. Each is a small blurred
+        patch, kept by size: the same cards and keys are drawn again and again."""
         for r, rad, blur, dy, strength in items:
-            x0, y0, x1, y1 = r
-            m = blur * 3 + 2
-            bx0, by0 = math.floor((x0 - m) * SS), math.floor((y0 + dy - m) * SS)
-            bx1, by1 = math.ceil((x1 + m) * SS), math.ceil((y1 + dy + m) * SS)
-            w, h = bx1 - bx0, by1 - by0
-            if w <= 0 or h <= 0:
+            x0, y0, x1, y1 = (round(v * SS) for v in (r[0], r[1] + dy, r[2], r[3] + dy))
+            m = math.ceil((blur * 3 + 2) * SS)
+            w, h = x1 - x0 + 2 * m, y1 - y0 + 2 * m
+            if x1 <= x0 or y1 <= y0:
                 continue
-            mask = Image.new("L", (w, h), 0)
-            ImageDraw.Draw(mask).rounded_rectangle(
-                (x0 * SS - bx0, (y0 + dy) * SS - by0, x1 * SS - bx0, (y1 + dy) * SS - by0),
-                radius=self.s(rad), fill=round(255 * strength))
-            mask = mask.filter(ImageFilter.GaussianBlur(blur * SS))
-            patch = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-            patch.putalpha(mask)
-            self.blend(patch, bx0, by0)
+            key = ("shadow", w, h, self.s(rad), round(blur * SS, 1), round(strength, 2))
+            patch = _tex.get(key)
+            if patch is None:
+                if len(_tex) > 600:
+                    _tex.clear()
+                mask = Image.new("L", (w, h), 0)
+                ImageDraw.Draw(mask).rounded_rectangle((m, m, w - m, h - m), radius=self.s(rad),
+                                                       fill=round(255 * strength))
+                mask = mask.filter(ImageFilter.GaussianBlur(blur * SS))
+                patch = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+                patch.putalpha(mask)
+                _tex[key] = patch
+            self.blend(patch, x0 - m, y0 - m)
 
     def blend(self, patch, x, y):
         """Lays an RGBA patch (SS scale, canvas px) over the picture, clipped to it."""
@@ -173,7 +186,7 @@ class Pen:
         self.img.paste(Image.new("RGBA", mask.size, (0, 0, 0, 0)), (x0, y0), mask)
 
     def done(self):
-        return self.img.resize((self.w, self.h), Image.LANCZOS)
+        return self.img.reduce(SS)  # an exact shrink: each screen pixel is the average of SS x SS
 
 
 # ---------------------------------------------------------------------------------- geometry
@@ -474,18 +487,23 @@ KEY_IN = [(0, (140, 142, 143)), (0.6, (188, 190, 190)), (1, (204, 205, 203))]
 
 
 def _metal(p, r, stops, rad=0.0):
-    """A brushed-metal panel with rounded corners."""
+    """A brushed-metal panel with rounded corners (kept by size and finish)."""
     x0, y0, x1, y1 = p.b(r)
     w, h = max(2, x1 - x0), max(2, y1 - y0)
-    im = _vgrad(w, h, stops)
-    arr = np.asarray(im).copy()
-    rng = np.random.default_rng(7)
-    grain = rng.integers(-5, 6, size=(h, 1, 1))  # fine horizontal brushing
-    arr[..., :3] = np.clip(arr[..., :3].astype(int) + grain, 0, 255)
-    im = Image.fromarray(arr, "RGBA")
-    mask = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=p.s(rad), fill=255)
-    p.img.paste(im, (x0, y0), mask)
+    key = ("metal", w, h, tuple(stops), p.s(rad))
+    made = _tex.get(key)
+    if made is None:
+        if len(_tex) > 600:
+            _tex.clear()
+        arr = np.asarray(_vgrad(w, h, stops)).copy()
+        rng = np.random.default_rng(7)
+        grain = rng.integers(-5, 6, size=(h, 1, 1))  # fine horizontal brushing
+        arr[..., :3] = np.clip(arr[..., :3].astype(int) + grain, 0, 255)
+        im = Image.fromarray(arr, "RGBA")
+        mask = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=p.s(rad), fill=255)
+        made = _tex[key] = (im, mask)
+    p.img.paste(made[0], (x0, y0), made[1])
 
 
 def _disc(d, light=(255, 255, 255), mid=(214, 215, 213), dark=(150, 152, 153), hx=0.35, hy=0.28):
