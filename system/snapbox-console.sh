@@ -42,7 +42,7 @@ font=$(ls /usr/share/consolefonts/Lat15-TerminusBold32x16.psf.gz /usr/share/cons
 [ -n "$font" ] && setfont -C /dev/tty1 "$font" 2>/dev/null
 {
     printf '\033[?25h\033[2J\033[H'   # cursor on, clear
-    printf 'SNAPBOX COMMAND LINE\n\n'
+    printf 'SNAPSHOT COMMAND LINE\n\n'
     printf 'Log in as: admin\n'
     printf 'Back to the photo booth:\n  sudo reboot\n'
     printf '(or switch it off and on)\n\n'

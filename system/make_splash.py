@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Makes the boot splash: the Snapbox name plate on leatherette, with a shine that sweeps across
+"""Makes the boot splash: the name plate (looks.BRAND) on leatherette, with a shine that sweeps across
 the chrome and a red lamp that glows. Writes a Plymouth theme (pictures + script) to a folder;
 system/setup-splash.sh installs it.
 
@@ -66,15 +66,15 @@ def build(out, pw, ph, rotation, extra=0):
         looks._screw(p, sx, sy, 4.2 * k, ang)
     size = 112 * k
     script = looks.font("Yellowtail.ttf", size)
-    while p.text_w("Snapbox", script) > pw_ - 110 * k:
+    while p.text_w(looks.BRAND, script) > pw_ - 110 * k:
         size -= 2 * k
         script = looks.font("Yellowtail.ttf", size)
-    tw = p.text_w("Snapbox", script)
+    tw = p.text_w(looks.BRAND, script)
     dot_r = size * 0.14
     tx = (w - tw - dot_r * 2 - 8 * k) / 2
     ty = plate[1] + ph_ * 0.44
-    p.text((tx, ty + 1.6 * k), "Snapbox", script, (255, 255, 255, 210), "lm")
-    p.text((tx, ty), "Snapbox", script, looks.ENGRAVE, "lm")
+    p.text((tx, ty + 1.6 * k), looks.BRAND, script, (255, 255, 255, 210), "lm")
+    p.text((tx, ty), looks.BRAND, script, looks.ENGRAVE, "lm")
     dot = (tx + tw + 8 * k + dot_r, ty - size * 0.22)
     p.shadows([((dot[0] - dot_r, dot[1] - dot_r, dot[0] + dot_r, dot[1] + dot_r), dot_r, 2 * k, 1.5 * k, 0.5)])
     p.paste(looks._disc(p.s(dot_r * 2), (255, 140, 140), (216, 35, 42), (130, 16, 22)), (dot[0] - dot_r, dot[1] - dot_r))
@@ -113,7 +113,7 @@ def build(out, pw, ph, rotation, extra=0):
     s0, s1, gb = (turn_box(b, deg, w, h) for b in (start, end, glow_box))
 
     (out / "snapbox.plymouth").write_text(
-        "[Plymouth Theme]\nName=Snapbox\nDescription=The Snapbox name plate with a moving shine\n"
+        "[Plymouth Theme]\nName=Snapbox\nDescription=The name plate with a moving shine\n"
         "ModuleName=script\n\n[script]\nImageDir=/usr/share/plymouth/themes/snapbox\n"
         "ScriptFile=/usr/share/plymouth/themes/snapbox/snapbox.script\n")
     (out / "snapbox.script").write_text(f"""# Made by system/make_splash.py: don't edit, run it again.

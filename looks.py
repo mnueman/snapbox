@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 SS = 2  # drawn this many times bigger, then shrunk
 FONT_DIR = Path(__file__).resolve().parent / "ui" / "fonts"
 LOOKS = ("modern", "classic")
+BRAND = "Snapshot"  # the name on the classic look's plate and the boot splash
 STAGE_BG = {"modern": (244, 245, 248), "classic": (6, 6, 6)}
 
 # Menu and review-screen colours for each look (same keys as THEMES in photobooth.py).
@@ -754,13 +755,13 @@ def _classic(w, h, st):
             tw = ccx - rad - 10 * k - (x0 + 16 * k)
             size = min(52 * k, ch * 0.66)
             script = font("Yellowtail.ttf", size)
-            while p.text_w("Snapbox", script) > tw - size * 0.5 and size > 12 * k:
+            while p.text_w(BRAND, script) > tw - size * 0.5 and size > 12 * k:
                 size -= 1 * k
                 script = font("Yellowtail.ttf", size)
             ty = y0 + ch * (0.43 if ch >= 72 * k else 0.5)
-            p.text((x0 + 16 * k, ty + 1 * k), "Snapbox", script, (255, 255, 255, 200), "lm")
-            p.text((x0 + 16 * k, ty), "Snapbox", script, ENGRAVE, "lm")
-            bw = p.text_w("Snapbox", script)
+            p.text((x0 + 16 * k, ty + 1 * k), BRAND, script, (255, 255, 255, 200), "lm")
+            p.text((x0 + 16 * k, ty), BRAND, script, ENGRAVE, "lm")
+            bw = p.text_w(BRAND, script)
             dr = size * 0.24
             p.paste(_disc(p.s(dr * 2), (255, 140, 140), (216, 35, 42), (130, 16, 22)), (x0 + 16 * k + bw + 5 * k, ty - dr - 4 * k))
             if ch >= 72 * k:
@@ -774,12 +775,12 @@ def _classic(w, h, st):
             _engraved(p, (cx, y0 + 24 * k + 2 * rad), sub, p.fit(sub, BC_B, 10.5 * k, cw - 12 * k, spacing=1.4 * k), "mm", 1.4 * k, k=k)
             size = 34 * k
             script = font("Yellowtail.ttf", size)
-            while p.text_w("Snapbox", script) > cw - 10 * k and size > 11 * k:
+            while p.text_w(BRAND, script) > cw - 10 * k and size > 11 * k:
                 size -= 1 * k
                 script = font("Yellowtail.ttf", size)
             if y0 + 46 * k + 2 * rad + size <= y1:
-                p.text((cx, y0 + 46 * k + 2 * rad + 1 * k), "Snapbox", script, (255, 255, 255, 200), "mm")
-                p.text((cx, y0 + 46 * k + 2 * rad), "Snapbox", script, ENGRAVE, "mm")
+                p.text((cx, y0 + 46 * k + 2 * rad + 1 * k), BRAND, script, (255, 255, 255, 200), "mm")
+                p.text((cx, y0 + 46 * k + 2 * rad), BRAND, script, ENGRAVE, "mm")
 
     # ---------------- B: label tape, the printer's needle gauge, the date wheels
     if card_b:

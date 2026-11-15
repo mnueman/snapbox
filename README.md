@@ -255,7 +255,7 @@ about it lasts: `sudo reboot`, or switching the booth off and on, brings the app
 
 ## Boot splash
 
-Shows the Snapbox name plate, with a shine sweeping across the chrome, instead of Linux's start-up
+Shows the Snapshot name plate, with a shine sweeping across the chrome, instead of Linux's start-up
 text. Once per booth, with internet, then restart:
 
     sudo sh ~/photobooth/system/setup-splash.sh
