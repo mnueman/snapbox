@@ -112,7 +112,8 @@ first, usually OFF); changes save automatically (`settings.json`) and the camera
 photo. Tap the preview (or FULL SCREEN PREVIEW) to make it as big as the screen allows, with one setting
 underneath: tap a setting's name (or swipe) to pick which. Tap DONE or press the button to close.
 
-- Camera tab: brightness, colour look, movement (sharper vs brighter), focus, lighting type, zoom, mirror preview.
+- Camera tab: brightness, movement (sharper vs brighter), focus, lighting type, zoom, mirror preview.
+  (The colour look is in the Effects tab.)
   Each lighting type locks the white balance to one colour temperature (warm bulbs 2900 K, indoor 3600 K,
   office 4300 K, sunny 5600 K, cloudy/shade 7000 K); AUTO lets the camera decide.
   Colour looks: normal, vivid, warm, cool, soft & dreamy, black & white, noir, sepia, film (warm), film (B&W),

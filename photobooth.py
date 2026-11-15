@@ -164,13 +164,6 @@ CAMERA_SETTINGS = [
         (-1.5, "DARKEST"), (-1.0, "DARKER"), (-0.5, "A BIT DARKER"), (0.0, "NORMAL"),
         (0.5, "A BIT BRIGHTER"), (1.0, "BRIGHTER"), (1.5, "BRIGHTEST"),
     ], 0.0),
-    ("colour", "COLOUR", [
-        ("normal", "NORMAL"), ("vivid", "VIVID"), ("warm", "WARM"), ("cool", "COOL"),
-        ("soft", "SOFT & DREAMY"), ("bw", "BLACK & WHITE"), ("noir", "NOIR (HIGH CONTRAST B&W)"),
-        ("sepia", "SEPIA"), ("film", "FILM (WARM)"), ("film_bw", "FILM (B&W)"),
-        ("portrait", "FILM: PORTRAIT"), ("golden", "FILM: GOLDEN"), ("green", "FILM: COOL GREEN"),
-        ("instant", "INSTANT PHOTO"), ("faded70s", "70s FADED"), ("cross", "CROSS-PROCESSED"),
-    ], "normal"),
     ("motion", "MOVEMENT", [
         (10000, "SHARPEST (DARKER)"), (20000, "BALANCED"), (33333, "BRIGHTER (MORE BLUR)"),
     ], MAX_EXPOSURE_US),
@@ -247,6 +240,15 @@ def _style_choices(styles):
 
 
 EFFECT_SETTINGS = [
+    # The colour look is part of how a photo is taken (the camera's saturation and the film
+    # curve), but it's chosen here, with the other ways to style a photo.
+    ("colour", "COLOUR", [
+        ("normal", "NORMAL"), ("vivid", "VIVID"), ("warm", "WARM"), ("cool", "COOL"),
+        ("soft", "SOFT & DREAMY"), ("bw", "BLACK & WHITE"), ("noir", "NOIR (HIGH CONTRAST B&W)"),
+        ("sepia", "SEPIA"), ("film", "FILM (WARM)"), ("film_bw", "FILM (B&W)"),
+        ("portrait", "FILM: PORTRAIT"), ("golden", "FILM: GOLDEN"), ("green", "FILM: COOL GREEN"),
+        ("instant", "INSTANT PHOTO"), ("faded70s", "70s FADED"), ("cross", "CROSS-PROCESSED"),
+    ], "normal"),
     # "custom": a date typed in on the number pad (settings "stamp_date"), for when the clock is
     # wrong (no WiFi to set it) or to stamp a special day.
     ("stamp", "DATE STAMP", [(False, "OFF"), (True, "ON: TODAY"), ("custom", "ON: MY DATE")], False),
@@ -731,6 +733,9 @@ def set_setting(key, value):
         _invalidate_live_preview()
     elif key in ("theme", "look"):
         apply_theme()
+        _invalidate_live_preview()
+    elif key == "colour":
+        apply_camera_settings()
         _invalidate_live_preview()
     elif key == "edge" or key in EFFECT_KEYS:
         _invalidate_live_preview()
@@ -1575,7 +1580,7 @@ _effect_cache = {}
 
 
 def effects_on():
-    return any(settings[k] for k in EFFECT_KEYS)
+    return settings["colour"] != "normal" or any(settings[k] for k in EFFECT_KEYS if k != "colour")
 
 
 def stamp_date():
