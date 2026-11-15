@@ -179,46 +179,58 @@ class Pen:
 # ---------------------------------------------------------------------------------- geometry
 
 def geometry(look, w, h):
-    """Where things are, in screen px: "stage" (the strip goes here), "buttons" (the four main
-    ones, in order), and other tap areas by name."""
+    """Where things are, in screen px. The screen is tiny (2.8 inches), so the strip gets almost
+    all of it: "rail" = the four main buttons down the left, "stage" = everything else, where the
+    strip goes. Status pieces sit in the corners the strip leaves empty (free_areas)."""
     k = h / 480.0
     g = {"k": k}
     if look == "modern":
-        pad, gap, rail, aside = 14 * k, 12 * k, 68 * k, 158 * k
-        g["rail"] = [(pad, pad + i * 80 * k, pad + rail, pad + i * 80 * k + 72 * k) for i in range(4)]
-        g["status"] = (pad, pad + 4 * 80 * k, pad + rail, h - pad)
-        card = (pad + rail + gap, pad, w - pad - aside - gap, h - pad)
-        g["card"] = card
-        inner = 14 * k
-        g["stage"] = (card[0] + inner, card[1] + inner + 34 * k, card[2] - inner, card[3] - inner - 58 * k)
-        sy = card[3] - inner - 46 * k
-        g["prev"] = (card[0] + inner, sy, card[0] + inner + 46 * k, sy + 46 * k)
-        g["next"] = (card[2] - inner - 46 * k, sy, card[2] - inner, sy + 46 * k)
-        ax = w - pad - aside
-        g["photo_card"] = (ax, pad, w - pad, pad + 132 * k)
-        g["printer"] = (ax, pad + 142 * k, w - pad, pad + 202 * k)
-        g["phone"] = (ax, pad + 212 * k, w - pad, pad + 272 * k)
-        g["cta"] = (ax, pad + 282 * k, w - pad, h - pad)
+        m, rail = 8 * k, 68 * k
+        bh = (h - 2 * m - 3 * 8 * k) / 4
+        g["rail"] = [(m, m + i * (bh + 8 * k), m + rail, m + i * (bh + 8 * k) + bh) for i in range(4)]
+        g["stage"] = (m + rail + 8 * k, 0, w, h)
+        g["pad"] = 7 * k
     else:
-        plate, foot, col, pad = 84 * k, 62 * k, 150 * k, 16 * k
-        g["plate"] = (0, 0, w, plate)
-        vf = (pad, plate + 12 * k, w - pad - col - 14 * k, h - foot)
-        g["viewfinder"] = vf
-        g["stage"] = (vf[0] + 5 * k, vf[1] + 5 * k, vf[2] - 5 * k, vf[3] - 5 * k)
-        cx0 = w - pad - col
-        g["rail"] = []
-        for i in range(4):
-            bx = cx0 + (i % 2) * 82 * k + 3 * k
-            by = plate + 14 * k + (i // 2) * 92 * k
-            g["rail"].append((bx, by, bx + 62 * k, by + 62 * k))
-        g["printer"] = (cx0, h - foot - 90 * k, w - pad, h - foot - 4 * k)
-        fy = h - foot + 10 * k
-        g["tape"] = (pad, fy + 4 * k, pad + 196 * k, fy + 34 * k)
-        g["plate_name"] = (pad + 208 * k, fy, w - pad - 108 * k, fy + 38 * k)
-        g["prev"] = (g["plate_name"][0], fy - 3 * k, g["plate_name"][0] + 46 * k, fy + 41 * k)
-        g["next"] = (g["plate_name"][2] - 46 * k, fy - 3 * k, g["plate_name"][2], fy + 41 * k)
-        g["date"] = (w - pad - 96 * k, fy, w - pad, fy + 38 * k)
+        col = 82 * k
+        cell = h / 4
+        g["rail"] = [(col / 2 - 31 * k, i * cell + 12 * k, col / 2 + 31 * k, i * cell + 74 * k) for i in range(4)]
+        g["stage"] = (col, 0, w, h)
+        g["pad"] = 10 * k  # room for each window's chrome bezel
     return g
+
+
+def free_areas(stage, rects, gap):
+    """The two empty areas the strip leaves on the stage, as (A, B): a strip folded in two hangs
+    its left half from the top and sits its right half on the bottom, so A is above the right
+    half and B below the left one; a sheet leaves bands above and below it (or beside it)."""
+    if not rects:
+        return None, None
+    sx0, sy0, sx1, sy1 = stage
+    if len(rects) >= 2:
+        left, right = min(rects, key=lambda r: r[0]), max(rects, key=lambda r: r[0])
+        return (right[0], sy0, right[2], right[1] - gap), (left[0], left[3] + gap, left[2], sy1)
+    x0, y0, x1, y1 = rects[0]
+    if y0 - sy0 >= x0 - sx0:
+        return (x0, sy0, x1, y0 - gap), (x0, y1 + gap, x1, sy1)
+    return (x1 + gap, sy0, sx1, sy1), (sx0, sy0, x0 - gap, sy1)
+
+
+def _fit_card(area, max_w, max_h, min_w, min_h, m, corner, v_h=150):
+    """A card inside a free area, hugging `corner` ("tr" or "bl"); None if it's too small. Returns
+    (rect, "h" or "v"): wide cards lay their contents out in a row, narrow ones in a column."""
+    if area is None:
+        return None, None
+    x0, y0, x1, y1 = area
+    aw, ah = x1 - x0 - 2 * m, y1 - y0 - 2 * m
+    if aw >= min_w and ah >= min_h:
+        cw, ch, mode = min(aw, max_w), min(ah, max_h), "h"
+    elif aw >= min_h * 1.3 and ah >= min_w * 0.9:
+        cw, ch, mode = min(aw, max_h * 1.35), min(ah, v_h), "v"
+    else:
+        return None, None
+    if corner == "tr":
+        return (x1 - m - cw, y0 + m, x1 - m, y0 + m + ch), mode
+    return (x0 + m, y1 - m - ch, x0 + m + cw, y1 - m), mode
 
 
 # ------------------------------------------------------------------------------------ modern
@@ -296,17 +308,20 @@ def _modern(w, h, st):
     k = g["k"]
     p = Pen(w, h)
     p.rect((0, 0, w, h), fill=(238, 240, 244, 255))
+    stage = g["stage"]
+    rects = st.get("strip_rects", [])
+    area_a, area_b = free_areas(stage, rects, 4 * k)
+    card_a, mode_a = _fit_card(area_a, 250 * k, 84 * k, 150 * k, 40 * k, 6 * k, "tr", 124 * k)
+    card_b, mode_b = _fit_card(area_b, 250 * k, 84 * k, 150 * k, 40 * k, 6 * k, "bl", 176 * k)
+    g["status"] = card_b
 
     kinds = st["kinds"]
-    soft = [(r, 18 * k, 8 * k, 4 * k, 0.07) for i, r in enumerate(g["rail"]) if i < len(kinds)]
-    soft += [(g["card"], 22 * k, 12 * k, 8 * k, 0.09), (g["photo_card"], 20 * k, 8 * k, 4 * k, 0.07)]
-    if st["printer"] is not None:
-        soft += [(g["printer"], 18 * k, 8 * k, 4 * k, 0.07)]
-        if st.get("phone"):
-            soft += [(g["phone"], 18 * k, 8 * k, 4 * k, 0.07)]
+    soft = [(r, 18 * k, 7 * k, 3 * k, 0.08) for i, r in enumerate(g["rail"]) if i < len(kinds)]
+    soft += [(r, 2 * k, 9 * k, 6 * k, 0.24) for r in rects]
+    soft += [(c, 16 * k, 8 * k, 4 * k, 0.12) for c in (card_a, card_b) if c]
     p.shadows(soft)
 
-    # --- the rail
+    # --- the rail: four big buttons, picture and word
     labels = {"menu": "Settings", "gallery": "Photos", "fx": "Effects", "layout": "Layout",
               "camera": "Camera"}
     for i, kind in enumerate(kinds):
@@ -315,141 +330,121 @@ def _modern(w, h, st):
         fill = BLUE if on else WHITE
         fg = WHITE if on else INK
         p.rrect(r, 18 * k, fill=fill)
-        cx, cy = (r[0] + r[2]) / 2, r[1] + 29 * k
-        _icon(p, kind, cx, cy, 27 * k, fg, fill)
+        cx, cy = (r[0] + r[2]) / 2, (r[1] + r[3]) / 2
+        _icon(p, kind, cx, cy - 12 * k, 34 * k, fg, fill)
         text = "Effects on" if kind == "fx" and st["effects_on"] else labels[kind]
-        p.text((cx, r[3] - 15 * k), text, font(PJS, 10 * k, 700), fg, "mm")
+        p.text((cx, cy + 26 * k), text, font(PJS, 11.5 * k, 800), fg, "mm")
         if kind == "gallery" and st.get("saved"):
             n = str(st["saved"]) if st["saved"] < 1000 else "999+"
-            f = font(PJS, 9.5 * k, 800)
-            bw = max(20 * k, p.text_w(n, f) + 10 * k)
-            p.rrect((r[2] - 6 * k - bw, r[1] + 6 * k, r[2] - 6 * k, r[1] + 26 * k), 10 * k, fill=INK)
-            p.text((r[2] - 6 * k - bw / 2, r[1] + 16 * k), n, f, WHITE, "mm")
-    s = g["status"]
-    if s[3] - s[1] > 40 * k:
-        p.rrect(s, 18 * k, fill=(226, 229, 235, 255))
-        cx = (s[0] + s[2]) / 2
-        has_batt = st.get("battery") is not None
-        cy = (s[1] + s[3]) / 2 - (9 * k if has_batt else 0)
-        col = (58, 67, 83, 255) if st.get("wifi") else (170, 176, 188, 255)
-        _icon(p, "wifi", cx, cy - 3 * k, 26 * k, col)
-        if not st.get("wifi"):
-            p.cap_line([(cx - 10 * k, cy + 9 * k), (cx + 10 * k, cy - 11 * k)], (197, 40, 28, 255), 2.4 * k)
-        if has_batt:
-            by = cy + 22 * k
-            p.rrect((cx - 24 * k, by - 6 * k, cx - 6 * k, by + 6 * k), 3 * k, outline=(58, 67, 83, 255), width=1.6 * k)
-            p.rrect((cx - 5 * k, by - 2.5 * k, cx - 3 * k, by + 2.5 * k), 1 * k, fill=(58, 67, 83, 255))
-            fw = 14 * k * max(0.08, min(1.0, st["battery"] / 100.0))
-            low = st["battery"] <= 20
-            p.rrect((cx - 22 * k, by - 4 * k, cx - 22 * k + fw, by + 4 * k), 1.5 * k,
-                    fill=(197, 40, 28, 255) if low else (58, 67, 83, 255))
-            p.text((cx + 1 * k, by), f"{st['battery']:.0f}%", font(PJS, 10.5 * k, 800), (58, 67, 83, 255), "lm")
+            f = font(PJS, 10 * k, 800)
+            bw = max(22 * k, p.text_w(n, f) + 11 * k)
+            p.rrect((r[2] - 5 * k - bw, r[1] + 5 * k, r[2] - 5 * k, r[1] + 27 * k), 11 * k, fill=INK)
+            p.text((r[2] - 5 * k - bw / 2, r[1] + 16 * k), n, f, WHITE, "mm")
 
-    # --- the strip's card
-    card = g["card"]
-    p.rrect(card, 22 * k, fill=WHITE)
-    tx, ty = card[0] + 14 * k, card[1] + 14 * k
-    chip_f = font(PJS, 10.5 * k, 700)
-    chip = st["chip"]
-    chip_w = p.text_w(chip, chip_f) + 16 * k
-    title_f = p.fit(st["title"], PJS, 17 * k, card[2] - card[0] - 28 * k - chip_w - 10 * k, 800)
-    p.text((tx, ty + 12 * k), st["title"], title_f, INK, "lm")
-    cx0 = card[2] - 14 * k - chip_w
-    p.rrect((cx0, ty + 2 * k, card[2] - 14 * k, ty + 22 * k), 10 * k, fill=(231, 237, 255, 255))
-    p.text((cx0 + chip_w / 2, ty + 12 * k), chip, chip_f, (27, 63, 196, 255), "mm")
-    p.rrect(g["stage"], 16 * k, fill=STAGE_BG["modern"] + (255,))
+    # --- A: which photo is next
+    if card_a:
+        x0, y0, x1, y1 = card_a
+        cw, ch = x1 - x0, y1 - y0
+        p.rrect(card_a, 16 * k, fill=WHITE)
+        pad = 12 * k
+        seg = st.get("segments") or []
+        num = str(st["count"])
+        if mode_a == "h":
+            big = font(PJS, min(46 * k, ch * 0.62), 800)
+            ny = y0 + ch / 2 + (2 * k if not seg else -3 * k)
+            if ch < 60 * k:
+                ny = y0 + ch / 2
+            p.text((x0 + pad - 1 * k, ny), num, big, INK, "lm")
+            nx = x0 + pad + p.text_w(num, big) + 6 * k
+            tw = x1 - pad - (nx + 54 * k)
+            side = st["count_side"] or st["chip"]
+            if ch >= 60 * k:
+                p.text((nx, ny - 9 * k), st["count_label"], font(PJS, 9.5 * k, 800), MUTED, "lm", 0.9 * k)
+                p.text((nx, ny + 8 * k), f"of {st['count_of']}", font(PJS, 17 * k, 800), INK, "lm")
+                if tw > 50 * k:
+                    p.text((x1 - pad, ny - 9 * k), st["title"], p.fit(st["title"], PJS, 11.5 * k, tw, 800), INK, "rm")
+                    p.text((x1 - pad, ny + 8 * k), side, p.fit(side, PJS, 10.5 * k, tw, 700), MUTED, "rm")
+            else:
+                p.text((nx, ny + 2 * k), f"of {st['count_of']}", font(PJS, 16 * k, 800), INK, "lm")
+                if tw > 50 * k:
+                    p.text((x1 - pad, ny + 2 * k), side, p.fit(side, PJS, 11 * k, tw, 700), MUTED, "rm")
+            if seg and ch >= 64 * k:
+                sw = (cw - 2 * pad - (len(seg) - 1) * 4 * k) / len(seg)
+                for i, state in enumerate(seg):
+                    col = {"done": INK, "now": BLUE}.get(state, (217, 221, 229, 255))
+                    p.rrect((x0 + pad + i * (sw + 4 * k), y1 - 14 * k, x0 + pad + i * (sw + 4 * k) + sw, y1 - 8 * k), 3 * k, fill=col)
+        else:
+            cx = (x0 + x1) / 2
+            p.text((cx, y0 + 18 * k), st["count_label"], font(PJS, 9.5 * k, 800), MUTED, "mm", 0.9 * k)
+            p.text((cx, y0 + 52 * k), num, font(PJS, min(50 * k, cw * 0.5), 800), INK, "mm")
+            p.text((cx, y0 + 86 * k), f"of {st['count_of']}", font(PJS, 16 * k, 800), MUTED, "mm")
+            if seg and ch >= 118 * k:
+                sw = (cw - 2 * pad - (len(seg) - 1) * 3 * k) / len(seg)
+                for i, state in enumerate(seg):
+                    col = {"done": INK, "now": BLUE}.get(state, (217, 221, 229, 255))
+                    p.rrect((x0 + pad + i * (sw + 3 * k), y0 + 104 * k, x0 + pad + i * (sw + 3 * k) + sw, y0 + 110 * k), 3 * k, fill=col)
 
-    for name, kind in (("prev", "left"), ("next", "right")):
-        r = g[name]
-        p.rrect(r, 14 * k, fill=(238, 240, 244, 255))
-        _icon(p, kind, (r[0] + r[2]) / 2, (r[1] + r[3]) / 2, 22 * k, INK)
-    mid = (g["prev"][2] + g["next"][0]) / 2
-    my = (g["prev"][1] + g["prev"][3]) / 2
-    n, total = st["design"], max(1, st["designs"])
-    dots = min(total, 7)
-    at = 0 if total <= 1 else round((n - 1) / (total - 1) * (dots - 1))
-    dw = 9 * k
-    x = mid - (dots - 1) * dw / 2
-    for i in range(dots):
-        on = i == at
-        p.circle(x + i * dw, my - 8 * k, (3.6 if on else 2.4) * k, fill=BLUE if on else (201, 206, 216, 255))
-    p.text((mid, my + 9 * k), st["switch_text"], p.fit(st["switch_text"], PJS, 11 * k, g["next"][0] - g["prev"][2] - 12 * k, 700), MUTED, "mm")
+    # --- B: what to do next, and the printer (tap it for printing from a phone)
+    if card_b:
+        x0, y0, x1, y1 = card_b
+        cw, ch = x1 - x0, y1 - y0
+        p.rrect(card_b, 16 * k, fill=INK)
+        pad = 12 * k
+        dot = {"ready": (60, 200, 120, 255), "printing": (255, 180, 40, 255), "alert": (240, 90, 80, 255),
+               "off": (240, 90, 80, 255)}.get(st["printer"])
+        ptxt = st.get("printer_title", "")
+        if ch < 60 * k:
+            pad = 8 * k
+        d = min(40 * k, ch - 2 * pad) if mode_b == "h" else min(40 * k, cw - 2 * pad)
+        cx, cy = (x0 + pad + d / 2, y0 + pad + d / 2) if mode_b == "h" else ((x0 + x1) / 2, y0 + pad + d / 2)
+        if st.get("cta_seconds") is not None:
+            ring = (cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2)
+            p.oval(ring, outline=(74, 84, 100, 255), width=3.5 * k)
+            p.arc(ring, -90, -90 + 360 * max(0.0, min(1.0, st["cta_frac"])), (91, 134, 255, 255), 3.5 * k)
+            p.text((cx, cy), str(st["cta_seconds"]), font(PJS, d * 0.4, 800), WHITE, "mm")
+        else:
+            p.circle(cx, cy, d / 2, fill=(28, 50, 128, 255))
+            p.circle(cx, cy, d / 2 - 4 * k, fill=BLUE)
+        if mode_b == "h":
+            tx = x0 + pad + d + 10 * k
+            tw = x1 - pad - tx
+            lines = st["cta"]
+            f = None
+            for size in (14, 13, 12, 11, 10, 9):
+                f = font(PJS, size * k, 800)
+                if all(p.text_w(line, f) <= tw for line in lines) and size * k * 1.2 * len(lines) <= ch - 10 * k:
+                    break
+            lh = f.size / SS * 1.2
+            has_p = dot is not None and ch >= 70 * k
+            top = y0 + (pad if has_p else (ch - lh * len(lines)) / 2)
+            for i, line in enumerate(lines):
+                p.text((tx, top + lh * (i + 0.5)), line, f, WHITE, "lm")
+            if has_p:
+                py = y1 - pad - 4 * k
+                p.circle(tx + 4 * k, py, 4 * k, fill=dot)
+                more = "tap for phone printing" if st.get("phone") else ""
+                label = f"{ptxt} · {more}" if more and p.text_w(f"{ptxt} · {more}", font(PJS, 10 * k, 700)) <= tw - 14 * k else ptxt
+                p.text((tx + 14 * k, py), label, p.fit(label, PJS, 10 * k, tw - 14 * k, 700), (201, 206, 216, 255), "lm")
+            elif dot is not None:
+                p.circle(x1 - pad, y0 + pad, 4 * k, fill=dot)
+        else:
+            lines = st.get("cta_narrow") or st["cta"]
+            f = None
+            for size in (13, 12, 11, 10, 9):
+                f = font(PJS, size * k, 800)
+                if all(p.text_w(line, f) <= cw - 2 * pad for line in lines):
+                    break
+            lh = f.size / SS * 1.2
+            ty = y0 + pad + d + 10 * k
+            for i, line in enumerate(lines):
+                p.text(((x0 + x1) / 2, ty + lh * (i + 0.5)), line, f, WHITE, "mm")
+            if dot is not None and ty + lh * len(lines) + 22 * k <= y1:
+                p.circle(x0 + pad + 4 * k, y1 - pad - 4 * k, 4 * k, fill=dot)
+                short = {"ready": "Printer ready", "printing": "Printing", "alert": "Check printer", "off": "Printer off"}[st["printer"]]
+                p.text((x0 + pad + 13 * k, y1 - pad - 4 * k), short, p.fit(short, PJS, 10 * k, cw - 2 * pad - 13 * k, 700), (201, 206, 216, 255), "lm")
 
-    # --- photo counter
-    c = g["photo_card"]
-    p.rrect(c, 20 * k, fill=WHITE)
-    x0, y0 = c[0] + 14 * k, c[1] + 14 * k
-    p.text((x0, y0 + 6 * k), st["count_label"], font(PJS, 10.5 * k, 800), MUTED, "lm", spacing=0.9 * k)
-    side = st.get("count_side", "")
-    if side:
-        p.text((c[2] - 14 * k, y0 + 6 * k), side, p.fit(side, PJS, 10.5 * k, 74 * k, 700), MUTED, "rm")
-    big = font(PJS, 54 * k, 800)
-    num = str(st["count"])
-    p.text((x0 - 2 * k, y0 + 50 * k), num, big, INK, "lm")
-    p.text((x0 + p.text_w(num, big) + 5 * k, y0 + 61 * k), f"of {st['count_of']}", font(PJS, 18 * k, 700), MUTED, "lm")
-    seg = st.get("segments") or []
-    if seg:
-        sw = (c[2] - c[0] - 28 * k - (len(seg) - 1) * 5 * k) / len(seg)
-        for i, state in enumerate(seg):
-            col = {"done": INK, "now": BLUE}.get(state, (217, 221, 229, 255))
-            sx = x0 + i * (sw + 5 * k)
-            p.rrect((sx, c[3] - 22 * k, sx + sw, c[3] - 14 * k), 4 * k, fill=col)
-
-    # --- printer and phone
-    if st["printer"] is not None:
-        tile = {"ready": ((227, 245, 234, 255), (11, 122, 64, 255)),
-                "printing": ((255, 241, 214, 255), (138, 82, 0, 255)),
-                "alert": ((255, 233, 228, 255), (181, 50, 31, 255)),
-                "off": ((232, 234, 239, 255), (75, 85, 101, 255))}[st["printer"]]
-        cards = [("printer", "printer", st["printer_title"], st["printer_sub"], tile)]
-        if st.get("phone"):
-            cards.append(("phone", "phone", "Print from phone", "Show me how",
-                          ((231, 237, 255, 255), (27, 63, 196, 255))))
-        for name, icon, title, sub, (tbg, tfg) in cards:
-            r = g[name]
-            p.rrect(r, 18 * k, fill=WHITE)
-            cy = (r[1] + r[3]) / 2
-            p.rrect((r[0] + 12 * k, cy - 18 * k, r[0] + 48 * k, cy + 18 * k), 11 * k, fill=tbg)
-            _icon(p, icon, r[0] + 30 * k, cy, 21 * k, tfg, tbg)
-            tw = r[2] - r[0] - 68 * k
-            p.text((r[0] + 58 * k, cy - 8 * k), title, p.fit(title, PJS, 13 * k, tw, 800), INK, "lm")
-            p.text((r[0] + 58 * k, cy + 9 * k), sub, p.fit(sub, PJS, 11 * k, tw, 600), MUTED, "lm")
-        cta_top = g["phone"][3] + 10 * k if st.get("phone") else g["printer"][3] + 10 * k
-    else:
-        cta_top = g["photo_card"][3] + 10 * k
-
-    # --- what to do next
-    c = (g["cta"][0], cta_top, g["cta"][2], g["cta"][3])
-    p.rrect(c, 20 * k, fill=INK)
-    x0 = c[0] + 14 * k
-    cy = c[1] + 37 * k
-    if st.get("cta_seconds") is not None:
-        ring = (x0, cy - 23 * k, x0 + 46 * k, cy + 23 * k)
-        p.oval(ring, outline=(74, 84, 100, 255), width=4 * k)
-        frac = max(0.0, min(1.0, st["cta_frac"]))
-        p.arc(ring, -90, -90 + 360 * frac, BLUE, 4 * k)
-        p.text((x0 + 23 * k, cy), str(st["cta_seconds"]), font(PJS, 17 * k, 800), WHITE, "mm")
-    else:
-        p.circle(x0 + 23 * k, cy, 33 * k, fill=(22, 34, 78, 255))
-        p.circle(x0 + 23 * k, cy, 28 * k, fill=(28, 50, 128, 255))
-        p.circle(x0 + 23 * k, cy, 23 * k, fill=BLUE)
-        _icon(p, "down", c[2] - 26 * k, cy, 26 * k, WHITE)
-    lines = st["cta"]
-    f = None
-    for size in (16, 15, 14, 13, 12, 11):
-        f = font(PJS, size * k, 800)
-        if all(p.text_w(line, f) <= c[2] - c[0] - 28 * k for line in lines):
-            break
-    lh = f.size / SS * 1.22
-    y = c[3] - 14 * k - lh * len(lines) + lh / 2
-    for line in lines:
-        p.text((x0, y), line, f, WHITE, "lm")
-        y += lh
-
-    # --- the strip shows through here, lifted off the panel by a shadow
-    p.hole(g["stage"], 16 * k)
-    p.shadows([(r, 2 * k, 9 * k, 7 * k, 0.26) for r in st.get("strip_rects", [])])
-    for r in st.get("strip_rects", []):
+    # --- the strip itself shows through
+    for r in rects:
         p.hole(r, 0)
     return p.done(), g
 
@@ -600,31 +595,32 @@ def _glass(p, r):
 
 
 def _gauge(p, r, k, state):
-    """A needle meter for the printer: red zone = off, middle = busy, right = ready."""
+    """A needle meter for the printer, any size: red zone = off, middle = busy, right = ready."""
     x0, y0, x1, y1 = r
-    p.shadows([(r, 6 * k, 4 * k, 3 * k, 0.55)])
-    _metal(p, r, [(0, (244, 244, 242)), (0.55, (138, 140, 141)), (1, (217, 218, 216))], 6 * k)
-    face = (x0 + 3.5 * k, y0 + 3.5 * k, x1 - 3.5 * k, y1 - 3.5 * k)
-    p.rrect(face, 4 * k, fill=(238, 232, 216, 255))
-    cx, cy = (x0 + x1) / 2, y1 - 24 * k
-    R = min((x1 - x0) / 2 - 22 * k, y1 - y0 - 44 * k)
+    gw, gh = x1 - x0, y1 - y0
+    u = min(gw / 144.0, gh / 86.0) / k  # how big next to its full size
+    p.shadows([(r, 5 * k, 4 * k, 3 * k, 0.55)])
+    _metal(p, r, [(0, (244, 244, 242)), (0.55, (138, 140, 141)), (1, (217, 218, 216))], 5 * k)
+    face = (x0 + 3 * k, y0 + 3 * k, x1 - 3 * k, y1 - 3 * k)
+    p.rrect(face, 3.5 * k, fill=(238, 232, 216, 255))
+    cx, cy = (x0 + x1) / 2, y1 - gh * 0.27
+    R = min(gw / 2 - 22 * k * u, gh * 0.5)
     box = (cx - R, cy - R, cx + R, cy + R)
-    p.arc(box, 205, 335, ENGRAVE, 1.4 * k)
-    p.arc((cx - R + 3 * k, cy - R + 3 * k, cx + R - 3 * k, cy + R - 3 * k), 205, 245, RED, 5 * k)
+    p.arc(box, 205, 335, ENGRAVE, 1.3 * k)
+    p.arc((cx - R + 3 * k * u, cy - R + 3 * k * u, cx + R - 3 * k * u, cy + R - 3 * k * u), 205, 245, RED, 4.5 * k * u)
     for i in range(14):
         a = math.radians(205 + i * 10)
         long = i % 3 == 1
-        r0, r1 = R + 2 * k, R + (9 if long else 5.5) * k
-        p.line([(cx + r0 * math.cos(a), cy + r0 * math.sin(a)), (cx + r1 * math.cos(a), cy + r1 * math.sin(a))], ENGRAVE, (1.5 if long else 1.0) * k)
-    ang = {"off": 218, "alert": 228, "printing": 270, "ready": 318}.get(state, 218)
-    a = math.radians(ang)
-    p.cap_line([(cx - 7 * k * math.cos(a), cy - 7 * k * math.sin(a)), (cx + (R + 5 * k) * math.cos(a), cy + (R + 5 * k) * math.sin(a))], RED, 2.2 * k)
-    p.circle(cx, cy, 6 * k, fill=ENGRAVE)
-    p.circle(cx - 1.5 * k, cy - 1.5 * k, 2 * k, fill=(120, 122, 123, 255))
-    f = font(BC_B, 9 * k)
-    p.text((x0 + 10 * k, y0 + 12 * k), "OFF", f, (176, 26, 32, 255), "lm", 1.0 * k)
-    p.text((x1 - 10 * k, y0 + 12 * k), "READY", f, ENGRAVE, "rm", 1.0 * k)
-    p.text((cx, y1 - 8.5 * k), "PRINTER", font(BC_B, 8.5 * k), ENGRAVE, "mm", 2.4 * k)
+        r0, r1 = R + 2 * k * u, R + (8 if long else 5) * k * u
+        p.line([(cx + r0 * math.cos(a), cy + r0 * math.sin(a)), (cx + r1 * math.cos(a), cy + r1 * math.sin(a))], ENGRAVE, (1.4 if long else 0.9) * k)
+    a = math.radians({"off": 218, "alert": 228, "printing": 270, "ready": 318}.get(state, 218))
+    p.cap_line([(cx - 6 * k * u * math.cos(a), cy - 6 * k * u * math.sin(a)), (cx + (R + 4 * k * u) * math.cos(a), cy + (R + 4 * k * u) * math.sin(a))], RED, 2.0 * k)
+    p.circle(cx, cy, 5 * k * u, fill=ENGRAVE)
+    p.circle(cx - 1.2 * k * u, cy - 1.2 * k * u, 1.6 * k * u, fill=(120, 122, 123, 255))
+    f = font(BC_B, max(7.5 * k, 9 * k * u))
+    p.text((x0 + 8 * k, y0 + 3 * k + 8 * k * u), "OFF", f, (176, 26, 32, 255), "lm", 0.8 * k)
+    p.text((x1 - 8 * k, y0 + 3 * k + 8 * k * u), "READY", f, ENGRAVE, "rm", 0.8 * k)
+    p.text((cx, y1 - 3 * k - 6 * k * u), "PRINTER", font(BC_B, max(7 * k, 8.5 * k * u)), ENGRAVE, "mm", 2.0 * k * u)
     _glass(p, face)
 
 
@@ -647,95 +643,49 @@ def _tape(p, r, s, k, col=RED, tilt=-1.0):
     p.paste(im, (x0, y0 - 2 * k))
 
 
+def _date_wheels(p, r, k, parts):
+    p.shadows([(r, 4 * k, 3 * k, 2.5 * k, 0.6)])
+    _metal(p, r, [(0, (242, 242, 240)), (1, (142, 144, 145))], 4 * k)
+    cw = (r[2] - r[0] - 8 * k - 6 * k) / 3
+    for i, part in enumerate(parts):
+        wx = r[0] + 4 * k + i * (cw + 3 * k)
+        win = (wx, r[1] + 4 * k, wx + cw, r[3] - 4 * k)
+        p.rrect(win, 2 * k, fill=(14, 14, 14, 255))
+        p.text(((win[0] + win[2]) / 2, (win[1] + win[3]) / 2), part, font(BC_S, min(19 * k, (win[3] - win[1]) * 0.7)), (244, 242, 234, 255), "mm")
+        p.rect((win[0], win[1], win[2], win[1] + 2.5 * k), fill=(0, 0, 0, 150))
+        p.rect((win[0], win[3] - 2.5 * k, win[2], win[3]), fill=(0, 0, 0, 120))
+
+
+def _counter(p, cx, cy, rad, k, cur, of):
+    """The exposure counter: a round window with the next photo's number under a red mark."""
+    gr = _window(p, cx, cy, rad, k)
+    cream, dim = (244, 242, 234, 255), (140, 139, 134, 255)
+    p.text((cx, cy + 1 * k), str(cur), font(BC_B, rad * 1.06), cream, "mm")
+    if cur - 1 >= 1:
+        p.text((cx - rad * 0.58, cy + 2 * k), str(cur - 1), font(BC_S, rad * 0.5), dim, "mm")
+    if cur + 1 <= of:
+        p.text((cx + rad * 0.58, cy + 2 * k), str(cur + 1), font(BC_S, rad * 0.5), dim, "mm")
+    p.poly([(cx - 5 * k, cy - gr), (cx + 5 * k, cy - gr), (cx, cy - gr + 8 * k)], fill=(224, 42, 49, 255))
+    p.arc((cx - gr + 3 * k, cy - gr + 3 * k, cx + gr - 3 * k, cy + gr - 3 * k), 200, 250, (255, 255, 255, 60), 2 * k)
+
+
 def _classic(w, h, st):
     g = geometry("classic", w, h)
     k = g["k"]
     p = Pen(w, h)
     p.img.paste(_leather(w * SS, h * SS, k), (0, 0))
     p.d = ImageDraw.Draw(p.img, "RGBA")
+    stage = g["stage"]
+    rects = st.get("strip_rects", [])
+    area_a, area_b = free_areas(stage, rects, 9 * k)
+    card_a, mode_a = _fit_card(area_a, 250 * k, 84 * k, 150 * k, 40 * k, 3 * k, "tr", 150 * k)
+    card_b, mode_b = _fit_card(area_b, 250 * k, 88 * k, 150 * k, 40 * k, 3 * k, "bl", 190 * k)
+    g["status"] = card_b
 
-    # ---------------- top plate
-    plate = g["plate"]
-    p.shadows([((0, plate[3] - 6 * k, w, plate[3]), 0, 4 * k, 4 * k, 0.7)])
-    _metal(p, plate, CHROME)
-    p.rect((0, 0, w, 1.2 * k), fill=(255, 255, 255, 255))
-    p.rect((0, plate[3] - 2 * k, w, plate[3]), fill=(74, 75, 76, 255))
-    p.rect((0, plate[3] - 3.2 * k, w, plate[3] - 2 * k), fill=(236, 236, 234, 255))
-    for sx, ang in ((7 * k, 35), (w - 7 * k, -20)):
-        _screw(p, sx, 9 * k, 3.4 * k, ang)
-        _screw(p, sx, plate[3] - 11 * k, 3.4 * k, ang + 70)
-    pc = plate[3] / 2
-
-    # rewind knob with its fold-out crank
-    kx = 16 * k + 31 * k
-    ir = _knob(p, kx, pc, 29 * k, k)
-    a = math.radians(-28)
-    p.cap_line([(kx - ir * 0.78 * math.cos(a), pc - ir * 0.78 * math.sin(a)), (kx + ir * 0.78 * math.cos(a), pc + ir * 0.78 * math.sin(a))], (95, 97, 98, 255), 8.5 * k)
-    p.cap_line([(kx - ir * 0.78 * math.cos(a), pc - ir * 0.78 * math.sin(a) - 1 * k), (kx + ir * 0.78 * math.cos(a), pc + ir * 0.78 * math.sin(a) - 1 * k)], (228, 229, 227, 255), 6 * k)
-    p.circle(kx + ir * 0.78 * math.cos(a), pc + ir * 0.78 * math.sin(a), 4.6 * k, fill=(70, 71, 72, 255))
-    p.circle(kx + ir * 0.78 * math.cos(a) - 0.8 * k, pc + ir * 0.78 * math.sin(a) - 0.8 * k, 3.2 * k, fill=(214, 215, 213, 255))
-
-    # the name, engraved, and the red dot
-    bx = kx + 44 * k
-    script = font("Yellowtail.ttf", 35 * k)
-    p.text((bx, pc - 7 * k + 1 * k), "Snapbox", script, (255, 255, 255, 200), "lm")
-    p.text((bx, pc - 7 * k), "Snapbox", script, ENGRAVE, "lm")
-    bw = p.text_w("Snapbox", script)
-    _engraved(p, (bx + 2 * k, pc + 20 * k), "AUTOMATIC · 35", font(BC_S, 11 * k), "lm", 3.3 * k, k=k)
-    p.shadows([((bx + bw + 6 * k, pc - 16 * k, bx + bw + 24 * k, pc + 2 * k), 9 * k, 1.5 * k, 1.2 * k, 0.5)])
-    p.paste(_disc(p.s(18 * k), (255, 140, 140), (216, 35, 42), (130, 16, 22)), (bx + bw + 6 * k, pc - 16 * k))
-
-    # accessory shoe
-    right_block = w - 16 * k - 58 * k - 16 * k - 64 * k
-    sx0 = bx + bw + 40 * k
-    if right_block - sx0 > 70 * k:
-        scx = (sx0 + right_block) / 2
-        sw = min(104 * k, right_block - sx0 - 16 * k)
-        shoe = (scx - sw / 2, pc - 13 * k, scx + sw / 2, pc + 13 * k)
-        p.rrect((shoe[0] - 1 * k, shoe[1] - 1 * k, shoe[2] + 1 * k, shoe[3] + 1 * k), 2.5 * k, fill=(96, 98, 99, 255))
-        _metal(p, shoe, [(0, (150, 152, 153)), (0.45, (232, 232, 230)), (1, (160, 162, 162))], 2 * k)
-        for yy in (shoe[1] + 3 * k, shoe[3] - 7 * k):
-            p.rrect((shoe[0] + 5 * k, yy, shoe[2] - 5 * k, yy + 4 * k), 1 * k, fill=(74, 76, 78, 255))
-            p.rect((shoe[0] + 5 * k, yy + 3.2 * k, shoe[2] - 5 * k, yy + 4 * k), fill=(240, 240, 238, 255))
-        p.circle(scx, pc, 3 * k, fill=(60, 61, 62, 255))
-        p.circle(scx - 0.6 * k, pc - 0.6 * k, 1.8 * k, fill=(200, 201, 200, 255))
-
-    # exposure counter: which photo is next
-    ecx = w - 16 * k - 58 * k - 22 * k - 31 * k
-    gr = _window(p, ecx, pc - 6 * k, 29 * k, k)
-    ey = pc - 6 * k
-    cur = st["count"]
-    numf, sidef = font(BC_B, 31 * k), font(BC_S, 15 * k)
-    cream = (244, 242, 234, 255)
-    p.text((ecx, ey + 1 * k), str(cur), numf, cream, "mm")
-    if cur - 1 >= 1:
-        p.text((ecx - 17 * k, ey + 2 * k), str(cur - 1), sidef, (140, 139, 134, 255), "mm")
-    if cur + 1 <= st["count_of"]:
-        p.text((ecx + 17 * k, ey + 2 * k), str(cur + 1), sidef, (140, 139, 134, 255), "mm")
-    p.poly([(ecx - 5 * k, ey - gr), (ecx + 5 * k, ey - gr), (ecx, ey - gr + 8 * k)], fill=(224, 42, 49, 255))
-    p.arc((ecx - gr + 3 * k, ey - gr + 3 * k, ecx + gr - 3 * k, ey + gr - 3 * k), 200, 250, (255, 255, 255, 60), 2 * k)
-    _engraved(p, (ecx, plate[3] - 11 * k), f"{st['count_label']} · OF {st['count_of']}", font(BC_B, 9.5 * k), "mm", 1.9 * k, k=k)
-
-    # format dial
-    fcx = w - 16 * k - 31 * k
-    ir = _knob(p, fcx, pc - 6 * k, 29 * k, k)
-    lay = st["layout"]
-    top, bottom = ("STRIP", "SHEET") if lay == "strip" else ("SHEET", "STRIP")
-    p.text((fcx, pc - 10 * k), top, font(BC_B, 12.5 * k), (190, 26, 33, 255), "mm", 0.9 * k)
-    p.text((fcx, pc + 2 * k), bottom, font(BC_S, 9.5 * k), (70, 71, 72, 255), "mm", 0.7 * k)
-    p.rrect((fcx - 29 * k - 9 * k, pc - 8.5 * k, fcx - 29 * k - 1 * k, pc - 3.5 * k), 1 * k, fill=RED)
-    _engraved(p, (fcx, plate[3] - 11 * k), "FORMAT", font(BC_B, 9.5 * k), "mm", 2.2 * k, k=k)
-
-    # ---------------- viewfinder
-    vf = g["viewfinder"]
-    p.shadows([(vf, 8 * k, 6 * k, 4 * k, 0.75)])
-    _metal(p, vf, [(0, (246, 246, 244)), (0.5, (150, 152, 153)), (1, (220, 221, 219))], 8 * k)
-    p.rrect((vf[0] + 1 * k, vf[1] + 1 * k, vf[2] - 1 * k, vf[3] - 1 * k), 7.5 * k, outline=(255, 255, 255, 150), width=1 * k)
-    inner = (vf[0] + 4 * k, vf[1] + 4 * k, vf[2] - 4 * k, vf[3] - 4 * k)
-    p.rrect(inner, 5 * k, fill=(40, 41, 42, 255))
-    p.rrect(g["stage"], 4 * k, fill=STAGE_BG["classic"] + (255,))
-
-    # ---------------- the four keys
+    # ---------------- the key column: a chrome edge, then four keys on the leather
+    col = stage[0]
+    p.rect((col - 3 * k, 0, col - 1.6 * k, h), fill=(8, 8, 8, 255))
+    p.rect((col - 1.6 * k, 0, col - 0.6 * k, h), fill=(150, 152, 153, 255))
     kinds = st["kinds"]
     names = {"menu": "MENU", "gallery": "ROLL", "fx": "EFFECTS", "layout": "FORMAT", "camera": "CAMERA"}
     for i, kind in enumerate(kinds):
@@ -755,55 +705,98 @@ def _classic(w, h, st):
             p.circle(cx, cy, rr, outline=(0, 0, 0, al), width=0.8 * k)
             p.arc((cx - rr - 0.8 * k, cy - rr - 0.8 * k, cx + rr + 0.8 * k, cy + rr + 0.8 * k), 20, 110, (255, 255, 255, 150), 0.8 * k)
         if kind == "fx":
-            _jewel(p, r[2] + 2 * k, r[1] + 1 * k, 5.5 * k, lit=st["effects_on"])
-        p.text((cx, r[3] + 13 * k), names[kind], font(BC_S, 11.5 * k), (228, 228, 225, 255), "mm", 2.6 * k)
+            _jewel(p, r[2] + 1 * k, r[1] + 1 * k, 5.5 * k, lit=st["effects_on"])
+        p.text((cx, r[3] + 17 * k), names[kind], font(BC_S, 12.5 * k), (228, 228, 225, 255), "mm", 2.2 * k)
 
-    # ---------------- printer gauge
-    if st["printer"] is not None:
-        _gauge(p, g["printer"], k, st["printer"])
+    # ---------------- each piece of the strip in its own chrome-rimmed window
+    for r in rects:
+        b = (r[0] - 5 * k, r[1] - 5 * k, r[2] + 5 * k, r[3] + 5 * k)
+        p.shadows([(b, 5 * k, 5 * k, 4 * k, 0.75)])
+        _metal(p, b, [(0, (246, 246, 244)), (0.5, (150, 152, 153)), (1, (220, 221, 219))], 5 * k)
+        p.rrect((b[0] + 0.8 * k, b[1] + 0.8 * k, b[2] - 0.8 * k, b[3] - 0.8 * k), 4.5 * k, outline=(255, 255, 255, 150), width=0.8 * k)
+        p.rect((r[0] - 1.6 * k, r[1] - 1.6 * k, r[2] + 1.6 * k, r[3] + 1.6 * k), fill=(34, 35, 36, 255))
 
-    # ---------------- along the bottom: label tape, the design's name plate, the date wheels
-    _tape(p, g["tape"], st["tape"], k)
-    name = g["plate_name"]
-    p.shadows([(name, 4 * k, 3 * k, 2.5 * k, 0.6)])
-    _metal(p, name, [(0, (242, 242, 240)), (0.6, (185, 187, 187)), (1, (215, 216, 214))], 4 * k)
-    p.rrect(name, 4 * k, outline=(110, 112, 113, 255), width=0.8 * k)
-    ny = (name[1] + name[3]) / 2
-    for bx_, sgn in ((name[0] + 20 * k, -1), (name[2] - 20 * k, 1)):
-        p.poly([(bx_ + sgn * 6 * k, ny + 1 * k), (bx_ - sgn * 5 * k, ny - 6 * k), (bx_ - sgn * 5 * k, ny + 8 * k)], fill=(255, 255, 255, 190))
-        p.poly([(bx_ + sgn * 6 * k, ny), (bx_ - sgn * 5 * k, ny - 7 * k), (bx_ - sgn * 5 * k, ny + 7 * k)], fill=ENGRAVE)
-    for vx in (name[0] + 40 * k, name[2] - 40 * k):
-        p.line([(vx, name[1] + 6 * k), (vx, name[3] - 6 * k)], (120, 122, 123, 255), 0.8 * k)
-        p.line([(vx + 0.9 * k, name[1] + 6 * k), (vx + 0.9 * k, name[3] - 6 * k)], (250, 250, 248, 255), 0.8 * k)
-    label = st["plate_text"]
-    _engraved(p, ((name[0] + name[2]) / 2, ny), label, p.fit(label, BC_B, 14.5 * k, name[2] - name[0] - 96 * k, spacing=2.4 * k), "mm", 2.4 * k, k=k)
+    # ---------------- A: the name plate with the exposure counter
+    if card_a:
+        x0, y0, x1, y1 = card_a
+        cw, ch = x1 - x0, y1 - y0
+        p.shadows([(card_a, 5 * k, 4 * k, 3 * k, 0.6)])
+        _metal(p, card_a, CHROME, 5 * k)
+        p.rrect(card_a, 5 * k, outline=(96, 98, 99, 255), width=0.8 * k)
+        p.rect((x0 + 5 * k, y0 + 0.8 * k, x1 - 5 * k, y0 + 1.8 * k), fill=(255, 255, 255, 230))
+        fmt = "STRIP" if st["layout"] == "strip" else "SHEET"
+        if mode_a == "h":
+            rad = min(ch / 2 - (7 if ch >= 64 * k else 4) * k, 30 * k)
+            ccx, ccy = x1 - 10 * k - rad, y0 + ch / 2
+            _counter(p, ccx, ccy, rad, k, st["count"], st["count_of"])
+            for sx_, sy_, ang in ((x0 + 7 * k, y0 + 7 * k, 30), (x0 + 7 * k, y1 - 7 * k, 110)):
+                _screw(p, sx_, sy_, 2.8 * k, ang)
+            tw = ccx - rad - 10 * k - (x0 + 16 * k)
+            size = min(31 * k, ch * 0.42)
+            script = font("Yellowtail.ttf", size)
+            while p.text_w("Snapbox", script) > tw - 20 * k and size > 12 * k:
+                size -= 1 * k
+                script = font("Yellowtail.ttf", size)
+            ty = y0 + ch * (0.40 if ch >= 64 * k else 0.5)
+            p.text((x0 + 16 * k, ty + 1 * k), "Snapbox", script, (255, 255, 255, 200), "lm")
+            p.text((x0 + 16 * k, ty), "Snapbox", script, ENGRAVE, "lm")
+            bw = p.text_w("Snapbox", script)
+            dr = size * 0.24
+            p.paste(_disc(p.s(dr * 2), (255, 140, 140), (216, 35, 42), (130, 16, 22)), (x0 + 16 * k + bw + 5 * k, ty - dr - 4 * k))
+            if ch >= 64 * k:
+                sub = f"{st['count_label']} {st['count']} OF {st['count_of']} · {fmt}"
+                _engraved(p, (x0 + 17 * k, y0 + ch * 0.76), sub, p.fit(sub, BC_B, 10.5 * k, tw, spacing=1.6 * k), "lm", 1.6 * k, k=k)
+        else:
+            cx = (x0 + x1) / 2
+            rad = min(cw / 2 - 8 * k, 32 * k)
+            _counter(p, cx, y0 + 12 * k + rad, rad, k, st["count"], st["count_of"])
+            sub = f"OF {st['count_of']} · {fmt}"
+            _engraved(p, (cx, y0 + 24 * k + 2 * rad), sub, p.fit(sub, BC_B, 10.5 * k, cw - 12 * k, spacing=1.4 * k), "mm", 1.4 * k, k=k)
+            size = 24 * k
+            script = font("Yellowtail.ttf", size)
+            while p.text_w("Snapbox", script) > cw - 14 * k and size > 11 * k:
+                size -= 1 * k
+                script = font("Yellowtail.ttf", size)
+            if y0 + 46 * k + 2 * rad + size <= y1:
+                p.text((cx, y0 + 46 * k + 2 * rad + 1 * k), "Snapbox", script, (255, 255, 255, 200), "mm")
+                p.text((cx, y0 + 46 * k + 2 * rad), "Snapbox", script, ENGRAVE, "mm")
 
-    dt = g["date"]
-    p.shadows([(dt, 4 * k, 3 * k, 2.5 * k, 0.6)])
-    _metal(p, dt, [(0, (242, 242, 240)), (1, (142, 144, 145))], 4 * k)
-    cw = (dt[2] - dt[0] - 8 * k - 6 * k) / 3
-    for i, part in enumerate(st["date"]):
-        wx = dt[0] + 4 * k + i * (cw + 3 * k)
-        win = (wx, dt[1] + 4 * k, wx + cw, dt[3] - 4 * k)
-        p.rrect(win, 2 * k, fill=(14, 14, 14, 255))
-        p.text(((win[0] + win[2]) / 2, (win[1] + win[3]) / 2), part, font(BC_S, 19 * k), (244, 242, 234, 255), "mm")
-        p.rect((win[0], win[1], win[2], win[1] + 2.5 * k), fill=(0, 0, 0, 150))
-        p.rect((win[0], win[3] - 2.5 * k, win[2], win[3]), fill=(0, 0, 0, 120))
+    # ---------------- B: label tape, the printer's needle gauge, the date wheels
+    if card_b:
+        x0, y0, x1, y1 = card_b
+        cw, ch = x1 - x0, y1 - y0
+        has_gauge = st["printer"] is not None
+        if mode_b == "h":
+            if ch >= 78 * k:
+                _tape(p, (x0, y0 + 2 * k, x1, y0 + 28 * k), st["tape"], k)
+                row = (x0, y0 + 36 * k, x1, y1)
+                gw = min(104 * k, cw * 0.48)
+                if has_gauge:
+                    _gauge(p, (row[0], row[1], row[0] + gw, row[3]), k, st["printer"])
+                dw = min(100 * k, cw - gw - 10 * k)
+                dh = min(38 * k, row[3] - row[1])
+                if dw >= 70 * k:
+                    _date_wheels(p, (x1 - dw, row[3] - dh, x1, row[3]), k, st["date"])
+            else:
+                gw = min(ch * 1.6, cw * 0.4) if has_gauge else 0
+                if has_gauge:
+                    _gauge(p, (x0, y0, x0 + gw, y1), k, st["printer"])
+                _tape(p, (x0 + gw + 8 * k, y0 + ch / 2 - 13 * k, x1, y0 + ch / 2 + 13 * k), st["tape"], k)
+        else:
+            y = y1
+            if has_gauge:
+                gh = min(cw * 0.62, 80 * k)
+                _gauge(p, (x0, y - gh, x1, y), k, st["printer"])
+                y -= gh + 10 * k
+            if y - 36 * k >= y0:
+                _date_wheels(p, (x0, y - 36 * k, x1, y), k, st["date"])
+                y -= 46 * k
+            if y - 28 * k >= y0:
+                _tape(p, (x0, y - 28 * k, x1, y - 2 * k), st.get("tape_narrow", "SHUTTER"), k)
 
-    # ---------------- the strip shows through the viewfinder, with a soft dark edge like glass
-    stage = g["stage"]
-    p.hole(stage, 4 * k)
-    x0, y0, x1, y1 = p.b(stage)
-    sw_, sh_ = x1 - x0, y1 - y0
-    edge = Image.new("L", (sw_, sh_), 150)
-    m = p.s(7 * k)
-    ImageDraw.Draw(edge).rounded_rectangle((m, m, sw_ - m, sh_ - m), radius=p.s(4 * k), fill=0)
-    edge = edge.filter(ImageFilter.GaussianBlur(4 * k * SS))
-    clip = Image.new("L", (sw_, sh_), 0)
-    ImageDraw.Draw(clip).rounded_rectangle((0, 0, sw_ - 1, sh_ - 1), radius=p.s(4 * k), fill=255)
-    patch = Image.new("RGBA", (sw_, sh_), (0, 0, 0, 255))
-    patch.putalpha(Image.composite(edge, Image.new("L", (sw_, sh_), 0), clip))
-    p.img.paste(patch, (x0, y0), patch)
+    # ---------------- the strip shows through its windows
+    for r in rects:
+        p.hole(r, 0)
     return p.done(), g
 
 
@@ -846,7 +839,7 @@ def render_countdown(look, w, h, value, count, count_of, frac=1.0):
             p.rrect((x + i * (sw + gap), 46 * k, x + i * (sw + gap) + sw, 54 * k), 4 * k, fill=col)
         # the number in its ring
         R = 96 * k
-        p.circle(cx, cy - 6 * k, R, fill=(13, 16, 23, 170))
+        p.circle(cx, cy - 6 * k, R, fill=(13, 16, 23, 70))
         ring = (cx - R, cy - 6 * k - R, cx + R, cy - 6 * k + R)
         p.arc(ring, 0, 360, (255, 255, 255, 70), 10 * k)
         p.arc(ring, -90, -90 + 360 * max(0.02, min(1.0, frac)), WHITE, 10 * k)
@@ -866,7 +859,7 @@ def render_countdown(look, w, h, value, count, count_of, frac=1.0):
         # the dark corners of a viewfinder
         q = 8  # built small and stretched: it is only a soft shadow
         vw, vh = max(2, p.img.width // q), max(2, p.img.height // q)
-        vig = Image.new("L", (vw, vh), 175)
+        vig = Image.new("L", (vw, vh), 120)
         ImageDraw.Draw(vig).rounded_rectangle((46 * k * SS / q, 40 * k * SS / q, vw - 46 * k * SS / q, vh - 40 * k * SS / q),
                                               radius=60 * k * SS / q, fill=0)
         vig = vig.filter(ImageFilter.GaussianBlur(34 * k * SS / q)).resize(p.img.size, Image.BILINEAR)
@@ -915,22 +908,34 @@ if __name__ == "__main__":
     import sys
     W, H = 629, 480
     base = dict(kinds=["menu", "gallery", "fx", "layout"], effects_on=True, saved=57, wifi=True,
-                battery=None, title="Design 11", chip="2x6 strip · 4 photos", design=11, designs=37,
-                switch_text="11 of 37 · swipe to change", count_label="PHOTO", count=2, count_of=4,
+                battery=None, title="Frame 16", chip="2x6 strip · 4 photos", design=11, designs=37,
+                switch_text="", count_label="PHOTO", count=2, count_of=4,
                 count_side="2 left", segments=["done", "now", "todo", "todo"], printer="ready",
                 printer_title="Printer ready", printer_sub="Nothing waiting", phone=True,
-                cta=["Press the big button", "for photo 2"], layout="strip", tape="PRESS THE SHUTTER",
-                plate_text="No. 11 · STRIP OF 4", date=("11", "14", "26"), strip_rects=[])
+                cta=["Press the big button", "for photo 2"], cta_narrow=["Press", "the big", "button"],
+                layout="strip", tape="PRESS THE SHUTTER", tape_narrow="SHUTTER",
+                plate_text="", date=("11", "14", "26"))
     tiles = []
     for look in LOOKS:
-        im, g = render_main(look, W, H, base)
-        bg = Image.new("RGBA", (W, H), STAGE_BG[look] + (255,))
-        bg.alpha_composite(im)
-        tiles.append(bg)
-        cd = Image.new("RGBA", (W, H), (90, 60, 60, 255))
-        cd.alpha_composite(render_countdown(look, W, H, 3, 2, 4, 0.6))
-        tiles.append(cd)
-    sheet = Image.new("RGB", (W * 2 + 10, H * 2 + 10), "white")
+        g = geometry(look, W, H)
+        sx0, sy0, sx1, sy1 = g["stage"]
+        pad = g["pad"]
+        cell = (sx1 - sx0) / 2
+        sc = min((cell - 2 * pad) / 1200, (sy1 - sy0 - 2 * pad) / 1800)
+        hw, hh = 1200 * sc, 1800 * sc
+        halves = [(sx0 + (cell - hw) / 2, sy0 + pad, sx0 + (cell - hw) / 2 + hw, sy0 + pad + hh),
+                  (sx0 + cell + (cell - hw) / 2, sy1 - pad - hh, sx0 + cell + (cell - hw) / 2 + hw, sy1 - pad)]
+        sc = min((sx1 - sx0 - 2 * pad) / 1800, (sy1 - sy0 - 2 * pad) / 1200)
+        sheet_r = [((sx0 + sx1) / 2 - 900 * sc, (sy0 + sy1) / 2 - 600 * sc, (sx0 + sx1) / 2 + 900 * sc, (sy0 + sy1) / 2 + 600 * sc)]
+        sc = min((sx1 - sx0 - 2 * pad) / 1200, (sy1 - sy0 - 2 * pad) / 1800)
+        psheet_r = [((sx0 + sx1) / 2 - 600 * sc, (sy0 + sy1) / 2 - 900 * sc, (sx0 + sx1) / 2 + 600 * sc, (sy0 + sy1) / 2 + 900 * sc)]
+        for rects, extra in ((halves, {}), (sheet_r, {"layout": "sheet", "printer": "printing", "printer_title": "Printing"}),
+                             (psheet_r, {"layout": "sheet", "cta_seconds": 12, "cta_frac": 0.6, "tape": "1 KEEP · 2 RETAKE · 12s"})):
+            im, _ = render_main(look, W, H, dict(base, strip_rects=[tuple(round(v) for v in r) for r in rects], **extra))
+            bg = Image.new("RGBA", (W, H), (120, 150, 190, 255))
+            bg.alpha_composite(im)
+            tiles.append(bg)
+    sheet = Image.new("RGB", (W * 3 + 20, H * 2 + 10), "white")
     for i, t in enumerate(tiles):
-        sheet.paste(t.convert("RGB"), ((i % 2) * (W + 10), (i // 2) * (H + 10)))
+        sheet.paste(t.convert("RGB"), ((i % 3) * (W + 10), (i // 3) * (H + 10)))
     sheet.save(sys.argv[1] if len(sys.argv) > 1 else "looks.png")

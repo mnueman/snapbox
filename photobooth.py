@@ -1195,8 +1195,9 @@ def display_layout(slots=None, size=(STRIP_W, STRIP_H)):
     ui_w, ui_h = ui_size()
     # The part of the screen the strip may use: beside the round buttons, or inside the look's frame.
     if look() != "original":
-        rx0, ry0, rx1, ry1 = (round(v) for v in looks.geometry(look(), ui_w, ui_h)["stage"])
-        pad = round(10 * ui_h / 480)
+        geo = looks.geometry(look(), ui_w, ui_h)
+        rx0, ry0, rx1, ry1 = (round(v) for v in geo["stage"])
+        pad = round(geo["pad"])
     else:
         rx0, ry0, rx1, ry1 = ICON_SIZE + 2 * ICON_MARGIN, 0, ui_w, ui_h
         pad = LANDSCAPE_CELL_PAD
@@ -3760,7 +3761,8 @@ def _look_state():
                   design=browse_index + 1, designs=len(browse_strips),
                   count_label="SAVED", count=browse_index + 1, count_of=len(browse_strips),
                   count_side="", segments=[], cta=["1 press older · 2 newer", "3 presses print it"],
-                  tape="1 OLDER · 2 NEWER · 3 PRINT",
+                  cta_narrow=["1 older", "2 newer", "3 print"],
+                  tape="1 OLDER · 2 NEWER · 3 PRINT", tape_narrow="3 = PRINT",
                   plate_text=f"SAVED · {browse_index + 1} OF {len(browse_strips)}")
     else:
         taken = sum(p is not None for p in live_photos)
@@ -3777,10 +3779,13 @@ def _look_state():
         if reviewing:
             left = review_seconds_left()
             st.update(cta=["1 press keeps it", "2 retake · 3 new frame"], cta_seconds=left,
+                      cta_narrow=["1 keep", "2 retake", "3 frame"],
                       cta_frac=left / max(1, settings["review"]),
-                      tape=f"1 KEEP · 2 RETAKE · {left}s")
+                      tape=f"1 KEEP · 2 RETAKE · {left}s", tape_narrow=f"KEEP? {left}s")
         else:
-            st.update(cta=["Press the big button", f"for photo {n}"], tape="PRESS THE SHUTTER")
+            st.update(cta=["Press the big button", f"for photo {n}"],
+                      cta_narrow=["Press", "the big", "button"],
+                      tape="PRESS THE SHUTTER", tape_narrow="SHUTTER")
     if printer_connected is None:
         st["printer"] = None
     elif printer_alert:
@@ -3801,7 +3806,9 @@ def _look_chrome():
     st = _look_state()
     key = (look(), ui_size(), json.dumps(st, sort_keys=True, default=str))
     if _look_cache.get("chrome", (None,))[0] != key:
-        _look_cache["chrome"] = (key, looks.render_main(look(), *ui_size(), st)[0])
+        picture, geo = looks.render_main(look(), *ui_size(), st)
+        _look_cache["chrome"] = (key, picture)
+        _look_cache["status"] = geo.get("status")
     return _look_cache["chrome"][1]
 
 
@@ -5812,13 +5819,10 @@ def handle_tap(point):
                  "fx": open_quick_effects, "layout": toggle_layout}[kind]()
                 return
         if look() != "original":
-            geo = looks.geometry(look(), *ui_size())
-            for name, action in (("prev", lambda: handle_swipe(1)), ("next", lambda: handle_swipe(-1)),
-                                 ("printer", open_phone_help), ("phone", open_phone_help)):
-                x0, y0, x1, y1 = geo.get(name, (0, 0, -1, -1))
-                if x0 <= x <= x1 and y0 <= y <= y1:
-                    action()
-                    return
+            # The status piece under the strip (what to do next, the printer): printing from a phone.
+            x0, y0, x1, y1 = _look_cache.get("status") or (0, 0, -1, -1)
+            if PRINTER_WIFI and x0 <= x <= x1 and y0 <= y <= y1:
+                open_phone_help()
             return
         # The printer in the top right corner: how to print from a phone.
         if PRINTER_WIFI and x >= ui_size()[0] - 110 and y <= 110:
