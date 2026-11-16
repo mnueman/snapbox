@@ -52,6 +52,7 @@
     <div>1. Pick a design</div>
     <div class="chips" id="layouts"></div>
     <div class="chips" id="counts"></div>
+    <div class="chips" id="cats"></div>
     <div id="grid"></div>
   </section>
   <section id="editor">
@@ -72,7 +73,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const NAMES = {strip: "Strips", sheet: "Big: landscape", psheet: "Big: portrait"};
-let designs = [], layout = "strip", count = 4, design = null, slots = [], target = null, busy = false;
+let designs = [], layout = "strip", count = 4, cat = "", design = null, slots = [], target = null, busy = false;
 
 function say(text, after) {
   $("msgText").textContent = text; $("msg").style.display = "block";
@@ -108,8 +109,15 @@ function showPicker() {
   const counts = [...new Set(designs.filter(d => d.kind === layout).map(d => d.slots.length))].sort();
   if (!counts.includes(count)) count = counts[counts.length - 1];
   chips($("counts"), counts.map(c => [c, c + (c === 1 ? " photo" : " photos")]), count, v => { count = v; showPicker(); });
+  // Groups, as on the booth's own DESIGNS screen: its favourites, then one per category.
+  const fits = designs.filter(d => d.kind === layout && d.slots.length === count);
+  const cats = [["", "All"]];
+  if (fits.some(d => d.fav)) cats.push(["*", "\u2605 Favourites"]);
+  for (const c of new Set(fits.map(d => d.cat))) cats.push([c, c.charAt(0) + c.slice(1).toLowerCase()]);
+  if (!cats.some(c => c[0] === cat)) cat = "";
+  chips($("cats"), cats.length > 2 ? cats : [], cat, v => { cat = v; showPicker(); });
   const grid = $("grid"); grid.innerHTML = "";
-  for (const d of designs.filter(d => d.kind === layout && d.slots.length === count)) {
+  for (const d of fits.filter(d => cat === "" || (cat === "*" ? d.fav : d.cat === cat))) {
     const b = document.createElement("button"); b.className = "card";
     const img = new Image(); img.loading = "lazy"; img.alt = d.name;
     img.src = "/design.png?id=" + encodeURIComponent(d.id);

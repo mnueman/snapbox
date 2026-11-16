@@ -3339,8 +3339,9 @@ def _web_designs():
         if not slots:
             continue
         w, h = {"sheet": (SHEET_W, SHEET_H), "psheet": (PSHEET_W, PSHEET_H)}.get(kind, (STRIP_W, STRIP_H))
-        out.append({"id": design_id(path), "name": path.stem, "kind": kind, "w": w, "h": h,
-                    "slots": slots})
+        out.append({"id": design_id(path), "name": design_name(path) or path.stem, "kind": kind,
+                    "w": w, "h": h, "slots": slots, "cat": design_category(path),
+                    "fav": design_id(path) in settings["favourites"]})
     return out
 
 
