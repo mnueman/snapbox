@@ -55,6 +55,10 @@ Raw captures in `captures/` are deleted once their strip is saved to `strips/arc
 On the touchscreen, swipe left/right on the main screen to change the frame design (create mode) or the
 strip shown (browse mode). Tap the strip itself to open DESIGNS (below) and see them all at once.
 
+Tap a photo you've already taken (on the main screen, in its place on the strip) to take just that one
+again: the booth shows it and asks first (KEEP IT / YES, RETAKE). The other photos stay; the next
+press of the button fills that place, then the strip carries on where it was.
+
 The round buttons down the left of the main screen: settings (gear), REVIEW (photos), quick effects (sparkle,
 gold while any effect is on) and the layout (a skinny strip, a wide sheet and a tall sheet; the one in use is
 filled). Tapping the layout button goes PHOTO STRIPS -> BIG SHEET landscape -> BIG SHEET portrait -> back;

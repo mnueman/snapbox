@@ -1210,24 +1210,20 @@ def delete_capture_file(path):
         print(f"Could not delete capture {path}: {e}")
 
 
+def first_empty_slot():
+    """Where the next photo goes: the first place without one (photos fill in order, but a tap on
+    a photo can empty one in the middle to take it again); the capacity when the strip is full."""
+    return next((i for i, photo in enumerate(live_photos) if photo is None), len(live_photos))
+
+
 def resize_live_photos(new_capacity):
     global live_photos, live_capture_paths, current_slot
 
-    new_photos = [None] * new_capacity
-    new_paths = [None] * new_capacity
-    for i in range(min(len(live_photos), new_capacity)):
-        new_photos[i] = live_photos[i]
-        new_paths[i] = live_capture_paths[i]
     for path in live_capture_paths[new_capacity:]:
         delete_capture_file(path)
-    live_photos = new_photos
-    live_capture_paths = new_paths
-    if current_slot > new_capacity:
-        current_slot = new_capacity
-    while current_slot > 0 and (
-        current_slot > new_capacity or live_photos[current_slot - 1] is None
-    ):
-        current_slot -= 1
+    live_photos = (live_photos + [None] * new_capacity)[:new_capacity]
+    live_capture_paths = (live_capture_paths + [None] * new_capacity)[:new_capacity]
+    current_slot = first_empty_slot()
 
 
 def _fitted_slot_image(photo, bleed_w, bleed_h):
@@ -2590,7 +2586,7 @@ def take_next_photo():
     live_capture_paths[current_slot] = capture_path
 
     start_photo_show(img, current_slot)
-    current_slot += 1
+    current_slot = first_empty_slot()  # the next one; after a retake, back to where the strip was
 
     save_preview()
 
@@ -4043,8 +4039,8 @@ def _look_state():
                   switch_text=f"{pos} of {len(group)} · swipe to change",
                   count_label="PHOTO", count=n, count_of=cap,
                   count_side="all taken" if taken >= cap else f"{cap - taken} left",
-                  segments=["done" if i < current_slot else "now" if i == current_slot else "todo"
-                            for i in range(cap)],
+                  segments=["now" if i == current_slot else "done" if live_photos[i] is not None
+                            else "todo" for i in range(cap)],
                   plate_text=f"No. {pos} · {'STRIP' if kind == 'strip' else 'SHEET'} OF {cap}")
         if reviewing:
             left = review_seconds_left()
@@ -6194,6 +6190,85 @@ def render_designs_view(img, area, buttons):
               fill=MENU_OFF if last else MENU_ROW, text_fill=MENU_DIM if last else MENU_TEXT, size=20)
 
 
+# ---- Retake one photo: tap it on the main screen ---------------------------------------------
+retake_slot = None  # the photo being asked about
+
+
+def photo_at(x, y):
+    """Which taken photo is under this point of the main screen (its number from 0), or None."""
+    if mode != "creation" or not frames or _photo_show_img is not None:
+        return None
+    slots = current_frame_slots()
+    layout = display_layout(slots, frame_size(current_frame_index))
+    for i, (sx, sy, sw, sh) in enumerate(slots[:len(live_photos)]):
+        if live_photos[i] is None:
+            continue
+        box = map_strip_box_to_ui((sx, sy, sx + sw, sy + sh), layout)
+        if box and box[0] <= x <= box[0] + box[2] and box[1] <= y <= box[1] + box[3]:
+            return i
+    return None
+
+
+def open_retake_confirm(index):
+    global menu_open, menu_tab, menu_fullscreen, menu_quick, _menu_last_cam, retake_slot
+    retake_slot = index
+    print(f"Retake photo {index + 1}? (asked)")
+    menu_open, menu_tab, menu_fullscreen, menu_quick = True, "retake", False, True
+    _menu_last_cam = None
+    update_menu(force=True)
+
+
+def confirm_retake():
+    """Empties that one place; the next photo taken goes there, then the strip carries on."""
+    global current_slot
+    i = retake_slot
+    close_menu(redraw=False)
+    if i is None or not 0 <= i < len(live_photos) or live_photos[i] is None:
+        save_preview()
+        return
+    live_photos[i] = None
+    delete_capture_file(live_capture_paths[i])
+    live_capture_paths[i] = None
+    current_slot = first_empty_slot()
+    _clear_photo_cache()
+    print(f"Retaking photo {i + 1}.")
+    save_preview()
+    flash_message(f"RETAKE PHOTO {current_slot + 1}\nPress the button", seconds=1.0)
+
+
+def render_retake_confirm(img, area, buttons):
+    draw = ImageDraw.Draw(img, "RGBA")
+    x0, y0, x1, y1 = area
+    w = x1 - x0
+    i = retake_slot if retake_slot is not None else 0
+    title = f"RETAKE PHOTO {i + 1}?"
+    _draw_text_centered(draw, (x0, y0, x1, y0 + 44), title, _fit_font(draw, title, w - 20, 30), MENU_TEXT)
+    key_h = 76
+    box = (x0, y0 + 50, x1, y1 - key_h - 10)
+    _rrect(draw, box, radius=12, fill=MENU_ROW)
+    photo = live_photos[i] if 0 <= i < len(live_photos) else None
+    note_h = 34
+    if photo is not None:
+        # The photo as it sits in the design (the opening's shape), as big as fits.
+        slots = current_frame_slots()
+        sw, sh = slots[i][2:] if i < len(slots) else photo.size
+        room_w, room_h = box[2] - box[0] - 24, box[3] - box[1] - note_h - 18
+        k = min(room_w / sw, room_h / sh)
+        tw, th = max(1, int(sw * k)), max(1, int(sh * k))
+        small = center_crop_to_slot(photo, tw, th, resample=Image.BILINEAR)
+        px, py = (box[0] + box[2] - tw) // 2, box[1] + 10
+        img.paste(small.convert("RGB"), (px, py))
+        draw.rectangle((px - 2, py - 2, px + tw + 1, py + th + 1), outline=MENU_TEXT, width=2)
+    note = "This photo is thrown away. The other photos stay."
+    _draw_text_centered(draw, (x0 + 8, box[3] - note_h - 4, x1 - 8, box[3] - 4), note,
+                        _fit_font(draw, note, w - 28, 19, bold=False), MENU_DIM)
+    half = (w - 10) // 2
+    _draw_key(draw, (x0, y1 - key_h, x0 + half, y1), "KEEP IT", buttons, close_menu,
+              fill=MENU_ACCENT, text_fill=(0, 0, 0), size=24)
+    _draw_key(draw, (x1 - half, y1 - key_h, x1, y1), "YES, RETAKE", buttons, confirm_retake,
+              fill=MENU_DANGER, size=22)
+
+
 def open_phone_help():
     """From the main screen (a tap on the printer in the corner): how to print from a phone."""
     if not PRINTER_WIFI:
@@ -6398,6 +6473,10 @@ def render_menu(cam=None):
         _render_date_keypad(draw, (pad, pad, w - pad, h - pad), buttons)
         menu_buttons = buttons
         return img
+    if menu_tab == "retake":
+        render_retake_confirm(img, (pad, pad, w - pad, h - pad), buttons)
+        menu_buttons = buttons
+        return img
     if menu_tab == "designs":
         # Pictures need the room: no tab bar.
         render_designs_view(img, (pad, pad, w - pad, h - pad), buttons)
@@ -6532,6 +6611,11 @@ def handle_tap(point):
                 {"menu": open_menu, "gallery": open_gallery, "camera": enter_creation_mode,
                  "fx": open_quick_effects, "layout": toggle_layout}[kind]()
                 return
+        # A photo already taken: take that one again?
+        taken = photo_at(x, y)
+        if taken is not None:
+            open_retake_confirm(taken)
+            return
         if look() != "original":
             # The status piece under the strip (what to do next, the printer): printing from a phone.
             x0, y0, x1, y1 = _look_cache.get("status") or (0, 0, -1, -1)
