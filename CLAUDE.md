@@ -75,8 +75,10 @@ git.
 - Never delete, rename or renumber a shipped design, and never move one between `frames/` and `gifts/`:
   booths would lose it on their next update. New designs get the next free number.
 - New designs: `python3 system/test_designs.py --new` runs each through the booth's strip builder and
-  print fit (see README). A JSON's optional `"name": "Group: Title"` sets its group in DESIGNS (the
-  on-screen picker: tap the strip; categories, favourites).
+  print fit (see README). DESIGNS (the on-screen picker: tap the strip) and the
+  phone page group and order designs by `frames/groups.json`: a new theme needs a line in its
+  "names" (else it lands in FUN); a JSON's own `"group"` wins. Give designs drawn as a set numbers in
+  a row: inside a group they're in number order, which keeps a set together.
 - Before every push to `stable`: commit, then `python3 system/check_designs.py`. It reads the commit
   (every person's gifts, whatever is on disk), fails on designs that would vanish from booths or can't
   be used, warns on repeated numbers and prints the next free ones. `--allow-gone` only when the owner

@@ -1,0 +1,15 @@
+{
+  "about": "How DESIGNS (on the booth and the phone page) groups and orders designs. 'order': the groups, first to last. 'names': the start of a design's name (before the colon) or a gift's collection folder -> its group. 'designs': single shared designs by file (path inside frames/, no .png). Shared designs in neither are in 'other'. A design's own JSON can say \"group\": \"...\" and that wins.",
+  "order": ["BLANK", "FUN", "ACTIVITIES", "HAWAII", "WEDDING", "COUPLE", "COLLAGE", "ARMY"],
+  "other": "FUN",
+  "names": {
+    "GOLF": "ACTIVITIES", "YOGA": "ACTIVITIES", "BEACH": "ACTIVITIES", "HIKING": "ACTIVITIES",
+    "HAWAII": "HAWAII", "ARMY": "ARMY", "WEDDING": "WEDDING", "THE ATKINSONS": "WEDDING"
+  },
+  "designs": {
+    "frame1": "BLANK", "frame2": "BLANK", "frame3": "BLANK", "frame4": "BLANK", "frame5": "BLANK",
+    "frame6": "BLANK", "frame7": "BLANK", "frame8": "BLANK", "frame9": "BLANK", "frame10": "BLANK",
+    "frame26": "BLANK", "frame27": "BLANK", "frame30": "BLANK", "frame31": "BLANK",
+    "sheets/sheet1": "BLANK", "portrait/portrait1": "BLANK"
+  }
+}

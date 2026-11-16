@@ -792,6 +792,98 @@ def _frame_sort_key(path):
     return (int(digits) if digits else 0, path.name, str(path))
 
 
+_design_info = {}    # path -> (JSON mtime, name or None, group or None)
+_groups_cache = (None, {})
+GROUPS_FILE = FRAME_DIR / "groups.json"
+
+
+def _design_json(path):
+    """(name, group) from the design's JSON: "Golf: On the Green", and "group" if it sets one."""
+    sidecar = path.with_suffix(".json")
+    mtime = _mtime(sidecar)
+    cached = _design_info.get(path)
+    if cached is None or cached[0] != mtime:
+        name = group = None
+        try:
+            data = json.loads(sidecar.read_text())
+            if isinstance(data, dict):
+                if isinstance(data.get("name"), str):
+                    name = data["name"].strip() or None
+                if isinstance(data.get("group"), str):
+                    group = data["group"].strip().upper() or None
+        except (OSError, ValueError):
+            pass
+        cached = _design_info[path] = (mtime, name, group)
+    return cached[1], cached[2]
+
+
+def design_name(path):
+    return _design_json(path)[0]
+
+
+def _groups():
+    """frames/groups.json: the groups' order and which designs go in which."""
+    global _groups_cache
+    mtime = _mtime(GROUPS_FILE)
+    if _groups_cache[0] != mtime or not _groups_cache[1]:
+        data = {}
+        try:
+            data = json.loads(GROUPS_FILE.read_text())
+        except (OSError, ValueError) as e:
+            print(f"Could not read {GROUPS_FILE.name}: {e}")
+        if not isinstance(data, dict):
+            data = {}
+        _groups_cache = (mtime, {
+            "order": [str(g).upper() for g in data.get("order", []) if isinstance(g, str)],
+            "names": {str(k).upper(): str(v).upper() for k, v in (data.get("names") or {}).items()},
+            "designs": {str(k): str(v).upper() for k, v in (data.get("designs") or {}).items()},
+            "other": str(data.get("other") or "OTHER").upper()})
+    return _groups_cache[1]
+
+
+def _design_theme(path):
+    """The design's own theme: a gift's collection folder (WEDDING), a folder in ~/my-designs, or
+    the start of a shared design's name (GOLF); "" when it has none."""
+    def tidy(text):
+        return re.sub(r"[-_]+", " ", text).strip().upper()
+    for root, depth in ((GIFTS_DIR, 1), (MY_DESIGNS_DIR, 0)):
+        try:
+            parts = path.relative_to(root).parts[depth:-1]
+        except ValueError:
+            continue
+        parts = [p for p in parts if p not in ("sheets", "portrait")]
+        return tidy(parts[0]) if parts else ""
+    name = design_name(path)
+    return tidy(name.split(":", 1)[0]) if name and ":" in name else ""
+
+
+def design_category(path):
+    """The group DESIGNS shows it in (frames/groups.json): what its own JSON says ("group"), else
+    its theme's group (GOLF -> ACTIVITIES), else for a shared design its entry by file or the
+    catch-all; a folder in ~/my-designs is its own group, loose files there MY DESIGNS."""
+    groups = _groups()
+    group = _design_json(path)[1]
+    if group:
+        return group
+    theme = _design_theme(path)
+    if theme in groups["names"]:
+        return groups["names"][theme]
+    try:
+        key = str(path.relative_to(FRAME_DIR).with_suffix(""))
+    except ValueError:
+        return theme or ("MY DESIGNS" if MY_DESIGNS_DIR in path.parents else "GIFTS")
+    return groups["designs"].get(key, groups["other"])
+
+
+def _design_sort_key(path):
+    """Group by group (in groups.json's order; others after, by name), then by number: designs
+    drawn as a set (the four neon ones, the four with party props) have numbers in a row, so each
+    set stays together whatever its activity."""
+    order = _groups()["order"]
+    group = design_category(path)
+    return (order.index(group) if group in order else len(order), group, _frame_sort_key(path))
+
+
 def _booth_name():
     """The person this booth was set up for (system/gifts.py), or None."""
     try:
@@ -893,7 +985,7 @@ def _gift_roots():
 
 def _find_designs():
     """(designs, {path: kind}): strips first, then BIG SHEET designs; each kind is browsed on its
-    own. Shared and gift designs are in number order together; the owner's own come after.
+    own, in group order (frames/groups.json: BLANK, FUN, ACTIVITIES...), by number inside a group.
     Designs that can't be used (wrong size, no photo openings, damaged) are left out."""
     global BOOTH_NAME
     name = _booth_name()
@@ -913,8 +1005,8 @@ def _find_designs():
                               if p.is_file() and not design_problem(p, kind)]
                 except OSError as e:
                     print(f"Could not look in {folder}: {e}")
-            return sorted(paths, key=_frame_sort_key)
-        for path in scan(ours) + scan(mine):
+            return paths
+        for path in sorted(scan(ours) + scan(mine), key=_design_sort_key):
             found.append(path)
             kinds[path] = kind
     return found, kinds
@@ -5816,43 +5908,9 @@ design_filter = "all"  # "all", "fav" or a category name
 designs_kind = "strip"
 designs_cat = "all"
 designs_page = 0
-_design_info = {}    # path -> (JSON mtime, name or None)
 _thumbs = {}         # (path, PNG mtime) -> the stored thumbnail
 _thumb_fits = {}     # (path, PNG mtime, w, h) -> it at the size shown
 _thumb_thread = None
-
-
-def design_name(path):
-    """The design's own name from its JSON ("Golf: On the Green"), or None."""
-    sidecar = path.with_suffix(".json")
-    mtime = _mtime(sidecar)
-    cached = _design_info.get(path)
-    if cached is None or cached[0] != mtime:
-        name = None
-        try:
-            data = json.loads(sidecar.read_text())
-            if isinstance(data, dict) and isinstance(data.get("name"), str):
-                name = data["name"].strip() or None
-        except (OSError, ValueError):
-            pass
-        cached = _design_info[path] = (mtime, name)
-    return cached[1]
-
-
-def design_category(path):
-    """Which group DESIGNS shows it in: a gift's collection folder (WEDDING, HAWAII), a folder in
-    ~/my-designs, or for shared designs the part of the name before the colon (GOLF, BEACH)."""
-    def tidy(text):
-        return re.sub(r"[-_]+", " ", text).strip().upper()
-    for root, depth, fallback in ((GIFTS_DIR, 1, "GIFTS"), (MY_DESIGNS_DIR, 0, "MY DESIGNS")):
-        try:
-            parts = path.relative_to(root).parts[depth:-1]
-        except ValueError:
-            continue
-        parts = [p for p in parts if p not in ("sheets", "portrait")]
-        return tidy(parts[0]) if parts else fallback
-    name = design_name(path)
-    return tidy(name.split(":", 1)[0]) if name and ":" in name else "CLASSIC"
 
 
 def design_in_category(index, cat):

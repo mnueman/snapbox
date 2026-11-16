@@ -73,7 +73,7 @@ Designs come from three places, each laid out the same way: strips (1200x3600) a
 (1800x1200) in `sheets/`, portrait sheets (1200x1800) in `portrait/`. Each design is a PNG with transparent
 photo openings plus a JSON with the same name giving the openings (`{"slots": [[x, y, w, h], ...]}`, and
 optionally `"stamp": "bl"`, `"tl"` or `"tr"` to move the date stamp to another corner, and
-`"name": "Golf: On the Green"`: the part before the colon is the design's group in DESIGNS).
+`"name": "Golf: On the Green"` and `"group": "ACTIVITIES"`: see DESIGNS below).
 
 ### DESIGNS: picking one on the booth
 
@@ -81,9 +81,14 @@ Tap the strip on the main screen. Every design is shown as a small picture, a pa
 PREV, or swipe). Tap one to use it; photos already taken are kept, and only designs with room for them
 are offered.
 
-- ◀ ▶ at the top steps through the groups: ★ FAVOURITES, ALL DESIGNS, then one per category. A gift's
-  category is its collection folder (WEDDING, ARMY, HAWAII), a design in `~/my-designs/party/` is in
-  PARTY, a shared design's is the start of its name (GOLF, BEACH); shared designs with no name are CLASSIC.
+- ◀ ▶ at the top steps through the groups: ★ FAVOURITES, ALL DESIGNS, then BLANK, FUN, ACTIVITIES
+  (golf, yoga, beach, hiking), HAWAII, WEDDING, COUPLE, COLLAGE, ARMY. Designs are in that order
+  everywhere (swiping too), by number inside a group, so designs drawn as a set (the four neon
+  ones, the four with party props) sit side by side.
+- `frames/groups.json` sets the groups: their order, which name or gift folder goes in which
+  (`"GOLF": "ACTIVITIES"`), and single shared designs by file (`"frame1": "BLANK"`); shared designs
+  it doesn't mention are FUN. A design's own JSON can say `"group": "COLLAGE"`, which wins. A folder
+  in `~/my-designs` (`~/my-designs/party/`) is its own group (PARTY) unless its designs say otherwise.
 - Tap the star on a design to add it to (or take it out of) FAVOURITES. Favourites are kept in
   `settings.json`, so they stay through restarts and updates.
 - The key at the bottom left switches between STRIPS, WIDE SHEETS and TALL SHEETS.
@@ -98,7 +103,7 @@ are offered.
 | `gifts/<person>/<collection>/` | Made for one person, e.g. `gifts/Nick & Maddy Atkinson/wedding/`, `.../army/`, `.../hawaii/` | That person's booth, and the master booth |
 | `~/my-designs/` (and any folders in it) | The booth owner's own designs | Only that booth. Not in git; updates never touch it. |
 
-Shared and gift designs are shown together in number order; the owner's own come last. The booth looks
+Designs are shown group by group (BLANK first; see DESIGNS below), in number order inside a group. The booth looks
 for new, changed or removed designs every 15 seconds while it's idle, so nothing needs a restart. A design
 that goes missing while it's in use is swapped for another of the same layout (with room for the photos
 already taken); a design that can't be used (wrong size, no or bad JSON, an opening outside the picture,
