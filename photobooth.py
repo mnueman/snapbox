@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import datetime
 from queue import Queue
 import base64
+import hashlib
 import http.server
 import io
 import json
@@ -322,6 +323,10 @@ def _load_settings():
             pass
     if values["stamp"] == "custom" and values["stamp_date"] is None:
         values["stamp"] = True
+    # Designs starred in DESIGNS, by design_id.
+    favourites = saved.get("favourites") if isinstance(saved, dict) else None
+    values["favourites"] = ([f for f in favourites if isinstance(f, str)]
+                            if isinstance(favourites, list) else [])
     return values
 
 
@@ -2592,6 +2597,8 @@ def next_frame_same_capacity(step=1):
     if not group:
         print(f"No frames with {capacity} slots.")
         return
+    # The category picked in DESIGNS (or the favourites), when it has any of these.
+    group = [i for i in group if design_in_category(i, design_filter)] or group
 
     try:
         pos = group.index(current_frame_index)
@@ -2657,6 +2664,7 @@ def tick_designs():
     if not _designs_stale and (now < _designs_next_scan or not _booth_idle()):
         return
     _designs_next_scan = now + DESIGN_RESCAN_SECONDS
+    warm_thumbs()  # DESIGNS' small pictures, for any design that hasn't one yet
     if refresh_designs() and mode == "creation" and not menu_open and not gallery_open:
         save_preview()
 
@@ -5797,6 +5805,336 @@ def render_console_confirm(draw, area, buttons):
               fill=MENU_DANGER, size=22)
 
 
+# ---- DESIGNS: every design as a small picture, by category, with favourites -----------------
+# Tap the strip on the main screen. Swiping on the main screen then stays inside the category
+# picked here (design_filter) until another is picked.
+THUMB_DIR = Path.home() / ".cache" / "snapbox" / "thumbs"
+THUMB_SIZES = {"strip": (120, 360), "sheet": (300, 200), "psheet": (200, 300)}
+DESIGN_KIND_NAMES = {"strip": "STRIPS", "sheet": "WIDE SHEETS", "psheet": "TALL SHEETS"}
+design_filter = "all"  # "all", "fav" or a category name
+designs_kind = "strip"
+designs_cat = "all"
+designs_page = 0
+_design_info = {}    # path -> (JSON mtime, name or None)
+_thumbs = {}         # (path, PNG mtime) -> the stored thumbnail
+_thumb_fits = {}     # (path, PNG mtime, w, h) -> it at the size shown
+_thumb_thread = None
+
+
+def design_name(path):
+    """The design's own name from its JSON ("Golf: On the Green"), or None."""
+    sidecar = path.with_suffix(".json")
+    mtime = _mtime(sidecar)
+    cached = _design_info.get(path)
+    if cached is None or cached[0] != mtime:
+        name = None
+        try:
+            data = json.loads(sidecar.read_text())
+            if isinstance(data, dict) and isinstance(data.get("name"), str):
+                name = data["name"].strip() or None
+        except (OSError, ValueError):
+            pass
+        cached = _design_info[path] = (mtime, name)
+    return cached[1]
+
+
+def design_category(path):
+    """Which group DESIGNS shows it in: a gift's collection folder (WEDDING, HAWAII), a folder in
+    ~/my-designs, or for shared designs the part of the name before the colon (GOLF, BEACH)."""
+    def tidy(text):
+        return re.sub(r"[-_]+", " ", text).strip().upper()
+    for root, depth, fallback in ((GIFTS_DIR, 1, "GIFTS"), (MY_DESIGNS_DIR, 0, "MY DESIGNS")):
+        try:
+            parts = path.relative_to(root).parts[depth:-1]
+        except ValueError:
+            continue
+        parts = [p for p in parts if p not in ("sheets", "portrait")]
+        return tidy(parts[0]) if parts else fallback
+    name = design_name(path)
+    return tidy(name.split(":", 1)[0]) if name and ":" in name else "CLASSIC"
+
+
+def design_in_category(index, cat):
+    if cat == "all" or not 0 <= index < len(frames):
+        return True
+    if cat == "fav":
+        return design_id(frames[index]) in settings["favourites"]
+    return design_category(frames[index]) == cat
+
+
+def _designs_on_offer(kind):
+    """Designs of this layout with room for the photos already taken."""
+    taken = sum(p is not None for p in live_photos)
+    return [i for i in indices_for_kind(kind) if frame_slot_count(i) >= taken]
+
+
+def _design_cats(kind):
+    cats = []
+    for i in _designs_on_offer(kind):
+        cat = design_category(frames[i])
+        if cat not in cats:
+            cats.append(cat)
+    return ["fav", "all"] + cats
+
+
+def _thumb_file(path, kind):
+    key = f"{design_id(path)}|{_mtime(path)}|{THUMB_SIZES[kind]}"
+    return THUMB_DIR / (hashlib.sha1(key.encode()).hexdigest()[:24] + ".jpg")
+
+
+def _make_thumb(path, kind):
+    """The design small, with soft grey where the photos go. Kept on disk: opening a full-size
+    design takes about half a second, far too slow for a page of them."""
+    with Image.open(path) as im:
+        small = im.convert("RGBA").resize(THUMB_SIZES[kind], Image.BILINEAR, reducing_gap=2.0)
+    thumb = Image.new("RGBA", small.size, (206, 210, 216, 255))
+    thumb.alpha_composite(small)
+    thumb = thumb.convert("RGB")
+    THUMB_DIR.mkdir(parents=True, exist_ok=True)
+    target = _thumb_file(path, kind)
+    tmp = target.with_suffix(f".{os.getpid()}.tmp")
+    thumb.save(tmp, format="JPEG", quality=88)
+    os.replace(tmp, target)
+    return thumb
+
+
+def design_thumb(path, kind):
+    """The thumbnail if it's ready (memory, then disk); None while it's still being made."""
+    key = (path, _mtime(path))
+    thumb = _thumbs.get(key)
+    if thumb is None:
+        try:
+            with Image.open(_thumb_file(path, kind)) as im:
+                thumb = im.convert("RGB")
+        except (OSError, ValueError):
+            return None
+        _thumbs[key] = thumb
+    return thumb
+
+
+def _thumb_worker(todo):
+    for path, kind in todo:
+        try:
+            if not _thumb_file(path, kind).exists():
+                _make_thumb(path, kind)
+                time.sleep(0.02)  # the camera and the screen come first
+        except Exception as e:
+            print(f"Could not make a small picture of {design_id(path)}: {e}")
+
+
+def warm_thumbs(first=()):
+    """Makes the missing thumbnails in the background, the ones in `first` (a page) first."""
+    global _thumb_thread
+    if _thumb_thread is not None and _thumb_thread.is_alive():
+        return
+    rest = [f for f in frames if f not in first]
+    todo = [(f, _frame_kinds.get(f, "strip")) for f in list(first) + rest]
+    todo = [(f, k) for f, k in todo if not _thumb_file(f, k).exists()]
+    if not todo:
+        return
+    # Thumbnails of designs that are gone or were redrawn: clear them out now and then.
+    try:
+        keep = {_thumb_file(f, _frame_kinds.get(f, "strip")).name for f in frames}
+        for old in THUMB_DIR.glob("*.jpg"):
+            if old.name not in keep:
+                old.unlink(missing_ok=True)
+    except OSError:
+        pass
+    _thumb_thread = threading.Thread(target=_thumb_worker, args=(todo,), daemon=True)
+    _thumb_thread.start()
+
+
+def open_designs():
+    global menu_open, menu_tab, menu_fullscreen, menu_quick, _menu_last_cam
+    global designs_kind, designs_cat, designs_page
+    if not frames or mode != "creation":
+        return
+    print("Designs opened.")
+    designs_kind = current_kind()
+    designs_cat = design_filter if design_filter in _design_cats(designs_kind) else "all"
+    if designs_cat != "all" and not design_in_category(current_frame_index, designs_cat):
+        designs_cat = "all"
+    designs_page = -1  # the page with the design in use (worked out when drawn)
+    menu_open, menu_tab, menu_fullscreen, menu_quick = True, "designs", False, True
+    _menu_last_cam = None
+    update_menu(force=True)
+
+
+def designs_step_cat(step):
+    global designs_cat, designs_page
+    cats = _design_cats(designs_kind)
+    at = cats.index(designs_cat) if designs_cat in cats else 1
+    designs_cat = cats[(at + step) % len(cats)]
+    designs_page = -1
+
+
+def designs_next_kind():
+    global designs_kind, designs_cat, designs_page
+    order = [k for k in LAYOUTS if _designs_on_offer(k)]
+    if not order:
+        return
+    at = order.index(designs_kind) if designs_kind in order else -1
+    designs_kind = order[(at + 1) % len(order)]
+    if designs_cat not in _design_cats(designs_kind):
+        designs_cat = "all"
+    designs_page = -1
+
+
+def designs_turn_page(step):
+    global designs_page
+    designs_page = max(0, designs_page + step)
+
+
+def toggle_favourite(path):
+    ident = design_id(path)
+    if ident in settings["favourites"]:
+        settings["favourites"].remove(ident)
+    else:
+        settings["favourites"].append(ident)
+    save_settings()
+
+
+def choose_design(path):
+    """A tap on a design in DESIGNS: use it, keeping the photos already taken."""
+    global current_frame_index, design_filter
+    if path not in frames:
+        return
+    _last_frame_of_kind[current_kind()] = current_frame_index
+    current_frame_index = frames.index(path)
+    design_filter = designs_cat
+    if current_capacity() != len(live_photos):
+        resize_live_photos(current_capacity())
+    _clear_photo_cache()
+    print(f"Design picked: {path.name} (showing: {design_filter})")
+    close_menu(redraw=False)
+    save_preview()
+
+
+def _draw_star(draw, cx, cy, r, on):
+    pts = []
+    for n in range(10):
+        ang = -math.pi / 2 + n * math.pi / 5
+        rr = r if n % 2 == 0 else r * 0.45
+        pts.append((cx + rr * math.cos(ang), cy + rr * math.sin(ang)))
+    draw.ellipse((cx - r - 4, cy - r - 4, cx + r + 4, cy + r + 4), fill=(0, 0, 0, 150))
+    draw.polygon(pts, fill=(255, 205, 40) if on else (0, 0, 0), outline=(255, 205, 40) if on else (255, 255, 255))
+    if not on:
+        draw.line(pts + [pts[0]], fill=(255, 255, 255), width=2)
+
+
+def _designs_grid(kind, w, h, gap):
+    """(columns, rows, picture width, picture height): as many as fit while each stays big
+    enough to see and to tap."""
+    tw0, th0 = THUMB_SIZES[kind]
+    best = None
+    for rows in (1, 2, 3):
+        for cols in range(1, 9):
+            tw = min((w + gap) / cols - gap, ((h + gap) / rows - gap) * tw0 / th0)
+            th = tw * th0 / tw0
+            if min(tw, th) < 104:
+                continue
+            score = (cols * rows, tw)
+            if best is None or score > best[0]:
+                best = (score, (cols, rows, int(tw), int(th)))
+    return best[1] if best else (1, 1, int(min(w, h * tw0 / th0)), int(min(h, w * th0 / tw0)))
+
+
+def render_designs_view(img, area, buttons):
+    global designs_page
+    draw = ImageDraw.Draw(img, "RGBA")
+    x0, y0, x1, y1 = area
+    w, gap, bar_h, foot_h = x1 - x0, 8, 60, 54
+    cats = _design_cats(designs_kind)
+    cat = designs_cat if designs_cat in cats else "all"
+    shown = [i for i in _designs_on_offer(designs_kind) if design_in_category(i, cat)]
+
+    # Top: which category, with a key each way, and DONE.
+    key_w, done_w = 66, 96 if w >= 560 else 76
+    _draw_key(draw, (x0, y0, x0 + key_w, y0 + bar_h), "◀", buttons, lambda: designs_step_cat(-1), size=28)
+    label = (x0 + key_w + gap, y0, x1 - done_w - key_w - 2 * gap, y0 + bar_h)
+    _rrect(draw, label, radius=10, fill=MENU_FIELD)
+    title = {"fav": "★ FAVOURITES", "all": "ALL DESIGNS"}.get(cat, cat)
+    plain = cat == "fav"
+    text = f"{title}  ({len(shown)})"
+    font = menu_font(24, True, plain)
+    size = 24
+    while size > 12 and draw.textbbox((0, 0), text, font=font)[2] > label[2] - label[0] - 16:
+        size -= 1
+        font = menu_font(size, True, plain)
+    _draw_text_centered(draw, label, text, font, MENU_TEXT)
+    _draw_key(draw, (label[2] + gap, y0, label[2] + gap + key_w, y0 + bar_h), "▶", buttons,
+              lambda: designs_step_cat(1), size=28)
+    _draw_key(draw, (x1 - done_w, y0, x1, y0 + bar_h), "DONE", buttons, close_menu, fill=MENU_DONE, size=22)
+
+    # The pictures.
+    gx0, gy0, gx1, gy1 = x0, y0 + bar_h + gap, x1, y1 - foot_h - gap
+    cols, rows, tw, th = _designs_grid(designs_kind, gx1 - gx0, gy1 - gy0, gap)
+    per_page = cols * rows
+    pages = max(1, -(-len(shown) // per_page))
+    if designs_page < 0:
+        designs_page = shown.index(current_frame_index) // per_page if current_frame_index in shown else 0
+    designs_page = min(designs_page, pages - 1)
+    on_page = shown[designs_page * per_page:(designs_page + 1) * per_page]
+    if not shown:
+        lines = ("NO FAVOURITES YET", "Tap the star on a design to keep it here.") if cat == "fav" \
+            else ("NOTHING HERE", "No design in this group has room for the photos taken.")
+        mid = (gy0 + gy1) // 2
+        _draw_text_centered(draw, (gx0, mid - 40, gx1, mid), lines[0], menu_font(26, True), MENU_TEXT)
+        _draw_text_centered(draw, (gx0, mid + 4, gx1, mid + 34), lines[1],
+                            _fit_font(draw, lines[1], w - 20, 18, bold=False), MENU_DIM)
+    used_w = cols * tw + (cols - 1) * gap
+    used_h = rows * th + (rows - 1) * gap
+    ox, oy = gx0 + (gx1 - gx0 - used_w) // 2, gy0 + (gy1 - gy0 - used_h) // 2
+    missing = []
+    for n, index in enumerate(on_page):
+        path = frames[index]
+        bx = ox + (n % cols) * (tw + gap)
+        by = oy + (n // cols) * (th + gap)
+        box = (bx, by, bx + tw, by + th)
+        thumb = design_thumb(path, designs_kind)
+        if thumb is None:
+            missing.append(path)
+            draw.rectangle(box, fill=MENU_FIELD)
+            _draw_text_centered(draw, box, "...", menu_font(22, True), MENU_DIM)
+        else:
+            key = (path, _mtime(path), tw, th)
+            fit = _thumb_fits.get(key)
+            if fit is None:
+                if len(_thumb_fits) > 80:
+                    _thumb_fits.clear()
+                fit = _thumb_fits[key] = thumb.resize((tw, th), Image.BILINEAR)
+            img.paste(fit, (bx, by))
+        if index == current_frame_index:
+            for d, colour in ((0, MENU_ACCENT), (4, (0, 0, 0))):
+                draw.rectangle((bx + d, by + d, bx + tw - 1 - d, by + th - 1 - d), outline=colour,
+                               width=4 if d == 0 else 1)
+        else:
+            draw.rectangle((bx, by, bx + tw - 1, by + th - 1), outline=(0, 0, 0, 90), width=1)
+        fav = design_id(path) in settings["favourites"]
+        star = min(40, tw // 2)
+        _draw_star(draw, bx + tw - star / 2 - 2, by + star / 2 + 2, star * 0.34, fav)
+        # The star's corner first: a tap there is the star, anywhere else picks the design.
+        buttons.append(((bx + tw - star - 6, by, bx + tw, by + star + 6), lambda p=path: toggle_favourite(p)))
+        buttons.append((box, lambda p=path: choose_design(p)))
+    if missing:
+        warm_thumbs(missing)
+
+    # Bottom: the layout, and the pages.
+    fy0 = y1 - foot_h
+    kind_w = min(200, w // 3)
+    _draw_key(draw, (x0, fy0, x0 + kind_w, y1), DESIGN_KIND_NAMES[designs_kind], buttons, designs_next_kind,
+              fill=MENU_KEY, size=20)
+    nav_w = (x1 - x0 - kind_w - 64 - 3 * gap) // 2
+    px = x0 + kind_w + gap
+    first, last = designs_page == 0, designs_page >= pages - 1
+    _draw_key(draw, (px, fy0, px + nav_w, y1), "◀ PREV", buttons, lambda: designs_turn_page(-1),
+              fill=MENU_OFF if first else MENU_ROW, text_fill=MENU_DIM if first else MENU_TEXT, size=20)
+    _draw_text_centered(draw, (px + nav_w, fy0, px + nav_w + 64 + 2 * gap, y1), f"{designs_page + 1}/{pages}",
+                        menu_font(18, True), MENU_DIM)
+    _draw_key(draw, (x1 - nav_w, fy0, x1, y1), "NEXT ▶", buttons, lambda: designs_turn_page(1),
+              fill=MENU_OFF if last else MENU_ROW, text_fill=MENU_DIM if last else MENU_TEXT, size=20)
+
+
 def open_phone_help():
     """From the main screen (a tap on the printer in the corner): how to print from a phone."""
     if not PRINTER_WIFI:
@@ -6001,6 +6339,11 @@ def render_menu(cam=None):
         _render_date_keypad(draw, (pad, pad, w - pad, h - pad), buttons)
         menu_buttons = buttons
         return img
+    if menu_tab == "designs":
+        # Pictures need the room: no tab bar.
+        render_designs_view(img, (pad, pad, w - pad, h - pad), buttons)
+        menu_buttons = buttons
+        return img
     if menu_tab == "wifi" and wifi_view == "keyboard" and wifi_target is not None:
         # Typing gets the whole screen: no tab bar, the biggest keys possible.
         _render_wifi_keyboard(draw, (pad, pad, w - pad, h - pad), buttons)
@@ -6135,10 +6478,14 @@ def handle_tap(point):
             x0, y0, x1, y1 = _look_cache.get("status") or (0, 0, -1, -1)
             if PRINTER_WIFI and x0 <= x <= x1 and y0 <= y <= y1:
                 open_phone_help()
+            elif x >= looks.geometry(look(), *ui_size())["stage"][0]:
+                open_designs()  # a tap on the strip: every design, by category
             return
         # The printer in the top right corner: how to print from a phone.
         if PRINTER_WIFI and x >= ui_size()[0] - 110 and y <= 110:
             open_phone_help()
+        elif x > ICON_MARGIN + ICON_SIZE + ICON_GAP:
+            open_designs()
 
 
 def handle_swipe(dx):
@@ -6148,6 +6495,9 @@ def handle_swipe(dx):
     if menu_open:
         if menu_fullscreen and menu_tab in PREVIEW_TABS and date_entry is None:
             menu_focus_step(step)
+            update_menu(force=True)
+        elif menu_tab == "designs":
+            designs_turn_page(step)
             update_menu(force=True)
     elif mode == "browse":
         browse_step(step)

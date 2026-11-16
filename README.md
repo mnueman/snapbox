@@ -53,7 +53,7 @@ Raw captures in `captures/` are deleted once their strip is saved to `strips/arc
 | Super long press (6s+) | Shut down | Shut down |
 
 On the touchscreen, swipe left/right on the main screen to change the frame design (create mode) or the
-strip shown (browse mode).
+strip shown (browse mode). Tap the strip itself to open DESIGNS (below) and see them all at once.
 
 The round buttons down the left of the main screen: settings (gear), REVIEW (photos), quick effects (sparkle,
 gold while any effect is on) and the layout (a skinny strip, a wide sheet and a tall sheet; the one in use is
@@ -72,7 +72,25 @@ photos; after it, only designs with the same number.
 Designs come from three places, each laid out the same way: strips (1200x3600) at the top, landscape sheets
 (1800x1200) in `sheets/`, portrait sheets (1200x1800) in `portrait/`. Each design is a PNG with transparent
 photo openings plus a JSON with the same name giving the openings (`{"slots": [[x, y, w, h], ...]}`, and
-optionally `"stamp": "bl"`, `"tl"` or `"tr"` to move the date stamp to another corner).
+optionally `"stamp": "bl"`, `"tl"` or `"tr"` to move the date stamp to another corner, and
+`"name": "Golf: On the Green"`: the part before the colon is the design's group in DESIGNS).
+
+### DESIGNS: picking one on the booth
+
+Tap the strip on the main screen. Every design is shown as a small picture, a page at a time (NEXT /
+PREV, or swipe). Tap one to use it; photos already taken are kept, and only designs with room for them
+are offered.
+
+- ◀ ▶ at the top steps through the groups: ★ FAVOURITES, ALL DESIGNS, then one per category. A gift's
+  category is its collection folder (WEDDING, ARMY, HAWAII), a design in `~/my-designs/party/` is in
+  PARTY, a shared design's is the start of its name (GOLF, BEACH); shared designs with no name are CLASSIC.
+- Tap the star on a design to add it to (or take it out of) FAVOURITES. Favourites are kept in
+  `settings.json`, so they stay through restarts and updates.
+- The key at the bottom left switches between STRIPS, WIDE SHEETS and TALL SHEETS.
+- After picking from a group, swiping on the main screen stays inside that group (so pick from
+  FAVOURITES and swiping only goes through your favourites). Pick from ALL DESIGNS to swipe through
+  everything again; a restart also goes back to everything.
+- The small pictures are made once, in the background, and kept in `~/.cache/snapbox/thumbs/`.
 
 | Folder | What | On which booths |
 | --- | --- | --- |
@@ -100,6 +118,12 @@ a damaged picture) is skipped and the reason logged.
 - Before publishing an update, commit and run `python3 system/check_designs.py`. It fails if a design
   that's on `stable` would be gone or a design can't be used, warns about repeated numbers, and says
   which numbers are free. (`--allow-gone` when designs leaving booths is intended.)
+- To try designs before they ship: `python3 system/test_designs.py --new` builds a finished strip or
+  sheet from every design that isn't on `stable` yet, with the booth's own code and a plain colour for
+  each photo, lays it out for the printer and fits it to the paper. It fails if a photo doesn't show
+  through its opening, a see-through part is left outside the openings (it would print white), or
+  the print is the wrong size. No arguments: every design on this booth, `~/my-designs` included.
+  `--sheet out.jpg` saves a picture of all the prints.
 - Generators: `python3 all_frames.py [numbers]` (strips 11-40), `python3 realistic.py` (strips 41-44) and
   `python3 sheet_frames.py` (sheets; designs in `sheets_landscape.py` / `sheets_portrait.py`, drawing kit
   in `sheet_kit.py`). `design_folders.py` decides which folder each generated design goes in.
