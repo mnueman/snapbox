@@ -21,7 +21,7 @@ import traceback
 import urllib.parse
 
 from gpiozero import Button, InputDevice
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 from picamera2 import Picamera2
 from libcamera import controls, Transform
 import numpy as np
@@ -1614,14 +1614,15 @@ def _colour_lut(name):
 
 def _vignette(w, h, strength):
     key = (w, h, strength)
-    if key not in _vignettes:
+    made = _vignettes.get(key)  # the phone page's threads come here too: no second look-up
+    if made is None:
         if len(_vignettes) > 8:
             _vignettes.clear()
         ys = np.linspace(-1.0, 1.0, h, dtype=np.float32)[:, None]
         xs = np.linspace(-1.0, 1.0, w, dtype=np.float32)[None, :]
         r2 = (xs * xs + ys * ys) / 2.0
-        _vignettes[key] = (1.0 - strength * r2 ** 1.5)[..., None]
-    return _vignettes[key]
+        made = _vignettes[key] = (1.0 - strength * r2 ** 1.5)[..., None]
+    return made
 
 
 def apply_colour_look(img, name=None):
@@ -3408,14 +3409,19 @@ def start_print(path, other=None):
 # line them up) and sends them. The booth builds the strip or sheet exactly like one it took
 # itself: saved with the others (REVIEW shows it, CHANGE FRAME works) and printed through the same
 # fitting. Only reachable from the booth's own network, which has a password.
-# The page is web/index.html. Web threads only read designs and queue work; the main loop builds
-# and saves (web_make_strip), like everything else.
+# The page can put the booth's EFFECTS on them too (colour look, date stamp, light leaks, spots,
+# streaks and dust): the booth draws them, and the page shows each photo the way the booth sends
+# it back (/api/preview), so what's on the phone is what's saved.
+# The page is web/index.html. Web threads only read designs, style photos and queue work; the
+# main loop builds and saves (web_make_strip), like everything else.
 # ---------------------------------------------------------------------------
 
 WEB_DIR = BASE / "web"
 WEB_MAX_BYTES = 48 * 1024 * 1024
 WEB_NEUTRAL_FX = {"seed": 0, "opts": [], "stamp": "", "bw": False}  # phone photos: as they are
-_web_images = {}  # (design id, mtime, size) -> image bytes
+WEB_IMAGE_CACHE = 48 * 1024 * 1024  # bytes of design pictures kept ready for phones
+_web_images = {}  # (design id, mtime, size, solid) -> image bytes
+_web_images_lock = threading.Lock()
 
 
 def _web_designs():
@@ -3433,22 +3439,99 @@ def _web_designs():
     return out
 
 
-def _web_design_image(ident, size):
-    """The design as a PNG, see-through where the photos go, at most `size` px on its long side."""
+def _web_design_image(ident, size, solid=False):
+    """The design at most `size` px on its long side: a PNG, see-through where the photos go,
+    or (solid, for the page's list: far smaller) a JPEG with grey where the photos go."""
     path = next((f for f in list(frames) if design_id(f) == ident), None)
     if path is None:
         return None
-    key = (ident, _mtime(path), size)
-    if key not in _web_images:
-        if len(_web_images) > 400:
-            _web_images.clear()
+    key = (ident, _mtime(path), size, solid)
+    body = _web_images.get(key)
+    if body is None:
         with Image.open(path) as img:
             img = img.convert("RGBA")
-            img.thumbnail((size, size), Image.BILINEAR)
+            img.thumbnail((size, size), Image.LANCZOS if solid else Image.BILINEAR)
             buf = io.BytesIO()
-            img.save(buf, format="PNG", optimize=False)
-        _web_images[key] = buf.getvalue()
-    return _web_images[key]
+            if solid:
+                flat = Image.new("RGBA", img.size, (74, 74, 86, 255))
+                flat.alpha_composite(img)
+                flat.convert("RGB").save(buf, format="JPEG", quality=85)
+            else:
+                img.save(buf, format="PNG", optimize=False)
+        body = buf.getvalue()
+        with _web_images_lock:
+            if sum(map(len, _web_images.values())) + len(body) > WEB_IMAGE_CACHE:
+                _web_images.clear()
+            _web_images[key] = body
+    return body
+
+
+def _web_effects():
+    """What the page's effects offer: the booth's own colour looks and add-on styles."""
+    colours = next(choices for key, _, choices, _ in EFFECT_SETTINGS if key == "colour")
+    out = {"colour": [[key, label] for key, label in colours]}
+    out.update({key: [name for name, *_ in styles] for key, styles in FX_STYLES.items()})
+    return out
+
+
+def _web_fx_choice(raw):
+    """What a phone asked for, checked: {"colour": name, "stamp": bool, "leaks"/"spots"/"lines":
+    style number or 0}."""
+    raw = raw if isinstance(raw, dict) else {}
+    choice = {"colour": raw.get("colour") if raw.get("colour") in COLOUR_LOOKS else "normal",
+              "stamp": bool(raw.get("stamp"))}
+    for key, styles in FX_STYLES.items():
+        number = raw.get(key)
+        choice[key] = number if type(number) is int and 0 < number <= len(styles) else 0
+    return choice
+
+
+def _web_strip_fx(choice):
+    """The add-ons of a phone's strip, as current_fx makes them for the booth's own."""
+    return {"seed": 0, "opts": [choice["stamp"]] + [choice[k] for k in FX_KEYS[1:]], "soft": 1.0,
+            "stamp": stamp_text() if choice["stamp"] else "",
+            "bw": COLOUR_LOOKS[choice["colour"]]["sat"] == 0}
+
+
+def _web_colour(img, colour):
+    """A phone's photo in a colour look. The booth's camera does a look's saturation itself;
+    here it's done to the picture."""
+    look = COLOUR_LOOKS[colour]
+    if look["sat"] not in (0, 1.0):
+        img = ImageEnhance.Color(img.convert("RGB")).enhance(look["sat"])
+    return apply_colour_look(img, colour)
+
+
+def _web_read_photo(item, longest):
+    raw = base64.b64decode(item.split(",", 1)[-1])
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+    img.thumbnail((longest, longest), Image.LANCZOS)
+    return img
+
+
+def _web_preview(photo, choice, ident):
+    """JPEG bytes: a photo (cropped to its opening already) the way the strip will show it."""
+    corner = "br"
+    try:
+        path = next(f for f in list(frames) if design_id(f) == ident)
+        corner = json.loads(path.with_suffix(".json").read_text()).get("stamp", "br")
+    except Exception:
+        pass
+    img = _web_colour(photo, choice["colour"]).convert("RGB")
+    fx = _web_strip_fx(choice)
+    if any(fx["opts"]):
+        # Not apply_effects: its cache belongs to the main loop.
+        screen, overlay = _render_effects(*img.size, 0, tuple(fx["opts"]), fx["stamp"], fx["bw"],
+                                          corner if corner in ("br", "bl", "tr", "tl") else "br")
+        if screen is not None:
+            img = ImageChops.screen(img, screen)
+        if overlay is not None:
+            img = img.convert("RGBA")
+            img.alpha_composite(overlay)
+            img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
 
 
 def web_make_strip(job):
@@ -3466,10 +3549,11 @@ def web_make_strip(job):
         while path.exists():
             n += 1
             path = ARCHIVE_DIR / f"strip_{stamp}_{n}.jpg"
-        strip = compose_single_strip(photos, index, fx=WEB_NEUTRAL_FX)
+        fx = _web_strip_fx(job["fx"]) if job.get("fx") else WEB_NEUTRAL_FX
+        strip = compose_single_strip(photos, index, fx=fx)
         _forget_slot_cache(photos)
         save_strip_photos(path, photos)
-        meta = strip_meta(frame_slots(index)[:len(photos)], index, WEB_NEUTRAL_FX)
+        meta = strip_meta(frame_slots(index)[:len(photos)], index, fx)
         write_file_durably(path, lambda f: strip.convert("RGB").save(
             f, format="JPEG", quality=95, comment=meta))
         print(f"Saved a strip sent from a phone: {path.name} ({frames[index].name})")
@@ -3521,17 +3605,20 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
             if url.path in ("/", "/index.html"):
                 self._send(200, (WEB_DIR / "index.html").read_bytes(), "text/html; charset=utf-8")
             elif url.path == "/api/designs":
-                self._json(200, {"designs": _web_designs(), "layouts": LAYOUT_NAMES})
+                self._json(200, {"designs": _web_designs(), "layouts": LAYOUT_NAMES,
+                                 "effects": _web_effects()})
             elif url.path == "/api/status":
                 self._json(200, {"printer": bool(printer_connected), "alert": printer_alert,
                                  "waiting": len(print_jobs)})
-            elif url.path == "/design.png":
-                size = 900 if query.get("big") else 260
-                body = _web_design_image((query.get("id") or [""])[0], size)
+            elif url.path in ("/design.png", "/design.jpg"):
+                # .jpg: the page's list (grey where the photos go). .png: see-through, to build on.
+                solid = url.path.endswith(".jpg")
+                size = 900 if query.get("big") else 560 if solid else 260
+                body = _web_design_image((query.get("id") or [""])[0], size, solid)
                 if body is None:
                     self._send(404, b"gone", "text/plain")
                 else:
-                    self._send(200, body, "image/png", cache=True)
+                    self._send(200, body, "image/jpeg" if solid else "image/png", cache=True)
             else:
                 # Phones probe for internet on a new WiFi; anything else gets the page.
                 self.send_response(302)
@@ -3550,21 +3637,22 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             length = int(self.headers.get("Content-Length") or 0)
-            if self.path != "/api/make" or not 0 < length <= WEB_MAX_BYTES:
+            if self.path not in ("/api/make", "/api/preview") or not 0 < length <= WEB_MAX_BYTES:
                 self._json(400, {"ok": False, "message": "Too big, or not understood."})
                 return
             data = json.loads(self.rfile.read(length))
+            choice = _web_fx_choice(data.get("fx"))
+            if self.path == "/api/preview":
+                # One photo, small, as the effects will make it look: the page shows it in place.
+                photo = _web_read_photo(data["photo"], 640)
+                self._send(200, _web_preview(photo, choice, str(data.get("design", ""))), "image/jpeg")
+                return
             photos = []
             for item in data.get("photos", [])[:8]:
-                if not item:
-                    photos.append(None)
-                    continue
-                raw = base64.b64decode(item.split(",", 1)[-1])
-                img = Image.open(io.BytesIO(raw))
-                img = ImageOps.exif_transpose(img).convert("RGB")
-                img.thumbnail((2400, 2400), Image.LANCZOS)
-                photos.append(img)
-            job = {"design": str(data.get("design", "")), "photos": photos,
+                # The colour look goes on here, off the main loop; the add-ons when it's built.
+                photos.append(_web_colour(_web_read_photo(item, 2400), choice["colour"])
+                              if item else None)
+            job = {"design": str(data.get("design", "")), "photos": photos, "fx": choice,
                    "print": bool(data.get("print")), "done": threading.Event(), "result": None}
             action_queue.put(("web_strip", job))
             if not job["done"].wait(60):

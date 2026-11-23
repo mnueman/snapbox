@@ -17,10 +17,18 @@
   .chips { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
   .chip { background:var(--row); color:var(--text); border:0; border-radius:999px; padding:9px 14px; font:inherit; font-size:14px; }
   .chip.on { background:var(--accent); color:#000; font-weight:700; }
-  #grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(96px, 1fr)); gap:10px; margin-top:10px; }
-  .card { background:#3a3a44; border:0; border-radius:10px; padding:6px; display:flex; align-items:center; justify-content:center; min-height:96px; }
-  .card img { max-width:100%; max-height:180px; display:block;
-    background:repeating-conic-gradient(#8a8a94 0 25%, #a2a2ac 0 50%) 0 0/16px 16px; }
+  /* Big enough to read on a phone: two strips or two portrait sheets across, one landscape sheet. */
+  #grid { display:grid; gap:12px; margin-top:10px; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); }
+  #grid.sheet { grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); }
+  .card { background:#3a3a44; border:0; border-radius:12px; padding:8px 8px 6px; color:var(--text); font:inherit;
+    display:flex; flex-direction:column; align-items:stretch; gap:6px; }
+  .card img { width:100%; height:auto; display:block; border-radius:4px; background:#4a4a56; }
+  .card span { font-size:13px; line-height:1.25; color:var(--text); overflow-wrap:anywhere; }
+  #nav { display:flex; align-items:center; gap:8px; margin-top:8px; }
+  #nav button { flex:none; width:46px; height:42px; border:0; border-radius:12px; background:var(--row); color:var(--text);
+    font:inherit; font-size:22px; font-weight:700; }
+  #navName { flex:1; text-align:center; font-size:14px; font-weight:600; overflow-wrap:anywhere; }
+  #navName small { display:block; color:var(--dim); font-weight:400; }
   #editor { display:none; }
   #stageWrap { display:flex; justify-content:center; margin-top:8px; }
   #stage { position:relative; background:#fff; touch-action:none; user-select:none; -webkit-user-select:none; }
@@ -29,11 +37,18 @@
     font-size:34px; color:#fff; opacity:.85; }
   .slot.sel { outline:3px solid var(--accent); outline-offset:-3px; z-index:1; }
   .slot img { position:absolute; max-width:none; pointer-events:none; }
+  .slot img.fx { inset:0; width:100%; height:100%; }
   #frame { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:2; }
   .hint { color:var(--dim); font-size:13px; text-align:center; margin:10px 0 0; }
-  .bar { position:fixed; left:0; right:0; bottom:0; background:rgba(22,22,26,.96); padding:10px 16px calc(10px + env(safe-area-inset-bottom));
-    display:none; gap:10px; }
-  .btn { flex:1; border:0; border-radius:12px; padding:14px 8px; font:inherit; font-weight:700; font-size:15px; color:var(--text); background:var(--row); }
+  #dock { position:fixed; left:0; right:0; bottom:0; background:rgba(22,22,26,.97); display:none;
+    padding:8px 0 calc(10px + env(safe-area-inset-bottom)); border-top:1px solid #2e2e36; }
+  .bar { display:flex; gap:8px; padding:0 16px; }
+  .fxrow { display:flex; gap:8px; overflow-x:auto; padding:0 16px 8px; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
+  .fxrow::-webkit-scrollbar { display:none; }
+  .fxrow .chip { flex:none; white-space:nowrap; }
+  .fxrow .chip.set { box-shadow:inset 0 0 0 2px var(--accent); }
+  .fxrow .label { flex:none; align-self:center; color:var(--dim); font-size:13px; }
+  .btn { flex:1; border:0; border-radius:12px; padding:14px 8px; font:inherit; font-weight:700; font-size:15px; color:var(--text); background:var(--row); min-width:0; }
   .btn.go { background:var(--accent); color:#000; }
   .btn.ok { background:var(--done); }
   .btn:disabled { opacity:.45; }
@@ -47,7 +62,7 @@
   <h1>PHOTOBOOTH</h1>
   <div id="status">Connecting to the booth…</div>
 </header>
-<main>
+<main id="main">
   <section id="picker">
     <div>1. Pick a design</div>
     <div class="chips" id="layouts"></div>
@@ -57,15 +72,20 @@
   </section>
   <section id="editor">
     <div>2. Tap a box to add a photo. Drag to move it, pinch to zoom.</div>
+    <div id="nav"><button id="prev" aria-label="Previous design">&#8249;</button><div id="navName"></div><button id="next" aria-label="Next design">&#8250;</button></div>
     <div id="stageWrap"><div id="stage"><img id="frame" alt=""></div></div>
     <p class="hint" id="hint"></p>
   </section>
 </main>
-<div class="bar" id="bar">
-  <button class="btn" id="back">Back</button>
-  <button class="btn" id="add">Add photos</button>
-  <button class="btn ok" id="save" disabled>Save</button>
-  <button class="btn go" id="print" disabled>Save &amp; print</button>
+<div id="dock">
+  <div class="fxrow" id="fxChoices"></div>
+  <div class="fxrow" id="fxTabs"></div>
+  <div class="bar">
+    <button class="btn" id="back">Back</button>
+    <button class="btn" id="add">Add photos</button>
+    <button class="btn ok" id="save" disabled>Save</button>
+    <button class="btn go" id="print" disabled>Save &amp; print</button>
+  </div>
 </div>
 <div id="msg"><div id="msgText"></div><button class="btn go" id="msgOk">OK</button></div>
 <input type="file" id="file" accept="image/*" multiple hidden>
@@ -73,7 +93,13 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const NAMES = {strip: "Strips", sheet: "Big: landscape", psheet: "Big: portrait"};
+// Effects are the booth's own (its EFFECTS tab); it draws them, and sends back how each photo looks.
+const FX_TABS = [["colour", "Colour"], ["stamp", "Date stamp"], ["leaks", "Light leaks"], ["spots", "Red spots"], ["lines", "Dust & streaks"]];
+const FX_NONE = {colour: "normal", stamp: false, leaks: 0, spots: 0, lines: 0};
 let designs = [], layout = "strip", count = 4, cat = "", design = null, slots = [], target = null, busy = false;
+let shown = [], effects = null, fx = {...FX_NONE}, fxTab = null;
+const cap = t => t.charAt(0) + t.slice(1).toLowerCase();
+const title = d => d.name.includes(":") ? d.name.split(":").slice(1).join(":").trim() : d.name;
 
 function say(text, after) {
   $("msgText").textContent = text; $("msg").style.display = "block";
@@ -102,7 +128,7 @@ function chips(el, items, current, pick) {
 
 function showPicker() {
   design = null;
-  $("editor").style.display = "none"; $("bar").style.display = "none"; $("picker").style.display = "block";
+  $("editor").style.display = "none"; $("dock").style.display = "none"; $("picker").style.display = "block";
   const kinds = ["strip", "sheet", "psheet"].filter(k => designs.some(d => d.kind === k));
   if (!kinds.includes(layout)) layout = kinds[0];
   chips($("layouts"), kinds.map(k => [k, NAMES[k]]), layout, v => { layout = v; showPicker(); });
@@ -113,15 +139,18 @@ function showPicker() {
   const fits = designs.filter(d => d.kind === layout && d.slots.length === count);
   const cats = [["", "All"]];
   if (fits.some(d => d.fav)) cats.push(["*", "\u2605 Favourites"]);
-  for (const c of new Set(fits.map(d => d.cat))) cats.push([c, c.charAt(0) + c.slice(1).toLowerCase()]);
+  for (const c of new Set(fits.map(d => d.cat))) cats.push([c, cap(c)]);
   if (!cats.some(c => c[0] === cat)) cat = "";
   chips($("cats"), cats.length > 2 ? cats : [], cat, v => { cat = v; showPicker(); });
-  const grid = $("grid"); grid.innerHTML = "";
-  for (const d of fits.filter(d => cat === "" || (cat === "*" ? d.fav : d.cat === cat))) {
+  const grid = $("grid"); grid.innerHTML = ""; grid.className = layout;
+  shown = fits.filter(d => cat === "" || (cat === "*" ? d.fav : d.cat === cat));
+  for (const d of shown) {
     const b = document.createElement("button"); b.className = "card";
-    const img = new Image(); img.loading = "lazy"; img.alt = d.name;
-    img.src = "/design.png?id=" + encodeURIComponent(d.id);
-    b.appendChild(img); b.onclick = () => openDesign(d); grid.appendChild(b);
+    const img = new Image(); img.loading = "lazy"; img.alt = "";
+    img.width = d.w; img.height = d.h;  // keeps its place while it loads
+    img.src = "/design.jpg?id=" + encodeURIComponent(d.id);
+    const name = document.createElement("span"); name.textContent = title(d);
+    b.append(img, name); b.onclick = () => openDesign(d); grid.appendChild(b);
   }
   window.scrollTo(0, 0);
 }
@@ -129,9 +158,20 @@ function showPicker() {
 function openDesign(d) {
   const old = slots.map(s => s.photo).filter(Boolean);  // photos carry over to the new design
   design = d;
-  $("picker").style.display = "none"; $("editor").style.display = "block"; $("bar").style.display = "flex";
+  slots.forEach(s => { clearTimeout(s.timer); s.token = -1; });
+  $("picker").style.display = "none"; $("editor").style.display = "block"; $("dock").style.display = "block";
+  drawFx();
+  const at = shown.indexOf(d);
+  $("navName").textContent = title(d);
+  if (shown.length > 1 && at >= 0) {
+    const n = document.createElement("small"); n.textContent = (at + 1) + " of " + shown.length; $("navName").appendChild(n);
+  }
+  $("prev").style.visibility = $("next").style.visibility = shown.length > 1 && at >= 0 ? "visible" : "hidden";
+  // As big as fits between the top of the page and the buttons, so the whole design shows at once.
   const stage = $("stage");
-  const maxW = Math.min(window.innerWidth - 32, 520), maxH = window.innerHeight * 0.72;
+  $("main").style.paddingBottom = $("dock").offsetHeight + 16 + "px";
+  const room = window.innerHeight - $("dock").offsetHeight - ($("stageWrap").getBoundingClientRect().top + window.scrollY) - 44;
+  const maxW = Math.min(window.innerWidth - 32, 560), maxH = Math.max(300, room);
   const k = Math.min(maxW / d.w, maxH / d.h);
   stage.style.width = d.w * k + "px"; stage.style.height = d.h * k + "px";
   stage.querySelectorAll(".slot").forEach(e => e.remove());
@@ -140,7 +180,7 @@ function openDesign(d) {
     const el = document.createElement("div"); el.className = "slot empty";
     Object.assign(el.style, {left: x * k + "px", top: y * k + "px", width: w * k + "px", height: h * k + "px"});
     stage.appendChild(el);
-    const s = {el, w: w * k, h: h * k, pw: w, ph: h, photo: null, img: null, zoom: 1, cx: .5, cy: .5};
+    const s = {el, w: w * k, h: h * k, pw: w, ph: h, photo: null, img: null, zoom: 1, cx: .5, cy: .5, fxImg: null, timer: 0, token: 0};
     gestures(s); return s;
   });
   old.slice(0, slots.length).forEach((p, i) => setPhoto(slots[i], p));
@@ -151,7 +191,63 @@ function setPhoto(s, photo) {
   s.photo = photo; s.zoom = 1; s.cx = .5; s.cy = .5;
   if (s.img) s.img.remove();
   s.img = new Image(); s.img.src = photo.url; s.el.appendChild(s.img); s.el.classList.remove("empty");
-  place(s);
+  place(s); look(s, 0);
+}
+
+function step(by) {
+  const at = shown.indexOf(design);
+  if (at >= 0 && shown.length > 1) openDesign(shown[(at + by + shown.length) % shown.length]);
+}
+
+// ---- Effects: a row of kinds above the buttons; tap one for its choices.
+function fxItems(key) {
+  if (key === "colour") return effects.colour.map(([v, label]) => [v, cap(label)]);
+  if (key === "stamp") return [[false, "Off"], [true, "On"]];
+  return [[0, "Off"], ...effects[key].map((name, i) => [i + 1, cap(name)])];
+}
+
+function fxOn() { return Object.keys(FX_NONE).some(k => fx[k] !== FX_NONE[k]); }
+
+function drawFx() {
+  const tabs = $("fxTabs"), row = $("fxChoices");
+  tabs.innerHTML = ""; row.innerHTML = "";
+  tabs.style.display = effects ? "flex" : "none";
+  row.style.display = effects && fxTab ? "flex" : "none";
+  if (!effects) return;
+  const label = document.createElement("span"); label.className = "label"; label.textContent = "Effects"; tabs.appendChild(label);
+  for (const [key, name] of FX_TABS) {
+    const b = document.createElement("button");
+    b.className = "chip" + (key === fxTab ? " on" : fx[key] !== FX_NONE[key] ? " set" : ""); b.textContent = name;
+    b.onclick = () => { fxTab = fxTab === key ? null : key; drawFx(); fitDock(); }; tabs.appendChild(b);
+  }
+  if (!fxTab) return;
+  for (const [value, name] of fxItems(fxTab)) {
+    const b = document.createElement("button");
+    b.className = "chip" + (fx[fxTab] === value ? " on" : ""); b.textContent = name;
+    b.onclick = () => { fx[fxTab] = value; const x = row.scrollLeft; drawFx(); $("fxChoices").scrollLeft = x; slots.forEach(s => look(s, 0)); };
+    row.appendChild(b);
+  }
+}
+
+function fitDock() { $("main").style.paddingBottom = $("dock").offsetHeight + 16 + "px"; }
+
+function plain(s) { if (s.fxImg) { URL.revokeObjectURL(s.fxImg.src); s.fxImg.remove(); s.fxImg = null; } }
+
+// Shows the photo with the effects on, drawn by the booth, `wait` ms from now (so a drag
+// asks once, when it stops). The last answer stays up until the new one arrives.
+function look(s, wait) {
+  clearTimeout(s.timer); const token = ++s.token;
+  if (!s.photo || !fxOn()) { plain(s); return; }
+  s.timer = setTimeout(async () => {
+    try {
+      const body = JSON.stringify({design: design.id, fx, photo: crop(s, 560, 0.8)});
+      const r = await fetch("/api/preview", {method: "POST", headers: {"Content-Type": "application/json"}, body});
+      if (!r.ok) throw new Error("no preview");
+      const url = URL.createObjectURL(await r.blob());
+      if (token !== s.token) { URL.revokeObjectURL(url); return; }
+      plain(s); s.fxImg = new Image(); s.fxImg.className = "fx"; s.fxImg.src = url; s.el.appendChild(s.fxImg);
+    } catch (e) { if (token === s.token) plain(s); }
+  }, wait);
 }
 
 function place(s) {
@@ -180,6 +276,7 @@ function gestures(s) {
       lastDist = dist; moved += 10;
     }
     place(s);
+    if (moved >= 8) { plain(s); look(s, 350); }
   });
   const up = e => {
     if (!pts.delete(e.pointerId)) return; lastDist = 0;
@@ -215,37 +312,40 @@ function refresh() {
     : filled + " of " + slots.length + " photos added";
 }
 
-function crop(s) {
+function crop(s, longest = 1600, quality = 0.92) {
   const p = s.photo, base = Math.max(s.w / p.w, s.h / p.h) * s.zoom;
   const vw = s.w / base, vh = s.h / base, sx = s.cx * p.w - vw / 2, sy = s.cy * p.h - vh / 2;
-  const scale = Math.min(1, 1600 / Math.max(s.pw, s.ph));
+  const scale = Math.min(1, longest / Math.max(s.pw, s.ph));
   const cw = Math.round(s.pw * scale), ch = Math.round(s.ph * scale);
   const c = document.createElement("canvas"); c.width = cw; c.height = ch;
   c.getContext("2d").drawImage(p.img, sx, sy, vw, vh, 0, 0, cw, ch);
-  return c.toDataURL("image/jpeg", 0.92);
+  return c.toDataURL("image/jpeg", quality);
 }
 
 async function send(print) {
   if (busy) return; busy = true; refresh();
   $("hint").textContent = "Sending to the booth…";
   try {
-    const body = JSON.stringify({design: design.id, print, photos: slots.map(crop)});
+    const body = JSON.stringify({design: design.id, print, fx, photos: slots.map(s => crop(s))});
     const r = await fetch("/api/make", {method: "POST", headers: {"Content-Type": "application/json"}, body});
     const out = await r.json();
     busy = false;
-    say(out.message, out.ok ? () => { slots.forEach(s => { s.photo = null; }); showPicker(); } : null);
+    say(out.message, out.ok ? () => { slots.forEach(s => { s.photo = null; }); fx = {...FX_NONE}; fxTab = null; showPicker(); } : null);
   } catch (e) { busy = false; say("Couldn't reach the booth. Are you still on its WiFi?"); }
   refresh(); status();
 }
 
 $("back").onclick = showPicker;
+$("prev").onclick = () => step(-1);
+$("next").onclick = () => step(1);
 $("add").onclick = () => { target = null; $("file").multiple = true; $("file").click(); };
 $("save").onclick = () => send(false);
 $("print").onclick = () => send(true);
 
 (async () => {
   try {
-    designs = (await (await fetch("/api/designs")).json()).designs;
+    const got = await (await fetch("/api/designs")).json();
+    designs = got.designs; effects = got.effects || null;
     showPicker();
   } catch (e) { say("Can't reach the booth. Join its WiFi and reload."); }
   status(); setInterval(status, 5000);
