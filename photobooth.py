@@ -1370,10 +1370,14 @@ _main_layout_rects = ()  # where the strip's pieces are on the main screen right
 
 def render_strip_to_ui(strip, layout, resample, transparent=False):
     global _main_layout_rects
-    _main_layout_rects = tuple((dx, dy, dx + dw, dy + dh) for _, (dx, dy, dw, dh) in layout)
     if transparent:
+        # A design's own layer. Not "what's on the main screen": the designs next door are drawn
+        # ahead of time (tick_warm_designs), and each strip is cut in its own place. Noting their
+        # position here drew the look's frame, name plate and logo for a neighbour around the
+        # design on show. ui_photos_canvas notes it for the design being shown.
         canvas = Image.new("RGBA", ui_size(), (0, 0, 0, 0))
     else:
+        _main_layout_rects = tuple((dx, dy, dx + dw, dy + dh) for _, (dx, dy, dw, dh) in layout)
         canvas = Image.new("RGB", ui_size(), MAIN_BG)
         strip = strip.convert("RGB")
 
