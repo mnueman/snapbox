@@ -1,0 +1,93 @@
+You are designing a photo frame for a Snapbox photo booth. It can be a photo strip,
+a big landscape sheet or a big portrait sheet. Follow this spec exactly. The booth
+turns away any design that breaks the hard rules.
+
+WHAT TO PRODUCE
+Two files with the same name, for example party1.png and party1.json.
+1. PNG: the artwork, RGBA, fully transparent wherever a photo shows through.
+2. JSON: where the photos go, and the design's name:
+   {"name": "Party Night", "slots": [[x, y, width, height], ...]}
+Draw it with code (Python + Pillow works well) so the sizes are exact. Image
+generators cannot hit exact pixel sizes or true transparency. If you can run code,
+run it and give me both files to download. If not, give me one script that writes both.
+
+THE THREE LAYOUTS (pixels, 300 dpi, printed on 4x6 paper)
+
+1. PHOTO STRIP: 1200 x 3600 (2 x 6 inches)
+   The same strip prints twice side by side and is cut down the middle.
+   Usually 3 or 4 photos stacked top to bottom.
+   Slots that work:
+   - 3 photos, title on top:
+     [[150,560,900,600],[150,1230,900,600],[150,1900,900,600]]
+   - 3 photos, art above and below:
+     [[150,960,900,600],[150,1630,900,600],[150,2300,900,600]]
+   - 4 photos:
+     [[120,180,960,690],[120,990,960,690],[120,1800,960,690],[120,2610,960,690]]
+
+2. BIG LANDSCAPE SHEET: 1800 x 1200 (6 x 4 inches)
+   One design fills the whole print. Usually 1 to 4 photos.
+   Slots that work:
+   - 1 photo on the right, art on the left: [[750,130,960,640]]
+   - 3 photos in a row, art below:
+     [[90,90,520,390],[640,90,520,390],[1190,90,520,390]]
+   - 4 photos in a grid on the right, art on the left:
+     [[520,110,560,420],[1130,110,560,420],[520,590,560,420],[1130,590,560,420]]
+   - 4 photos filling the sheet:
+     [[70,60,810,475],[920,60,810,475],[70,575,810,475],[920,575,810,475]]
+   - 1 large photo and 2 small:
+     [[60,450,900,600],[1000,450,360,250],[1000,790,360,250]]
+
+3. BIG PORTRAIT SHEET: 1200 x 1800 (4 x 6 inches)
+   One design fills the whole print. Usually 1 to 4 photos.
+   Slots that work:
+   - 1 photo, title on top, art below: [[240,350,720,940]]
+   - 2 photos side by side, title above, art below:
+     [[120,300,460,600],[620,300,460,600]]
+   - 3 photos in a row:
+     [[90,720,306,470],[446,720,306,470],[802,720,306,470]]
+   - 4 photos in a grid, title on top:
+     [[130,500,450,560],[620,500,450,560],[130,1090,450,560],[620,1090,450,560]]
+   - 1 large photo and 2 small:
+     [[310,150,580,760],[150,1140,360,460],[690,1140,360,460]]
+
+HARD RULES (all three layouts; the booth checks every one)
+- The PNG is exactly the size for its layout, has an alpha channel (RGBA) and is
+  under 20 MB.
+- 1 to 8 slots. Each is [x, y, width, height] in whole pixels from the top left,
+  at least 20 x 20, and fully inside the canvas.
+- List slots in the order the photos are taken (first photo first).
+- Every pixel inside a slot is fully transparent (alpha 0). A little decoration over
+  a slot's edge is fine (tape, a sticker), but at least half of every slot must be
+  transparent or the booth turns the design away.
+- The JSON is valid and has the same file name as the PNG.
+
+HOW THE BOOTH USES IT
+- Each photo is 16:9 landscape. It is center-cropped to fill its slot, then the PNG
+  is laid on top. Wide slots keep most of the photo. Tall slots, common on portrait
+  sheets, keep only the middle (a 460 x 600 slot keeps under half the width).
+- The photo extends 5 px past the slot on every side, so no gap shows at the edge.
+- Anything opaque drawn over a slot (tape, a sticker, a frame edge) covers the photo.
+- The area behind the PNG is white, so transparent pixels outside the slots print white.
+- If the date stamp is on, it sits in the bottom right corner of each photo. The
+  digits are about 7.5% of the slot height, inset about 8% of the slot height from
+  the bottom and 6% of the slot's longer side from the right. Keep that corner
+  clear, or add "stamp": "bl", "tl" or "tr" to the JSON to move it to another corner.
+- "name" in the JSON (up to 60 characters) is what the booth calls the design.
+
+DESIGN TIPS
+- Keep text and important art at least 60 px from every edge. The printer trims a little.
+- Make text at least 40 px tall with strong contrast. A strip is only 2 inches wide.
+- Leave at least 20 px of frame between slots.
+- A thin border or mat around each slot makes the photos look finished.
+- Sheets have room for a big title, names and artwork. Strips do not: keep strip
+  text short.
+
+CHECK BEFORE YOU HAND IT OVER
+Open the PNG and confirm: the size matches the layout, the mode is RGBA, every slot
+is inside the canvas, and the pixels inside each slot have alpha 0. Then show me a
+preview with gray boxes where the photos go.
+
+MY DESIGN
+Layout: [photo strip / big landscape sheet / big portrait sheet / all three]
+Number of photos: [1 to 8]
+Idea: [theme, colors, text, names]

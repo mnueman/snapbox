@@ -3469,7 +3469,7 @@ def _web_designs():
         w, h = {"sheet": (SHEET_W, SHEET_H), "psheet": (PSHEET_W, PSHEET_H)}.get(kind, (STRIP_W, STRIP_H))
         out.append({"id": design_id(path), "name": design_name(path) or path.stem, "kind": kind,
                     "w": w, "h": h, "slots": slots, "cat": design_category(path),
-                    "fav": design_id(path) in settings["favourites"]})
+                    "fav": design_id(path) in settings["favourites"], "mine": _is_upload(path)})
     return out
 
 
@@ -3498,6 +3498,198 @@ def _web_design_image(ident, size, solid=False):
                 _web_images.clear()
             _web_images[key] = body
     return body
+
+
+# ---- Designs added from the phone page ("Want to design your own?") ---------------------------
+# They go in ~/my-designs/uploads (sheets in its sheets/ and portrait/), outside the app's folder:
+# updates never touch them. Everything is checked before a file is written, the picture is saved
+# again by the booth (so only a real PNG lands on disk), and the booth's own design check has the
+# last word. web/design-prompt.txt is the spec people give to an AI to draw one.
+UPLOAD_DIR = MY_DESIGNS_DIR / "uploads"
+UPLOAD_GROUP = "MY DESIGNS"
+UPLOAD_MAX_DESIGNS = 200
+UPLOAD_MAX_PNG_BYTES = 25 * 1024 * 1024
+UPLOAD_MIN_CLEAR = 0.5   # at least this much of each photo box must be see-through
+_upload_lock = threading.Lock()
+
+
+class UploadError(ValueError):
+    """Why an uploaded design was turned away, in words for the person who sent it."""
+
+
+def _upload_bytes(item, limit, what):
+    text = item if isinstance(item, str) else ""
+    if text.startswith("data:"):
+        text = text.split(",", 1)[-1]
+    if not text or len(text) > limit * 4 // 3 + 16:
+        raise UploadError(f"The {what} is missing or too big.")
+    try:
+        return base64.b64decode(text, validate=True)
+    except ValueError:
+        raise UploadError(f"The {what} didn't arrive whole. Try again.")
+
+
+def _upload_slots(data, size):
+    """The photo boxes from an uploaded JSON, checked: whole numbers, 1 to 8 of them, each at
+    least 20 px and inside the picture."""
+    w, h = size
+    raw = data.get("slots") if isinstance(data, dict) else data
+    if not isinstance(raw, list) or not raw:
+        raise UploadError('The JSON needs "slots": [[x, y, width, height], ...].')
+    if not 1 <= len(raw) <= MAX_DESIGN_PHOTOS:
+        raise UploadError(f"It has {len(raw)} photo boxes; 1 to {MAX_DESIGN_PHOTOS} work.")
+    slots = []
+    for n, slot in enumerate(raw, 1):
+        if (not isinstance(slot, list) or len(slot) != 4
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) or v != int(v) for v in slot)):
+            raise UploadError(f"Photo box {n} needs four whole numbers: x, y, width, height.")
+        x, y, sw, sh = (int(v) for v in slot)
+        if sw < 20 or sh < 20 or x < 0 or y < 0 or x + sw > w or y + sh > h:
+            raise UploadError(f"Photo box {n} {[x, y, sw, sh]} isn't inside the {w} x {h} picture.")
+        slots.append([x, y, sw, sh])
+    return slots
+
+
+def _upload_stem(name, folder):
+    """A file name for it that nothing in `folder` has: letters, digits and dashes, then -2, -3..."""
+    stem = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40].strip("-") or "design"
+    taken = {f.stem.lower() for f in folder.iterdir()} if folder.is_dir() else set()
+    pick, n = stem, 1
+    while pick in taken:
+        n += 1
+        pick = f"{stem}-{n}"
+    return pick
+
+
+def _uploaded_designs():
+    return [f for sub in ("", "sheets", "portrait")
+            for f in sorted((UPLOAD_DIR / sub if sub else UPLOAD_DIR).glob("*.png"))]
+
+
+def _is_upload(path):
+    return UPLOAD_DIR in path.parents
+
+
+def _web_add_design(data):
+    """Checks a design sent from the phone page and, if all of it is right, adds it to the booth.
+    Returns what to tell the phone; raises UploadError with the reason when it's turned away."""
+    global _designs_stale
+    if not isinstance(data, dict):
+        raise UploadError("Not understood.")
+    # 1. The picture: a real PNG, exactly one of the three sizes, with see-through parts.
+    raw = _upload_bytes(data.get("png"), UPLOAD_MAX_PNG_BYTES, "picture")
+    if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise UploadError("The picture has to be a PNG file.")
+    sizes = {size: kind for kind, size in DESIGN_SIZES.items()}
+    try:
+        with Image.open(io.BytesIO(raw)) as im:
+            if im.format != "PNG":
+                raise UploadError("The picture has to be a PNG file.")
+            if im.size not in sizes:   # checked before any of it is unpacked
+                raise UploadError(f"The picture is {im.size[0]} x {im.size[1]}. It has to be exactly "
+                                  "1200 x 3600 (strip), 1800 x 1200 (landscape sheet) or "
+                                  "1200 x 1800 (portrait sheet).")
+            if im.mode not in ("RGBA", "LA", "PA") and "transparency" not in im.info:
+                raise UploadError("The picture has no see-through parts, so no photo could show. "
+                                  "Save it as a PNG with transparency (RGBA).")
+            art = im.convert("RGBA")
+    except UploadError:
+        raise
+    except Exception:
+        raise UploadError("The booth couldn't open the picture. Is it a PNG?")
+    kind = sizes[art.size]
+
+    # 2. The JSON: the photo boxes, and nothing the booth doesn't know.
+    try:
+        text = _upload_bytes(data.get("json"), 200_000, "JSON file").decode("utf-8-sig")
+        info = json.loads(text)
+    except UploadError:
+        raise
+    except ValueError:
+        raise UploadError("The JSON file can't be read. It should look like "
+                          '{"slots": [[x, y, width, height], ...]}.')
+    slots = _upload_slots(info, art.size)
+    stamp = info.get("stamp", "br") if isinstance(info, dict) else "br"
+    if stamp not in ("br", "bl", "tr", "tl"):
+        raise UploadError('"stamp" has to be "br", "bl", "tr" or "tl".')
+    file_name = Path(str(data.get("file") or "design")).stem
+    name = info.get("name") if isinstance(info, dict) and isinstance(info.get("name"), str) else file_name
+    name = "".join(c for c in name if c.isprintable()).strip()[:60] or "My design"
+
+    # 3. Each photo box is see-through, and there is some artwork.
+    alpha = np.asarray(art.getchannel("A"))
+    if not alpha.any():
+        raise UploadError("The picture is completely see-through: there's no design in it.")
+    for n, (x, y, sw, sh) in enumerate(slots, 1):
+        clear = float((alpha[y:y + sh, x:x + sw] < 16).mean())
+        if clear < UPLOAD_MIN_CLEAR:
+            raise UploadError(f"Photo box {n} is covered by the picture ({clear:.0%} see-through), so the "
+                              "photo wouldn't show. The picture must be transparent inside every box.")
+
+    # 4. Not already here, and there's room.
+    mark = hashlib.sha1(art.tobytes() + json.dumps(slots).encode()).hexdigest()
+    sub = DESIGN_SUBFOLDERS[kind]
+    folder = UPLOAD_DIR / sub if sub else UPLOAD_DIR
+    with _upload_lock:
+        existing = _uploaded_designs()
+        for other in existing:
+            try:
+                same = json.loads(other.with_suffix(".json").read_text()).get("upload") == mark
+            except (OSError, ValueError, AttributeError):
+                same = False
+            if same:
+                raise UploadError(f'That design is already on the booth ("{design_name(other) or other.stem}").')
+        if len(existing) >= UPLOAD_MAX_DESIGNS:
+            raise UploadError(f"The booth already holds {UPLOAD_MAX_DESIGNS} added designs. Remove one first.")
+        free = storage_free_bytes()
+        if free is not None and free < STORAGE_FULL_BYTES:
+            raise UploadError("The booth's storage is full. Delete old strips in REVIEW first.")
+        folder.mkdir(parents=True, exist_ok=True)
+        stem = _upload_stem(name, folder)
+        path, sidecar = folder / f"{stem}.png", folder / f"{stem}.json"
+        saved = {"slots": slots, "name": name, "group": UPLOAD_GROUP, "upload": mark}
+        if stamp != "br":
+            saved["stamp"] = stamp
+        try:
+            # The JSON first and the picture last, each under another name until it's whole: the
+            # booth only ever sees a finished design.
+            write_file_durably(sidecar, lambda f: f.write(json.dumps(saved, indent=1).encode()))
+            write_file_durably(path, lambda f: art.save(f, format="PNG", compress_level=3))
+            # 5. The booth's own check has the last word, on what is actually on disk.
+            with Image.open(path) as back:
+                back.load()
+                ok_size = back.size == DESIGN_SIZES[kind] and back.mode == "RGBA"
+            read, why = read_design_slots(path, kind)
+            if not ok_size or why or [list(s) for s in read] != slots:
+                raise UploadError(f"The booth couldn't use it ({why or 'it did not save right'}).")
+        except Exception as e:
+            for f in (path, sidecar):
+                f.unlink(missing_ok=True)
+                f.with_name(f".{f.name}.tmp").unlink(missing_ok=True)
+            if isinstance(e, UploadError):
+                raise
+            print(f"Could not save an uploaded design: {e}")
+            raise UploadError("The booth couldn't save it (storage full?).")
+    _designs_stale = True  # the main loop looks at the design folders again right away
+    print(f"Design added from a phone: {design_id(path)} ({kind}, {len(slots)} photos)")
+    return {"ok": True, "id": design_id(path), "kind": kind, "name": name, "photos": len(slots),
+            "message": f'"{name}" is on the booth: a '
+                       f'{ {"strip": "photo strip", "sheet": "landscape sheet", "psheet": "portrait sheet"}[kind]} '
+                       f'with {len(slots)} photo{"" if len(slots) == 1 else "s"}. Find it under My designs.'}
+
+
+def _web_remove_design(ident):
+    """Takes a design added from a phone off the booth. Only those: never a shipped or gifted one."""
+    global _designs_stale
+    path = next((f for f in _uploaded_designs() if design_id(f) == ident), None)
+    if path is None:
+        raise UploadError("Only designs added from a phone can be removed here.")
+    with _upload_lock:
+        path.unlink(missing_ok=True)
+        path.with_suffix(".json").unlink(missing_ok=True)
+    _designs_stale = True
+    print(f"Design removed from a phone: {ident}")
+    return {"ok": True, "message": "Removed from the booth."}
 
 
 def _web_effects():
@@ -3641,6 +3833,8 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
             elif url.path.startswith("/fonts/") and url.path[7:] in WEB_FONTS:
                 # The booth's own type: phones on its WiFi have no internet to fetch fonts from.
                 self._send(200, (BASE / "ui" / "fonts" / url.path[7:]).read_bytes(), "font/ttf", cache=True)
+            elif url.path == "/design-prompt.txt":
+                self._send(200, (WEB_DIR / "design-prompt.txt").read_bytes(), "text/plain; charset=utf-8")
             elif url.path == "/api/designs":
                 self._json(200, {"designs": _web_designs(), "layouts": LAYOUT_NAMES,
                                  "effects": _web_effects()})
@@ -3674,10 +3868,18 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             length = int(self.headers.get("Content-Length") or 0)
-            if self.path not in ("/api/make", "/api/preview") or not 0 < length <= WEB_MAX_BYTES:
+            if (self.path not in ("/api/make", "/api/preview", "/api/design", "/api/design/remove")
+                    or not 0 < length <= WEB_MAX_BYTES):
                 self._json(400, {"ok": False, "message": "Too big, or not understood."})
                 return
             data = json.loads(self.rfile.read(length))
+            if self.path.startswith("/api/design"):
+                try:
+                    self._json(200, _web_add_design(data) if self.path == "/api/design"
+                               else _web_remove_design(str(data.get("id", ""))))
+                except UploadError as e:
+                    self._json(400, {"ok": False, "message": str(e)})
+                return
             choice = _web_fx_choice(data.get("fx"))
             if self.path == "/api/preview":
                 # One photo, small, as the effects will make it look: the page shows it in place.

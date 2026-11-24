@@ -78,6 +78,23 @@
   .btn.go { background:var(--chrome); color:#111; border-color:#464748; box-shadow:inset 0 1px 0 rgba(255,255,255,.95); }
   .btn.ok { background:var(--steel); border-color:#141414; }
   .btn:disabled { opacity:.4; }
+  /* "Want to design your own?": a black panel in a chrome rim, under the designs */
+  .panel { margin-top:24px; background:var(--rim); border-radius:9px; padding:2px; box-shadow:0 2px 6px rgba(0,0,0,.6); }
+  .panel > div { background:#141414; border-radius:7.5px; padding:14px 14px 12px; }
+  .panel p { margin:8px 0 0; font-size:17px; color:var(--text); }
+  .panel p.note { color:var(--dim); font-size:15px; }
+  .panel ol { margin:8px 0 0; padding-left:22px; font-size:17px; }
+  .panel li { margin:4px 0; }
+  .panel .bar { padding:0; margin-top:12px; flex-wrap:wrap; }
+  .panel .btn { flex:1 1 30%; }
+  #promptText { display:none; margin:12px 0 0; padding:10px; max-height:300px; overflow:auto; background:#080808; border:1px solid #333;
+    border-radius:6px; color:#d8d8d4; font:12px/1.4 ui-monospace, Menlo, Consolas, monospace; white-space:pre-wrap; overflow-wrap:anywhere;
+    user-select:text; -webkit-user-select:text; }
+  #upResults div { margin-top:10px; padding:9px 10px; border-radius:6px; background:#1e1f20; font-size:16px; border-left:4px solid #8f9192; overflow-wrap:anywhere; }
+  #upResults div.bad { border-left-color:var(--red); color:#ffd2d3; }
+  #upResults b { display:block; letter-spacing:.05em; text-transform:uppercase; }
+  #remove { display:none; margin:10px auto 0; background:none; border:0; color:var(--bad); font-size:15px; letter-spacing:.08em;
+    text-transform:uppercase; text-decoration:underline; padding:8px; }
   #msg { position:fixed; left:16px; right:16px; top:36%; background:var(--rim); border-radius:10px; padding:2px;
     display:none; z-index:10; box-shadow:0 8px 24px rgba(0,0,0,.8); }
   #msg > div { background:#141414; border-radius:8.5px; padding:20px 18px 18px; text-align:center; font-size:20px; font-weight:700; letter-spacing:.04em; }
@@ -98,6 +115,23 @@
     <div class="chips" id="cats"></div>
     <div id="tally"></div>
     <div id="grid"></div>
+    <div class="panel" id="diy"><div>
+      <div class="step">Want to design your own?</div>
+      <p>Any AI chat app (ChatGPT, Claude, Gemini and the like) can draw a design that fits this booth exactly.</p>
+      <ol>
+        <li>Copy the instructions below.</li>
+        <li>Paste them into your AI app and write your idea at the end. It gives you two files: a PNG and a JSON.</li>
+        <li>Come back here, tap Add my design and pick both files. It stays on this booth, updates included.</li>
+      </ol>
+      <p class="note">This WiFi has no internet. Copy first, switch to your usual WiFi for the AI app, then rejoin this one to add the files.</p>
+      <div class="bar">
+        <button class="btn go" id="copyPrompt">Copy instructions</button>
+        <button class="btn" id="showPrompt">Read them</button>
+        <button class="btn ok" id="addDesign">Add my design</button>
+      </div>
+      <pre id="promptText"></pre>
+      <div id="upResults"></div>
+    </div></div>
   </section>
   <section id="editor">
     <div class="step">2. Add your photos</div>
@@ -105,6 +139,7 @@
     <div id="nav"><button id="prev" aria-label="Previous design">&#8249;</button><div id="navName"></div><button id="next" aria-label="Next design">&#8250;</button></div>
     <div id="stageWrap"><div id="stage"><img id="frame" alt=""></div></div>
     <p class="hint" id="hint"></p>
+    <button id="remove">Remove this design from the booth</button>
   </section>
 </main>
 <div id="dock">
@@ -119,6 +154,7 @@
 </div>
 <div id="msg"><div><span id="msgText"></span><i></i><button class="btn go" id="msgOk">OK</button></div></div>
 <input type="file" id="file" accept="image/*" multiple hidden>
+<input type="file" id="designFiles" accept=".png,.json,image/png,application/json" multiple hidden>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -209,6 +245,7 @@ function openDesign(d) {
     const n = document.createElement("small"); n.textContent = (at + 1) + " of " + shown.length; $("navName").appendChild(n);
   }
   $("prev").style.visibility = $("next").style.visibility = shown.length > 1 && at >= 0 ? "visible" : "hidden";
+  $("remove").style.display = d.mine ? "block" : "none";  // only designs added from a phone
   // As big as fits between the top of the page and the buttons, so the whole design shows at once.
   const stage = $("stage");
   $("main").style.paddingBottom = $("dock").offsetHeight + 16 + "px";
@@ -376,6 +413,111 @@ async function send(print) {
   } catch (e) { busy = false; say("Couldn't reach the booth. Are you still on its WiFi?"); }
   refresh(); status();
 }
+
+// ---- Want to design your own? The instructions for an AI app, and adding what it made.
+let promptText = "";
+async function loadPrompt() {
+  if (!promptText) promptText = await (await fetch("/design-prompt.txt")).text();
+  $("promptText").textContent = promptText; return promptText;
+}
+
+$("showPrompt").onclick = async () => {
+  try { await loadPrompt(); } catch (e) { say("Can't reach the booth. Are you still on its WiFi?"); return; }
+  const el = $("promptText"), open = el.style.display !== "block";
+  el.style.display = open ? "block" : "none"; $("showPrompt").textContent = open ? "Hide them" : "Read them";
+};
+
+$("copyPrompt").onclick = async () => {
+  let text;
+  try { text = await loadPrompt(); } catch (e) { say("Can't reach the booth. Are you still on its WiFi?"); return; }
+  let done = false;
+  try { await navigator.clipboard.writeText(text); done = true; } catch (e) {}
+  if (!done) {
+    // This page isn't on https, where phones only allow the old way of copying.
+    const t = document.createElement("textarea"); t.value = text; t.setAttribute("readonly", "");
+    Object.assign(t.style, {position: "fixed", top: "0", left: "0", opacity: "0", fontSize: "16px"});
+    document.body.appendChild(t); t.focus(); t.select(); t.setSelectionRange(0, text.length);
+    try { done = document.execCommand("copy"); } catch (e) {}
+    t.remove();
+  }
+  if (done) say("Copied. Paste it into your AI app and write your idea at the end.");
+  else { $("promptText").style.display = "block"; $("showPrompt").textContent = "Hide them";
+         say("Your phone wouldn't copy it by itself. The instructions are showing now: press and hold on them, Select All, Copy."); }
+};
+
+const readFile = f => new Promise((ok, bad) => {
+  const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => bad(new Error("unreadable")); r.readAsDataURL(f);
+});
+const stem = n => n.replace(/\.[^.]+$/, "").toLowerCase();
+
+function upNote(title, text, bad) {
+  const d = document.createElement("div"); if (bad) d.className = "bad";
+  const b = document.createElement("b"); b.textContent = title; d.append(b, document.createTextNode(text));
+  $("upResults").appendChild(d);
+}
+
+async function reloadDesigns(want) {
+  // The booth looks at its design folders within a few seconds: ask until the new ones are listed.
+  for (let i = 0; i < 12; i++) {
+    await new Promise(r => setTimeout(r, i ? 2000 : 1200));
+    try {
+      const got = await (await fetch("/api/designs")).json();
+      designs = got.designs; effects = got.effects || null;
+      if (want(designs)) return true;
+    } catch (e) {}
+  }
+  return false;
+}
+
+$("addDesign").onclick = () => $("designFiles").click();
+$("designFiles").onchange = async e => {
+  const files = [...e.target.files]; e.target.value = "";
+  if (!files.length) return;
+  $("upResults").innerHTML = "";
+  const pngs = files.filter(f => /\.png$/i.test(f.name)), jsons = files.filter(f => /\.json$/i.test(f.name));
+  for (const f of files) if (!pngs.includes(f) && !jsons.includes(f)) upNote(f.name, "Not a PNG or a JSON file, so it was left out.", true);
+  const pairs = [];
+  if (pngs.length === 1 && jsons.length === 1) pairs.push([pngs[0], jsons[0]]);  // one of each: they go together, whatever they're called
+  else {
+    for (const p of pngs) {
+      const j = jsons.find(x => stem(x.name) === stem(p.name));
+      if (j) pairs.push([p, j]); else upNote(p.name, "Its JSON file wasn't picked with it. Pick both files together: " + stem(p.name) + ".png and " + stem(p.name) + ".json.", true);
+    }
+    for (const j of jsons) if (!pngs.some(p => stem(p.name) === stem(j.name))) upNote(j.name, "Its PNG picture wasn't picked with it. Pick both files together.", true);
+  }
+  if (!pairs.length) { if (!$("upResults").children.length) upNote("Nothing to add", "Pick the PNG and the JSON file of a design.", true); return; }
+  $("addDesign").disabled = true; $("addDesign").textContent = "Checking…";
+  const added = [];
+  for (const [p, j] of pairs) {
+    try {
+      const body = JSON.stringify({file: p.name, png: await readFile(p), json: await readFile(j)});
+      const r = await fetch("/api/design", {method: "POST", headers: {"Content-Type": "application/json"}, body});
+      const out = await r.json();
+      upNote(p.name, out.message, !out.ok);
+      if (out.ok) added.push(out);
+    } catch (err) { upNote(p.name, "Couldn't reach the booth. Are you still on its WiFi?", true); }
+  }
+  if (added.length) {
+    $("addDesign").textContent = "Adding…";
+    const there = await reloadDesigns(list => added.every(a => list.some(d => d.id === a.id)));
+    if (there) { layout = added[0].kind; count = 0; cat = "MY DESIGNS"; showPicker(); $("diy").scrollIntoView(); }
+    else upNote("Almost there", "The booth is busy right now. Your design will show up here when it's free: reload this page in a minute.", false);
+  }
+  $("addDesign").disabled = false; $("addDesign").textContent = "Add my design";
+};
+
+$("remove").onclick = async () => {
+  if (!design || !design.mine || !confirm('Remove "' + title(design) + '" from the booth? Strips already made with it are kept.')) return;
+  const gone = design.id;
+  try {
+    const r = await fetch("/api/design/remove", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id: gone})});
+    const out = await r.json();
+    if (!out.ok) { say(out.message); return; }
+    designs = designs.filter(d => d.id !== gone);
+    say(out.message, () => { slots.forEach(s => { s.photo = null; }); showPicker(); });
+    reloadDesigns(list => !list.some(d => d.id === gone));
+  } catch (e) { say("Couldn't reach the booth. Are you still on its WiFi?"); }
+};
 
 $("back").onclick = showPicker;
 $("prev").onclick = () => step(-1);
