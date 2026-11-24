@@ -9,7 +9,17 @@ Two files with the same name, for example party1.png and party1.json.
    {"name": "Party Night", "slots": [[x, y, width, height], ...]}
 Draw it with code (Python + Pillow works well) so the sizes are exact. Image
 generators cannot hit exact pixel sizes or true transparency. If you can run code,
-run it and give me both files to download. If not, give me one script that writes both.
+run it and give me the files to download. If not, give me one script that writes them.
+
+HOW TO HAND THE FILES OVER
+- Give me each file as its own separate download link: the .png and the .json, one
+  link each. Do NOT put them in a zip or any other archive, even if there are
+  several designs. The booth only takes loose .png and .json files, picked on a phone.
+- Use short, plain file names: lowercase letters, digits and dashes only, no spaces
+  (party-night.png and party-night.json).
+- If I ask for more than one design or layout, give every design its own name and
+  its own pair of links (party-night-strip.png + party-night-strip.json,
+  party-night-wide.png + party-night-wide.json, ...).
 
 THE THREE LAYOUTS (pixels, 300 dpi, printed on 4x6 paper)
 
@@ -85,7 +95,8 @@ DESIGN TIPS
 CHECK BEFORE YOU HAND IT OVER
 Open the PNG and confirm: the size matches the layout, the mode is RGBA, every slot
 is inside the canvas, and the pixels inside each slot have alpha 0. Then show me a
-preview with gray boxes where the photos go.
+preview with gray boxes where the photos go, followed by the separate download
+links (no zip).
 
 MY DESIGN
 Layout: [photo strip / big landscape sheet / big portrait sheet / all three]

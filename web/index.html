@@ -143,7 +143,7 @@
       <p>Any AI chat app (ChatGPT, Claude, Gemini and the like) can draw a design that fits this booth exactly.</p>
       <ol>
         <li>Copy the instructions below.</li>
-        <li>Paste them into your AI app and write your idea at the end. It gives you two files: a PNG and a JSON.</li>
+        <li>Paste them into your AI app and write your idea at the end. It gives you two files: a PNG and a JSON. Save both to your phone.</li>
         <li>Come back here, tap Add my design and pick both files. It stays on this booth, updates included.</li>
       </ol>
       <p class="note">This WiFi has no internet. Copy first, switch to your usual WiFi for the AI app, then rejoin this one to add the files.</p>
@@ -184,7 +184,7 @@
 </div>
 <div id="msg"><div><span id="msgText"></span><i></i><button class="btn go" id="msgOk">OK</button></div></div>
 <input type="file" id="file" accept="image/*" multiple hidden>
-<input type="file" id="designFiles" accept=".png,.json,image/png,application/json" multiple hidden>
+<input type="file" id="designFiles" accept=".png,.json,.zip,image/png,application/json,application/zip" multiple hidden>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -569,7 +569,9 @@ $("designFiles").onchange = async e => {
   if (!files.length) return;
   $("upResults").innerHTML = "";
   const pngs = files.filter(f => /\.png$/i.test(f.name)), jsons = files.filter(f => /\.json$/i.test(f.name));
-  for (const f of files) if (!pngs.includes(f) && !jsons.includes(f)) upNote(f.name, "Not a PNG or a JSON file, so it was left out.", true);
+  for (const f of files) if (!pngs.includes(f) && !jsons.includes(f)) upNote(f.name, /\.zip$/i.test(f.name)
+    ? "That's a zip. Open it on your phone first, then pick the PNG and the JSON file that are inside it."
+    : "Not a PNG or a JSON file, so it was left out.", true);
   const pairs = [];
   if (pngs.length === 1 && jsons.length === 1) pairs.push([pngs[0], jsons[0]]);  // one of each: they go together, whatever they're called
   else {
