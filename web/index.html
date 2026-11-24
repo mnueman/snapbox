@@ -35,6 +35,8 @@
   .chips { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
   .chip { background:var(--gunmetal); color:var(--text); border:1px solid #0c0c0c; border-radius:7px; padding:8px 14px 7px;
     font-weight:700; font-size:16px; letter-spacing:.07em; text-transform:uppercase; box-shadow:inset 0 1px 0 rgba(255,255,255,.28); }
+  #tally { color:var(--dim); font-size:15px; letter-spacing:.08em; text-transform:uppercase; margin:2px 0 0; }
+  #tally button { background:none; border:0; padding:6px 0 6px 8px; color:var(--text); font-weight:700; letter-spacing:.08em; text-transform:uppercase; text-decoration:underline; }
   .chip.on { background:var(--chrome); color:#111; border-color:#464748; box-shadow:inset 0 1px 0 rgba(255,255,255,.95); }
   /* Big enough to read on a phone: two strips or two portrait sheets across, one landscape sheet. */
   #grid { display:grid; gap:12px; margin-top:10px; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); }
@@ -94,6 +96,7 @@
     <div class="chips" id="layouts"></div>
     <div class="chips" id="counts"></div>
     <div class="chips" id="cats"></div>
+    <div id="tally"></div>
     <div id="grid"></div>
   </section>
   <section id="editor">
@@ -174,6 +177,13 @@ function showPicker() {
   chips($("cats"), cats.length > 2 ? cats : [], cat, v => { cat = v; showPicker(); });
   const grid = $("grid"); grid.innerHTML = ""; grid.className = layout;
   shown = fits.filter(d => cat === "" || (cat === "*" ? d.fav : d.cat === cat));
+  // Never a design hidden without saying so: how many of this shape are showing, and a way to all of them.
+  const all = designs.filter(d => d.kind === layout).length, tally = $("tally");
+  tally.textContent = shown.length < all ? "Showing " + shown.length + " of " + all + " " : all + " designs ";
+  if (shown.length < all) {
+    const b = document.createElement("button"); b.textContent = "Show all";
+    b.onclick = () => { count = 0; cat = ""; showPicker(); }; tally.appendChild(b);
+  }
   for (const d of shown) {
     const b = document.createElement("button"); b.className = "card";
     const img = new Image(); img.loading = "lazy"; img.alt = "";

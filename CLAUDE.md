@@ -72,6 +72,11 @@ git.
   can't use (`design_problem`: wrong size, missing/bad JSON, openings outside the picture, damaged) and
   swaps a design that disappears mid-use for one of the same layout with room for the photos taken.
   A saved strip remembers its design by path ("design" in the JPEG comment), else by file name.
+- Every design on a booth must show on the phone page (`web/index.html`) and in DESIGNS without anyone
+  picking a filter first: both read the booth's design folders live, and the page opens on "Any photos"
+  and "All". Filters may only narrow the list after a tap, and the page says "Showing N of M" with SHOW
+  ALL when one is on. (The page once opened on "4 photos", which hid the Atkinsons' 3-photo family
+  strips; the owner said this must not happen again.) `check_designs.py` fails if the page loses this.
 - Never delete, rename or renumber a shipped design, and never move one between `frames/` and `gifts/`:
   booths would lose it on their next update. New designs get the next free number.
 - New designs: `python3 system/test_designs.py --new` runs each through the booth's strip builder and

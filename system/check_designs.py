@@ -8,6 +8,9 @@ Fails (exit 1) when
   - a design that's on stable is gone or moved: booths would lose it with the update
   - a design can't be used: the picture won't open, it's the wrong size, its JSON is missing or
     bad, or a photo opening isn't inside the picture (the booth would skip it)
+  - the phone page (web/index.html) would open with designs hidden: it must list every design of
+    the chosen shape until someone picks a filter (it once opened on "4 photos", which hid every
+    3-photo design)
 Warns when designs a booth shows together share a number (they'd sit side by side), and says
 which numbers are free. It reads committed files from git, so it sees every person's gifts even on
 a booth that only has one person's on disk.
@@ -89,6 +92,27 @@ def problem(ref, path, kind):
     return None
 
 
+# The phone page must open showing every design of the chosen shape: these lines of its script
+# are what makes that so. If the page is reworked, keep the behaviour and update the lines here.
+PAGE = "web/index.html"
+PAGE_MUST_HAVE = {
+    'count = 0, cat = ""': "it has to start with no photo-count and no group picked",
+    "(!count || d.slots.length === count)": "count 0 has to mean every number of photos",
+    'cat === "" ||': 'group "" has to mean every group',
+    "if (!counts.includes(count)) count = 0;": "an unknown photo count has to fall back to all, not to one of them",
+    'if (!cats.some(c => c[0] === cat)) cat = "";': "an unknown group has to fall back to all",
+}
+
+
+def page_problems(ref):
+    try:
+        page = git("show", f"{ref}:{PAGE}")
+    except RuntimeError:
+        return [f"{PAGE}: missing"]
+    return [f"{PAGE}: the phone page could hide designs when it opens ({why}); expected to find: {line}"
+            for line, why in PAGE_MUST_HAVE.items() if line not in page]
+
+
 def number(path):
     digits = "".join(ch for ch in PurePosixPath(path).stem if ch.isdigit())
     return int(digits) if digits else None
@@ -106,6 +130,7 @@ def main(args):
         why = problem(ref, path, kind)
         if why:
             errors.append(f"{path}: {why}")
+    errors += page_problems(ref)
     for path in unused:
         warnings.append(f"{path}: not in a folder the booths look in, so never shown")
 
