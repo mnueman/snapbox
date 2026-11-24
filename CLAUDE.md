@@ -79,8 +79,9 @@ git.
   strips; the owner said this must not happen again.) `check_designs.py` fails if the page loses this.
 - People add their own designs from the phone page ("Want to design your own?"): `_web_add_design` checks
   them and saves them in `~/my-designs/uploads/`, never inside `~/photobooth`, so updates keep them.
-  Deleting one only moves it to `uploads/.trash/` (Recently deleted) until the trash is emptied. Keep
-  `web/design-prompt.txt` (the spec they give an AI) true to `read_design_slots` and `_web_add_design`
+  Deleting one only moves it to `uploads/.trash/` (Recently deleted) until the trash is emptied. The page sends
+  only a PNG; `_find_slots` reads the photo boxes from its see-through areas (a JSON is optional). Keep
+  `web/design-prompt.txt` (the spec they give an AI) true to `_find_slots` and `_web_add_design`
   whenever a design rule changes.
 - Never delete, rename or renumber a shipped design, and never move one between `frames/` and `gifts/`:
   booths would lose it on their next update. New designs get the next free number.

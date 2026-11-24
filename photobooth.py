@@ -3550,6 +3550,109 @@ def _upload_slots(data, size):
     return slots
 
 
+def _clear_areas(mask):
+    """Each separate see-through area of a picture, as (x0, y0, x1, y1, pixels): runs of clear
+    pixels along each row, joined to the runs they touch in the row above."""
+    h, w = mask.shape
+    parent, boxes = [], []   # per area: where it was merged to; [x0, y0, x1, y1, pixels]
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    padded = np.zeros((h, w + 2), dtype=np.int8)
+    padded[:, 1:-1] = mask
+    edges = np.diff(padded, axis=1)
+    above = []   # (start, end, area) of the row above
+    for y in range(h):
+        row = edges[y]
+        starts, ends = np.flatnonzero(row == 1), np.flatnonzero(row == -1)
+        here, k = [], 0
+        for x0, x1 in zip(starts.tolist(), ends.tolist()):
+            area = None
+            while k < len(above) and above[k][1] <= x0:
+                k += 1
+            j = k
+            while j < len(above) and above[j][0] < x1:
+                other = find(above[j][2])
+                if area is None:
+                    area = other
+                elif other != area:
+                    parent[other] = area
+                    a, b = boxes[area], boxes[other]
+                    boxes[area] = [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]), a[4] + b[4]]
+                j += 1
+            if area is None:
+                area = len(parent)
+                parent.append(area)
+                boxes.append([x0, y, x1, y + 1, 0])
+            b = boxes[area]
+            boxes[area] = [min(b[0], x0), b[1], max(b[2], x1), y + 1, b[4] + x1 - x0]
+            here.append((x0, x1, area))
+        above = here
+    return [tuple(boxes[i]) for i in range(len(parent)) if parent[i] == i]
+
+
+def _find_slots(art):
+    """The photo boxes of a design that came without a JSON: its see-through areas, in reading
+    order (top to bottom, then left to right). Small holes are decoration and are passed over; a
+    see-through area that isn't a plain box (a clear background or margin) can't be told from a
+    photo box, so the design is turned away with the reason."""
+    w, h = art.size
+    alpha = np.asarray(art.getchannel("A"))
+    found = []
+    for x0, y0, x1, y1, pixels in _clear_areas(alpha < 16):
+        bw, bh = x1 - x0, y1 - y0
+        if bw < 60 or bh < 60 or pixels < 0.004 * w * h:
+            continue   # a speck, a cut-out star: not somewhere a photo goes
+        if pixels < 0.5 * bw * bh:
+            raise UploadError("Part of the picture is see-through without being a photo box (around "
+                              f"{x0}, {y0}, {bw} wide and {bh} tall): a clear background or margin, perhaps. "
+                              "Only the photo boxes may be transparent. Paint everything else, white included.")
+        if bw == w and bh == h:
+            raise UploadError("The whole picture is see-through behind the artwork, so the booth can't tell "
+                              "where a photo goes. Paint the background (white included) and leave only the "
+                              "photo boxes transparent.")
+        found.append([x0, y0, bw, bh])
+    if not found:
+        raise UploadError("The booth found no see-through box for a photo in the picture. Each photo "
+                          "box must be fully transparent.")
+    if len(found) > MAX_DESIGN_PHOTOS:
+        raise UploadError(f"The booth found {len(found)} see-through boxes; 1 to {MAX_DESIGN_PHOTOS} photos work.")
+    # Reading order: boxes whose middles sit level with the row's first box share a row.
+    found.sort(key=lambda b: (b[1], b[0]))
+    rows = []
+    for box in found:
+        mid = box[1] + box[3] / 2
+        row = next((r for r in rows if r[0][1] <= mid <= r[0][1] + r[0][3]), None)
+        if row is None:
+            rows.append([box])
+        else:
+            row.append(box)
+    return [box for row in rows for box in sorted(row, key=lambda b: b[0])]
+
+
+def _upload_preview(art, slots):
+    """A small picture of the design with its photo boxes numbered in the order they fill: what
+    the phone shows before the design is added."""
+    flat = Image.new("RGBA", art.size, (74, 74, 86, 255))
+    draw = ImageDraw.Draw(flat)
+    for n, (x, y, sw, sh) in enumerate(slots, 1):
+        draw.rectangle((x, y, x + sw - 1, y + sh - 1), fill=(206, 210, 216, 255))
+        size = max(40, min(sw, sh) // 3)
+        draw.text((x + sw / 2, y + sh / 2), str(n), font=menu_font(size, True, plain=True), fill=(40, 40, 46, 255), anchor="mm")
+    flat.alpha_composite(art)
+    for n, (x, y, sw, sh) in enumerate(slots, 1):   # the outline on top, so a covered box still shows
+        ImageDraw.Draw(flat).rectangle((x, y, x + sw - 1, y + sh - 1), outline=(200, 30, 37, 255), width=6)
+    flat = flat.convert("RGB")
+    flat.thumbnail((560, 560), Image.LANCZOS)
+    buf = io.BytesIO()
+    flat.save(buf, format="JPEG", quality=85)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
 def _upload_stem(name, folder):
     """A file name for it that nothing in `folder` has: letters, digits and dashes, then -2, -3..."""
     stem = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40].strip("-") or "design"
@@ -3572,6 +3675,8 @@ def _is_upload(path):
 
 def _web_add_design(data):
     """Checks a design sent from the phone page and, if all of it is right, adds it to the booth.
+    The picture alone is enough: without a JSON the booth finds the photo boxes itself. With
+    "check" it only looks: the answer says what it found and nothing is saved.
     Returns what to tell the phone; raises UploadError with the reason when it's turned away."""
     global _designs_stale
     if not isinstance(data, dict):
@@ -3579,7 +3684,8 @@ def _web_add_design(data):
     # 1. The picture: a real PNG, exactly one of the three sizes, with see-through parts.
     raw = _upload_bytes(data.get("png"), UPLOAD_MAX_PNG_BYTES, "picture")
     if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise UploadError("The picture has to be a PNG file.")
+        raise UploadError("The picture has to be a PNG file. If you picked it from your photos and it "
+                          "arrived as something else, save it to Files and pick it from there.")
     sizes = {size: kind for kind, size in DESIGN_SIZES.items()}
     try:
         with Image.open(io.BytesIO(raw)) as im:
@@ -3599,21 +3705,32 @@ def _web_add_design(data):
         raise UploadError("The booth couldn't open the picture. Is it a PNG?")
     kind = sizes[art.size]
 
-    # 2. The JSON: the photo boxes, and nothing the booth doesn't know.
-    try:
-        text = _upload_bytes(data.get("json"), 200_000, "JSON file").decode("utf-8-sig")
-        info = json.loads(text)
-    except UploadError:
-        raise
-    except ValueError:
-        raise UploadError("The JSON file can't be read. It should look like "
-                          '{"slots": [[x, y, width, height], ...]}.')
-    slots = _upload_slots(info, art.size)
+    # 2. The photo boxes: from the JSON when one came with it (and nothing the booth doesn't
+    # know), otherwise from the picture's own see-through areas.
+    info = None
+    if data.get("json"):
+        try:
+            text = _upload_bytes(data.get("json"), 200_000, "JSON file").decode("utf-8-sig")
+            info = json.loads(text)
+        except UploadError:
+            raise
+        except ValueError:
+            raise UploadError("The JSON file can't be read. It should look like "
+                              '{"slots": [[x, y, width, height], ...]}.')
+        slots = _upload_slots(info, art.size)
+    else:
+        slots = _find_slots(art)
     stamp = info.get("stamp", "br") if isinstance(info, dict) else "br"
     if stamp not in ("br", "bl", "tr", "tl"):
         raise UploadError('"stamp" has to be "br", "bl", "tr" or "tl".')
-    file_name = Path(str(data.get("file") or "design")).stem
-    name = info.get("name") if isinstance(info, dict) and isinstance(info.get("name"), str) else file_name
+    # Its name: what was typed on the phone, else the JSON's, else the file's (a phone's own
+    # "IMG_0042" says nothing, so that becomes "My design").
+    file_name = re.sub(r"[-_]+", " ", Path(str(data.get("file") or "")).stem).strip()
+    if re.fullmatch(r"(?i)(img|image|photo|download|file|pxl|dsc)?[ \d()]*", file_name):
+        file_name = ""
+    typed = data.get("name") if isinstance(data.get("name"), str) else ""
+    name = typed.strip() or (info.get("name") if isinstance(info, dict) and isinstance(info.get("name"), str)
+                             else "") or file_name
     name = "".join(c for c in name if c.isprintable()).strip()[:60] or "My design"
 
     # 3. Each photo box is see-through, and there is some artwork.
@@ -3625,6 +3742,13 @@ def _web_add_design(data):
         if clear < UPLOAD_MIN_CLEAR:
             raise UploadError(f"Photo box {n} is covered by the picture ({clear:.0%} see-through), so the "
                               "photo wouldn't show. The picture must be transparent inside every box.")
+
+    if data.get("check"):
+        # Only looking: what the booth found, for the phone to show before anything is added.
+        return {"ok": True, "checked": True, "kind": kind, "name": name, "photos": len(slots),
+                "found": info is None, "preview": _upload_preview(art, slots),
+                "message": (f"{len(slots)} photo box{'' if len(slots) == 1 else 'es'} "
+                            f"{'found' if info is None else 'in the JSON'}, filled in the order numbered.")}
 
     # 4. Not already here, and there's room.
     mark = hashlib.sha1(art.tobytes() + json.dumps(slots).encode()).hexdigest()

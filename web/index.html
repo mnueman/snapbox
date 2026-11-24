@@ -90,7 +90,13 @@
   #promptText { display:none; margin:12px 0 0; padding:10px; max-height:300px; overflow:auto; background:#080808; border:1px solid #333;
     border-radius:6px; color:#d8d8d4; font:12px/1.4 ui-monospace, Menlo, Consolas, monospace; white-space:pre-wrap; overflow-wrap:anywhere;
     user-select:text; -webkit-user-select:text; }
-  #upResults div { margin-top:10px; padding:9px 10px; border-radius:6px; background:#1e1f20; font-size:16px; border-left:4px solid #8f9192; overflow-wrap:anywhere; }
+  #upResults > div { margin-top:10px; padding:9px 10px; border-radius:6px; background:#1e1f20; font-size:16px; border-left:4px solid #8f9192; overflow-wrap:anywhere; }
+  #upResults div.offer { border-left-color:#d9dad8; }
+  #upResults .offer img { display:block; max-width:100%; max-height:420px; width:auto; height:auto; margin:8px auto; border-radius:3px; }
+  #upResults .offer span { display:block; color:var(--dim); font-size:15px; }
+  #upResults .offer input { display:block; width:100%; margin-top:8px; padding:11px 10px; border-radius:6px; border:1px solid #8f9192; background:#080808;
+    color:var(--text); font:inherit; font-size:18px; }
+  #upResults .offer .bar { background:none; border:0; padding:0; margin-top:10px; }
   #upResults div.bad { border-left-color:var(--red); color:#ffd2d3; }
   #upResults b { display:block; letter-spacing:.05em; text-transform:uppercase; }
   /* Mix 2 strips: a red-edged note while the 2nd strip is being made */
@@ -151,8 +157,8 @@
       <p>Any AI chat app (ChatGPT, Claude, Gemini and the like) can draw a design that fits this booth exactly.</p>
       <ol>
         <li>Copy the instructions below.</li>
-        <li>Paste them into your AI app and write your idea at the end. It gives you two files: a PNG and a JSON. Save both to your phone.</li>
-        <li>Come back here, tap Add my design and pick both files. It stays on this booth, updates included.</li>
+        <li>Paste them into your AI app and write your idea at the end. It gives you one PNG picture. Save it to your phone (Photos or Files, either works).</li>
+        <li>Come back here, tap Add my design and pick it. The booth shows where the photos will go; name it and add it. It stays on this booth, updates included.</li>
       </ol>
       <p class="note">This WiFi has no internet. Copy first, switch to your usual WiFi for the AI app, then rejoin this one to add the files.</p>
       <div class="bar">
@@ -198,7 +204,7 @@
 </div>
 <div id="msg"><div><span id="msgText"></span><i></i><button class="btn go" id="msgOk">OK</button></div></div>
 <input type="file" id="file" accept="image/*" multiple hidden>
-<input type="file" id="designFiles" accept=".png,.json,.zip,image/png,application/json,application/zip" multiple hidden>
+<input type="file" id="designFiles" accept="image/png,.png,.json,application/json,.zip,application/zip" multiple hidden>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -582,39 +588,56 @@ $("designFiles").onchange = async e => {
   const files = [...e.target.files]; e.target.value = "";
   if (!files.length) return;
   $("upResults").innerHTML = "";
-  const pngs = files.filter(f => /\.png$/i.test(f.name)), jsons = files.filter(f => /\.json$/i.test(f.name));
-  for (const f of files) if (!pngs.includes(f) && !jsons.includes(f)) upNote(f.name, /\.zip$/i.test(f.name)
-    ? "That's a zip. Open it on your phone first, then pick the PNG and the JSON file that are inside it."
-    : "Not a PNG or a JSON file, so it was left out.", true);
-  const pairs = [];
-  if (pngs.length === 1 && jsons.length === 1) pairs.push([pngs[0], jsons[0]]);  // one of each: they go together, whatever they're called
-  else {
-    for (const p of pngs) {
-      const j = jsons.find(x => stem(x.name) === stem(p.name));
-      if (j) pairs.push([p, j]); else upNote(p.name, "Its JSON file wasn't picked with it. Pick both files together: " + stem(p.name) + ".png and " + stem(p.name) + ".json.", true);
-    }
-    for (const j of jsons) if (!pngs.some(p => stem(p.name) === stem(j.name))) upNote(j.name, "Its PNG picture wasn't picked with it. Pick both files together.", true);
-  }
-  if (!pairs.length) { if (!$("upResults").children.length) upNote("Nothing to add", "Pick the PNG and the JSON file of a design.", true); return; }
+  const isJson = f => /\.json$/i.test(f.name), isPic = f => /\.png$/i.test(f.name) || (f.type || "").startsWith("image/");
+  const pics = files.filter(f => !isJson(f) && isPic(f)), jsons = files.filter(isJson);
+  for (const f of files) if (!pics.includes(f) && !jsons.includes(f)) upNote(f.name, /\.zip$/i.test(f.name)
+    ? "That's a zip. Open it on your phone first, then pick the PNG picture that's inside it."
+    : "Not a PNG picture, so it was left out.", true);
+  // The picture alone is enough. A JSON with the same name (or the only one picked) goes with it.
+  const used = new Set();
+  const pairs = pics.map(p => {
+    const j = pics.length === 1 && jsons.length === 1 ? jsons[0] : jsons.find(x => stem(x.name) === stem(p.name));
+    if (j) used.add(j); return [p, j || null];
+  });
+  for (const j of jsons) if (!used.has(j)) upNote(j.name, "No picture was picked with it. The booth needs the PNG; the JSON is optional.", true);
+  if (!pairs.length) { if (!$("upResults").children.length) upNote("Nothing to add", "Pick the PNG picture of a design.", true); return; }
   $("addDesign").disabled = true; $("addDesign").textContent = "Checking…";
-  const added = [];
   for (const [p, j] of pairs) {
     try {
-      const body = JSON.stringify({file: p.name, png: await readFile(p), json: await readFile(j)});
-      const r = await fetch("/api/design", {method: "POST", headers: {"Content-Type": "application/json"}, body});
-      const out = await r.json();
-      upNote(p.name, out.message, !out.ok);
-      if (out.ok) added.push(out);
+      const body = {file: p.name, png: await readFile(p)};
+      if (j) body.json = await readFile(j);
+      const out = await post("/api/design", {...body, check: true});
+      if (out.ok) offer(p.name, body, out); else upNote(p.name, out.message, true);
     } catch (err) { upNote(p.name, "Couldn't reach the booth. Are you still on its WiFi?", true); }
-  }
-  if (added.length) {
-    $("addDesign").textContent = "Adding…";
-    const there = await reloadDesigns(list => added.every(a => list.some(d => d.id === a.id)));
-    if (there) { layout = added[0].kind; count = 0; cat = "MY DESIGNS"; showPicker(); $("diy").scrollIntoView(); }
-    else upNote("Almost there", "The booth is busy right now. Your design will show up here when it's free: reload this page in a minute.", false);
   }
   $("addDesign").disabled = false; $("addDesign").textContent = "Add my design";
 };
+
+// What the booth found in a design, before it's added: its photo boxes numbered, a name to give it.
+function offer(file, body, found) {
+  const card = document.createElement("div"); card.className = "offer";
+  const b = document.createElement("b"); b.textContent = NAMES[found.kind] + " \u00b7 " + found.message;
+  const img = new Image(); img.alt = ""; img.src = found.preview;
+  const name = document.createElement("input"); name.type = "text"; name.maxLength = 60; name.value = found.name; name.placeholder = "Name this design";
+  const hint = document.createElement("span"); hint.textContent = "Photos fill the boxes in the order of the numbers. Looks right? Give it a name and add it.";
+  const row = document.createElement("div"); row.className = "bar";
+  const add = document.createElement("button"); add.className = "btn go"; add.textContent = "Add to the booth";
+  const skip = document.createElement("button"); skip.className = "btn"; skip.textContent = "Don't add";
+  skip.onclick = () => card.remove();
+  add.onclick = async () => {
+    add.disabled = skip.disabled = true; add.textContent = "Adding…";
+    try {
+      const out = await post("/api/design", {...body, name: name.value});
+      if (!out.ok) { card.remove(); upNote(file, out.message, true); return; }
+      card.className = ""; card.innerHTML = "";
+      const done = document.createElement("b"); done.textContent = out.name; card.append(done, document.createTextNode(out.message));
+      const there = await reloadDesigns(list => list.some(d => d.id === out.id));
+      if (there) { if (!design) { layout = out.kind; count = 0; cat = "MY DESIGNS"; showPicker(); card.scrollIntoView({block: "center"}); } }
+      else upNote("Almost there", "The booth is busy right now. Your design will show up here when it's free: reload this page in a minute.", false);
+    } catch (err) { add.disabled = skip.disabled = false; add.textContent = "Add to the booth"; say("Couldn't reach the booth. Are you still on its WiFi?"); }
+  };
+  row.append(skip, add); card.append(b, img, hint, name, row); $("upResults").appendChild(card);
+}
 
 async function post(path, data) {
   const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data || {})});

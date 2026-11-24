@@ -293,10 +293,13 @@ reachable from the booth's own network.
   to the designs for strip 2 (the photos are kept, to reuse or swap). "Print the 2 strips" then prints
   both side by side on one sheet, like MIX 2 STRIPS in REVIEW. Only strips: big sheets print alone.
 - **Want to design your own?** Under the designs: COPY INSTRUCTIONS copies `web/design-prompt.txt`, a spec
-  to paste into any AI chat app, which draws a PNG and a JSON. ADD MY DESIGN takes both files. The booth
-  checks them before anything is written (a real PNG, exactly 1200x3600 / 1800x1200 / 1200x1800, with
-  transparency; 1 to 8 photo boxes of whole numbers inside the picture; at least half of every box
-  see-through; valid JSON; not a design it already has), saves its own clean copy in
+  to paste into any AI chat app, which draws one PNG. ADD MY DESIGN takes that PNG alone (from the phone's
+  photos or files): the booth finds the photo boxes itself, as the picture's see-through rectangles in
+  reading order, and shows them numbered with a name to type before anything is added. A JSON picked with
+  it is optional and wins (its own photo order, `"stamp"`, `"name"`). The booth
+  checks everything before a file is written (a real PNG, exactly 1200x3600 / 1800x1200 / 1200x1800, with
+  transparency; 1 to 8 photo boxes inside the picture; nothing see-through that isn't a photo box, such as
+  a clear background or margin; not a design it already has), saves its own clean copy in
   `~/my-designs/uploads/` (`sheets/` and `portrait/` inside it) and shows it under MY DESIGNS on the page
   and the booth within seconds. A name that's taken gets `-2`, `-3`; nothing is ever overwritten. That
   folder is outside `~/photobooth`, so updates never touch it.
