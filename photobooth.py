@@ -5287,10 +5287,21 @@ def close_gallery(redraw=True):
         update_lcd()
 
 
+def gallery_next(step):
+    """The saved picture `step` (1 or -1) away, or None at the end. While mixing 2 strips, the
+    next strip that way: big sheets fill a print by themselves, so they're passed over."""
+    i = gallery_index + step
+    while 0 <= i < len(gallery_paths):
+        if gallery_pair_first is None or not is_sheet_file(gallery_paths[i]):
+            return i
+        i += step
+    return None
+
+
 def gallery_step(step):
     global gallery_index, _gallery_delete_until
-    new = gallery_index + step
-    if 0 <= new < len(gallery_paths):
+    new = gallery_next(step)
+    if new is not None:
         gallery_index = new
         _gallery_delete_until = 0.0
 
@@ -5404,8 +5415,7 @@ def gallery_pair_start():
         return
     if gallery_paths:
         gallery_pair_first = gallery_paths[gallery_index]
-        if len(gallery_paths) > 1:
-            gallery_step(1 if gallery_index < len(gallery_paths) - 1 else -1)
+        gallery_step(1 if gallery_next(1) is not None else -1)
 
 
 def gallery_pair_cancel():
@@ -5568,7 +5578,7 @@ def _draw_pair_sheet(img, draw, area, first, second, arrow_buttons=None):
         if n == 1 and arrow_buttons is not None:
             mid = (lbox[0] + lbox[2]) // 2
             for step, text, kx0, kx1 in ((-1, "\u25c0", lbox[0], mid - 3), (1, "\u25b6", mid + 3, lbox[2])):
-                enabled = 0 <= gallery_index + step < len(gallery_paths)
+                enabled = gallery_next(step) is not None
                 _draw_key(draw, (kx0, lbox[1], kx1, lbox[3]), text, arrow_buttons,
                           lambda st=step: gallery_step(st), fill=MENU_ROW if enabled else MENU_OFF,
                           text_fill=colour if enabled else (90, 90, 98), size=22)
@@ -5618,7 +5628,7 @@ def render_gallery():
     if gallery_reframe is not None:
         can_newer = can_older = len(gallery_reframe["choices"]) > 1
     else:
-        can_newer, can_older = gallery_index > 0, gallery_index < n - 1
+        can_newer, can_older = gallery_next(-1) is not None, gallery_next(1) is not None
     dim = MENU_OFF
 
     def arrow(box, label, step, enabled):
