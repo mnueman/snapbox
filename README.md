@@ -275,7 +275,9 @@ button opens the keyboard). The printer remembers it.
 
 Tap the printer in the top right corner of the main screen (or WIFI tab > PRINT FROM A PHONE: HOW?)
 for the three steps on screen: join the booth's printer network on the phone, open
-`http://10.42.0.1:8080`. Pick a design (big pictures with their names; the arrows above a design
+`http://10.42.0.1:8080`. The page looks like the CLASSIC CAMERA menus (the booth serves its own fonts
+from `/fonts/`). Every design on the booth of the chosen shape is listed, whatever its number of photos,
+until a number is picked (ANY PHOTOS / 3 PHOTOS / 4 PHOTOS). Pick a design (big pictures with their names; the arrows above a design
 flip to the next one at full size, keeping the photos), tap each box to add a photo, drag to move
 it and pinch to zoom, then SAVE (it appears in REVIEW like any strip, and CHANGE FRAME works on it)
 or SAVE & PRINT. The Effects row above the buttons puts the booth's own effects on the photos:

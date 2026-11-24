@@ -3450,6 +3450,7 @@ def start_print(path, other=None):
 # ---------------------------------------------------------------------------
 
 WEB_DIR = BASE / "web"
+WEB_FONTS = ("BarlowCondensed-Bold.ttf", "BarlowCondensed-Medium.ttf", "Yellowtail.ttf")
 WEB_MAX_BYTES = 48 * 1024 * 1024
 WEB_NEUTRAL_FX = {"seed": 0, "opts": [], "stamp": "", "bw": False}  # phone photos: as they are
 WEB_IMAGE_CACHE = 48 * 1024 * 1024  # bytes of design pictures kept ready for phones
@@ -3637,6 +3638,9 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
         try:
             if url.path in ("/", "/index.html"):
                 self._send(200, (WEB_DIR / "index.html").read_bytes(), "text/html; charset=utf-8")
+            elif url.path.startswith("/fonts/") and url.path[7:] in WEB_FONTS:
+                # The booth's own type: phones on its WiFi have no internet to fetch fonts from.
+                self._send(200, (BASE / "ui" / "fonts" / url.path[7:]).read_bytes(), "font/ttf", cache=True)
             elif url.path == "/api/designs":
                 self._json(200, {"designs": _web_designs(), "layouts": LAYOUT_NAMES,
                                  "effects": _web_effects()})
