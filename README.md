@@ -82,8 +82,10 @@ optionally `"stamp": "bl"`, `"tl"` or `"tr"` to move the date stamp to another c
 ### DESIGNS: picking one on the booth
 
 Tap the strip on the main screen. Every design is shown as a small picture, a page at a time (NEXT /
-PREV, or swipe). Tap one to use it; photos already taken are kept, and only designs with room for them
-are offered.
+PREV, or swipe). Tap one to see it close up: drag the picture to see the rest of it, ZOOM IN for more
+detail, ◀ ▶ (or a swipe on the keys) for the designs either side, the star to keep it in FAVOURITES, and
+USE THIS to use it (BACK returns to the pictures). Photos already taken are kept, and only designs with
+room for them are offered.
 
 - ◀ ▶ at the top steps through the groups: ★ FAVOURITES, ALL DESIGNS, then BLANK, FUN, ACTIVITIES
   (golf, yoga, beach, hiking), HAWAII, WEDDING, COUPLE, COLLAGE, ARMY. Designs are in that order

@@ -5234,6 +5234,7 @@ def render_wifi_tab(draw, area, buttons):
 GALLERY_IDLE_SECONDS = 60  # back to the camera after this long untouched
 DELETE_CONFIRM_SECONDS = 4
 SWIPE_MIN_PX = 50
+DRAG_MIN_PX = 10  # DESIGNS' close-up: a touch that moves this far is a drag, not a tap
 STORAGE_LOW_BYTES = 1024 ** 3
 STORAGE_FULL_BYTES = 200 * 1024 ** 2
 
@@ -5247,6 +5248,8 @@ gallery_reframe = None  # CHANGE FRAME: {"path", "photos", "fx", "choices", "pos
 _gallery_drawn = None
 _gallery_thumbs = {}
 _gesture_down = None
+_gesture_last = None
+_gesture_dragged = False
 
 
 def storage_free_bytes():
@@ -5782,16 +5785,24 @@ def update_gallery(force=False):
         update_lcd()
 
 
+def _dragging_picture(start):
+    """A touch that began on the picture in DESIGNS' close-up: it moves the picture."""
+    if not (menu_open and menu_tab == "designs" and designs_inspect is not None and _inspect_view):
+        return False
+    vx0, vy0, vx1, vy1 = _inspect_view[:4]
+    return vx0 <= start[0] <= vx1 and vy0 <= start[1] <= vy1
+
+
 def next_gestures(events):
     """[("tap", (x, y)) or ("swipe", dx)] in UI coordinates, each counted when the finger lifts.
     Every touch in the batch counts: none is dropped for coming soon after another."""
-    global _gesture_down
+    global _gesture_down, _gesture_last, _gesture_dragged
     gestures = []
     for event in events:
-        if event.type in (pygame.FINGERDOWN, pygame.FINGERUP):
+        if event.type in (pygame.FINGERDOWN, pygame.FINGERUP, pygame.FINGERMOTION):
             screen_w, screen_h = lcd.get_size()
             pos = (event.x * screen_w, event.y * screen_h)
-        elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+        elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
             if getattr(event, "touch", False):
                 continue  # the same touch also arrives as a finger event
             pos = event.pos
@@ -5800,9 +5811,28 @@ def next_gestures(events):
         point = screen_to_ui(*pos)
         if point is None:
             continue
+        moving = event.type in (pygame.FINGERMOTION, pygame.MOUSEMOTION)
         if event.type in (pygame.FINGERDOWN, pygame.MOUSEBUTTONDOWN):
-            _gesture_down = point
-        elif _gesture_down is not None:
+            _gesture_down = _gesture_last = point
+            _gesture_dragged = False
+        elif _gesture_down is None:
+            continue
+        elif _dragging_picture(_gesture_down):
+            # DESIGNS' close-up: the picture follows the finger. A touch that barely moves is a tap.
+            start = _gesture_down
+            if not _gesture_dragged and math.hypot(point[0] - start[0], point[1] - start[1]) >= DRAG_MIN_PX:
+                _gesture_dragged = True
+                _gesture_last = start
+            if _gesture_dragged:
+                inspect_drag(point[0] - _gesture_last[0], point[1] - _gesture_last[1])
+                _gesture_last = point
+            if not moving:
+                _gesture_down = None
+                if not _gesture_dragged:
+                    gestures.append(("tap", start))
+        elif moving:
+            continue
+        else:
             start, _gesture_down = _gesture_down, None
             dx, dy = point[0] - start[0], point[1] - start[1]
             if abs(dx) >= SWIPE_MIN_PX and abs(dx) > abs(dy):
@@ -6038,6 +6068,13 @@ designs_page = 0
 _thumbs = {}         # (path, PNG mtime) -> the stored thumbnail
 _thumb_fits = {}     # (path, PNG mtime, w, h) -> it at the size shown
 _thumb_thread = None
+# The close-up: a tap on a design in DESIGNS shows it big, to drag around and zoom, before using it.
+designs_inspect = None   # the design being looked at (its path), or None for the page of pictures
+_inspect_zoom = 0        # which of _inspect_scales
+_inspect_at = [0.5, 0.0]  # where the view is, 0-1 across and down what there is to scroll
+_inspect_view = None     # the picture's area on screen: drags that start inside it move the picture
+_inspect_full = (None, None)  # (design, its full-size picture)
+_inspect_fits = {}       # (design, w, h) -> it at a size shown
 
 
 def design_in_category(index, cat):
@@ -6132,10 +6169,11 @@ def warm_thumbs(first=()):
 
 def open_designs():
     global menu_open, menu_tab, menu_fullscreen, menu_quick, _menu_last_cam
-    global designs_kind, designs_cat, designs_page
+    global designs_kind, designs_cat, designs_page, designs_inspect
     if not frames or mode != "creation":
         return
     print("Designs opened.")
+    designs_inspect = None
     designs_kind = current_kind()
     designs_cat = design_filter if design_filter in _design_cats(designs_kind) else "all"
     if designs_cat != "all" and not design_in_category(current_frame_index, designs_cat):
@@ -6181,8 +6219,9 @@ def toggle_favourite(path):
 
 
 def choose_design(path):
-    """A tap on a design in DESIGNS: use it, keeping the photos already taken."""
-    global current_frame_index, design_filter
+    """USE THIS in DESIGNS' close-up: use the design, keeping the photos already taken."""
+    global current_frame_index, design_filter, designs_inspect
+    designs_inspect = None
     if path not in frames:
         return
     _last_frame_of_kind[current_kind()] = current_frame_index
@@ -6194,6 +6233,195 @@ def choose_design(path):
     print(f"Design picked: {path.name} (showing: {design_filter})")
     close_menu(redraw=False)
     save_preview()
+
+
+def _designs_shown():
+    """The designs on DESIGNS' pages right now (frame numbers): this layout, this group."""
+    cat = designs_cat if designs_cat in _design_cats(designs_kind) else "all"
+    return [i for i in _designs_on_offer(designs_kind) if design_in_category(i, cat)]
+
+
+def inspect_design(path):
+    global designs_inspect, _inspect_zoom, _inspect_at
+    if path in frames:
+        designs_inspect, _inspect_zoom, _inspect_at = path, 0, [0.5, 0.0]
+
+
+def inspect_close():
+    global designs_inspect, designs_page, _inspect_full
+    designs_inspect, _inspect_full = None, (None, None)
+    _inspect_fits.clear()
+    designs_page = -1  # back on the page with the design in use
+
+
+def inspect_step(step):
+    """The design before or after this one, in the order of the pages."""
+    shown = [frames[i] for i in _designs_shown()]
+    if designs_inspect in shown and len(shown) > 1:
+        inspect_design(shown[(shown.index(designs_inspect) + step) % len(shown)])
+
+
+def inspect_zoom_step():
+    global _inspect_zoom
+    _inspect_zoom += 1  # past the closest it goes back to the first (render_design_inspect)
+
+
+def inspect_drag(dx, dy):
+    """The finger moved this far (px): the picture goes with it."""
+    if _inspect_view is None:
+        return
+    _, _, _, _, over_x, over_y = _inspect_view
+    if over_x > 0:
+        _inspect_at[0] = min(1.0, max(0.0, _inspect_at[0] - dx / over_x))
+    if over_y > 0:
+        _inspect_at[1] = min(1.0, max(0.0, _inspect_at[1] - dy / over_y))
+
+
+def _inspect_scales(kind, size, vw, vh):
+    """How big the close-up can be shown (fractions of full size), smallest first. A strip starts
+    as wide as the view (it never fits whole); a sheet starts whole, then fills the view, then
+    twice that."""
+    iw, ih = size
+    whole, fill = min(vw / iw, vh / ih), max(vw / iw, vh / ih)
+    scales = [fill, 2 * fill] if kind == "strip" else [whole, fill, 2 * fill]
+    out = []
+    for sc in scales:
+        sc = min(1.0, sc)
+        if not out or sc > out[-1] * 1.15:
+            out.append(sc)
+    return out
+
+
+def _inspect_picture(path, w, h):
+    """The design w x h px, soft grey where the photos go (like the small pictures)."""
+    global _inspect_full
+    ident = (path, _mtime(path))
+    if _inspect_full[0] != ident:
+        with Image.open(path) as im:
+            art = im.convert("RGBA")
+        full = Image.new("RGBA", art.size, (206, 210, 216, 255))
+        full.alpha_composite(art)
+        _inspect_full = (ident, full.convert("RGB"))
+        _inspect_fits.clear()
+    fit = _inspect_fits.get((ident, w, h))
+    if fit is None:
+        if len(_inspect_fits) > 3:
+            _inspect_fits.clear()
+        fit = _inspect_fits[(ident, w, h)] = _inspect_full[1].resize((w, h), Image.LANCZOS, reducing_gap=2.0)
+    return fit
+
+
+def render_design_inspect(img, area, buttons):
+    """DESIGNS' close-up: one design big, dragged around with a finger, with keys to zoom, star it,
+    step to its neighbours and use it."""
+    global _inspect_zoom, _inspect_view
+    draw = ImageDraw.Draw(img, "RGBA")
+    x0, y0, x1, y1 = area
+    gap = 8
+    path = designs_inspect
+    index = frames.index(path)
+    kind = frame_kind(index)
+    shown = _designs_shown()
+    side = is_landscape()
+    if side:   # keys down the right
+        col_w = 136
+        vx0, vy0, vx1, vy1 = x0, y0, x1 - col_w - gap, y1
+    else:      # keys under the picture
+        foot_h = 3 * 58 + 2 * gap
+        vx0, vy0, vx1, vy1 = x0, y0, x1, y1 - foot_h - gap
+    vw, vh = vx1 - vx0, vy1 - vy0
+
+    scales = _inspect_scales(kind, frame_size(index), vw, vh)
+    _inspect_zoom %= len(scales)
+    iw, ih = frame_size(index)
+    pw, ph = max(1, round(iw * scales[_inspect_zoom])), max(1, round(ih * scales[_inspect_zoom]))
+    draw.rectangle((vx0, vy0, vx1, vy1), fill=MENU_FIELD)
+    try:
+        pic = _inspect_picture(path, pw, ph)
+    except Exception as e:
+        print(f"Could not show {design_id(path)} close up: {e}")
+        pic = None
+    over_x, over_y = max(0, pw - vw), max(0, ph - vh)
+    _inspect_view = (vx0, vy0, vx1, vy1, over_x, over_y)
+    if pic is None:
+        _draw_text_centered(draw, (vx0, vy0, vx1, vy1), "COULD NOT OPEN THIS DESIGN", menu_font(18), MENU_DIM)
+    else:
+        cx, cy = round(over_x * _inspect_at[0]), round(over_y * _inspect_at[1])
+        part = pic.crop((cx, cy, cx + min(pw, vw), cy + min(ph, vh)))
+        img.paste(part, (vx0 + (vw - part.width) // 2, vy0 + (vh - part.height) // 2))
+        # Where the view is in the whole design: a bar on each side that has more to see.
+        bar = MENU_ACCENT + (255,)
+        if over_y:
+            bh = max(24, vh * vh // ph)
+            by = vy0 + round((vh - bh) * _inspect_at[1])
+            draw.rounded_rectangle((vx1 - 7, by, vx1 - 2, by + bh), radius=3, fill=bar, outline=(0, 0, 0, 160))
+        if over_x:
+            bw = max(24, vw * vw // pw)
+            bx = vx0 + round((vw - bw) * _inspect_at[0])
+            draw.rounded_rectangle((bx, vy1 - 7, bx + bw, vy1 - 2), radius=3, fill=bar, outline=(0, 0, 0, 160))
+        if (over_x or over_y) and _inspect_at == [0.5, 0.0]:
+            hint = "DRAG TO SEE THE REST"
+            font = menu_font(15, True)
+            tw = draw.textbbox((0, 0), hint, font=font)[2] + 24
+            pill = ((vx0 + vx1 - tw) // 2, vy1 - 44, (vx0 + vx1 + tw) // 2, vy1 - 14)
+            draw.rounded_rectangle(pill, radius=15, fill=(0, 0, 0, 185))
+            _draw_text_centered(draw, pill, hint, font, (255, 255, 255))
+
+    # The keys.
+    name = design_name(path) or path.stem.upper()
+    where = f"{shown.index(index) + 1} OF {len(shown)}" if index in shown else ""
+    in_use = index == current_frame_index
+    fav = design_id(path) in settings["favourites"]
+    zoom = ("ZOOM OUT" if _inspect_zoom == len(scales) - 1 else "ZOOM IN") if len(scales) > 1 else None
+    many = len(shown) > 1 and index in shown
+    arrow = dict(size=28) if many else dict(size=28, fill=MENU_OFF, text_fill=MENU_DIM)
+    use = dict(fill=MENU_ACCENT, text_fill=(0, 0, 0))
+
+    def label(box):
+        nb = (box[0], box[1], box[2], (box[1] + box[3]) // 2 + 4) if where else box
+        _draw_text_centered(draw, nb, name, _fit_font(draw, name, box[2] - box[0] - 4, 17), MENU_TEXT)
+        if where:
+            _draw_text_centered(draw, (box[0], nb[3], box[2], box[3]), where, menu_font(14), MENU_DIM)
+
+    def star_key(box):
+        _draw_key(draw, box, "", buttons, lambda: toggle_favourite(path), fill=MENU_KEY)
+        r = min(box[3] - box[1], box[2] - box[0]) * 0.26
+        _draw_star(draw, (box[0] + box[2]) / 2, (box[1] + box[3]) / 2, r, fav)
+
+    def zoom_key(box):
+        if zoom:
+            _draw_key(draw, box, zoom, buttons, inspect_zoom_step, fill=MENU_KEY, size=20)
+
+    if side:
+        kx0, kx1 = x1 - col_w, x1
+        half = (col_w - gap) // 2
+        rows = 6
+        kh = (y1 - y0 - (rows - 1) * gap) / rows
+        ys = [round(y0 + n * (kh + gap)) for n in range(rows)]
+        kh = round(kh)
+        _draw_key(draw, (kx0, ys[0], kx1, ys[0] + kh), "\u25c0 BACK", buttons, inspect_close, fill=MENU_DONE, size=22)
+        label((kx0, ys[1], kx1, ys[1] + kh))
+        _draw_key(draw, (kx0, ys[2], kx0 + half, ys[2] + kh), "\u25c0", buttons, lambda: inspect_step(-1), **arrow)
+        _draw_key(draw, (kx1 - half, ys[2], kx1, ys[2] + kh), "\u25b6", buttons, lambda: inspect_step(1), **arrow)
+        zoom_key((kx0, ys[3], kx1, ys[3] + kh))
+        star_key((kx0, ys[4], kx1, ys[4] + kh))
+        _draw_key(draw, (kx0, ys[5], kx1, y1), "IN USE" if in_use else "USE\nTHIS", buttons,
+                  lambda: choose_design(path), size=22, **use)
+    else:
+        fy = vy1 + gap
+        kh = 58
+        q = (x1 - x0 - 3 * gap) // 4
+        xs = [x0 + n * (q + gap) for n in range(4)]
+        label((x0, fy, x1, fy + kh))
+        fy += kh + gap
+        _draw_key(draw, (xs[0], fy, xs[0] + q, fy + kh), "\u25c0", buttons, lambda: inspect_step(-1), **arrow)
+        zoom_key((xs[1], fy, xs[1] + q, fy + kh))
+        star_key((xs[2], fy, xs[2] + q, fy + kh))
+        _draw_key(draw, (xs[3], fy, x1, fy + kh), "\u25b6", buttons, lambda: inspect_step(1), **arrow)
+        fy += kh + gap
+        _draw_key(draw, (x0, fy, xs[1] + q, y1), "\u25c0 BACK", buttons, inspect_close, fill=MENU_DONE, size=22)
+        _draw_key(draw, (xs[2], fy, x1, y1), "IN USE" if in_use else "USE THIS", buttons,
+                  lambda: choose_design(path), size=22, **use)
 
 
 def _draw_star(draw, cx, cy, r, on):
@@ -6227,6 +6455,11 @@ def _designs_grid(kind, w, h, gap):
 
 def render_designs_view(img, area, buttons):
     global designs_page
+    if designs_inspect is not None:
+        if designs_inspect in frames:
+            render_design_inspect(img, area, buttons)
+            return
+        inspect_close()  # the design was taken off the booth while it was being looked at
     draw = ImageDraw.Draw(img, "RGBA")
     x0, y0, x1, y1 = area
     w, gap, bar_h, foot_h = x1 - x0, 8, 60, 54
@@ -6301,7 +6534,7 @@ def render_designs_view(img, area, buttons):
         _draw_star(draw, bx + tw - star / 2 - 2, by + star / 2 + 2, star * 0.34, fav)
         # The star's corner first: a tap there is the star, anywhere else picks the design.
         buttons.append(((bx + tw - star - 6, by, bx + tw, by + star + 6), lambda p=path: toggle_favourite(p)))
-        buttons.append((box, lambda p=path: choose_design(p)))
+        buttons.append((box, lambda p=path: inspect_design(p)))
     if missing:
         warm_thumbs(missing)
 
@@ -6771,7 +7004,10 @@ def handle_swipe(dx):
             menu_focus_step(step)
             update_menu(force=True)
         elif menu_tab == "designs":
-            designs_turn_page(step)
+            if designs_inspect is not None:
+                inspect_step(step)
+            else:
+                designs_turn_page(step)
             update_menu(force=True)
     elif mode == "browse":
         browse_step(step)
