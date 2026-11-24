@@ -97,7 +97,8 @@
   #upResults .offer input { display:block; width:100%; margin-top:8px; padding:11px 10px; border-radius:6px; border:1px solid #8f9192; background:#080808;
     color:var(--text); font:inherit; font-size:18px; }
   #upResults .offer .bar { background:none; border:0; padding:0; margin-top:10px; }
-  #upResults div.bad { border-left-color:var(--red); color:#ffd2d3; }
+  #upResults div.bad { border-left-color:var(--red); color:#ffd2d3; background:#2a1516; }
+  #upResults div.bad b { color:#ff8e91; }
   #upResults b { display:block; letter-spacing:.05em; text-transform:uppercase; }
   /* Mix 2 strips: a red-edged note while the 2nd strip is being made */
   #mixBar { margin-top:8px; display:none; }
@@ -570,6 +571,13 @@ function upNote(title, text, bad) {
   $("upResults").appendChild(d);
 }
 
+// A design the booth turned away: said out loud (a pop-up) and left on the page, with the reason.
+function refused(file, why) {
+  upNote("Not added: " + file, why, true);
+  $("upResults").lastChild.scrollIntoView({block: "center"});
+  say("Not added. " + why);
+}
+
 async function reloadDesigns(want) {
   // The booth looks at its design folders within a few seconds: ask until the new ones are listed.
   for (let i = 0; i < 12; i++) {
@@ -590,16 +598,16 @@ $("designFiles").onchange = async e => {
   $("upResults").innerHTML = "";
   const isJson = f => /\.json$/i.test(f.name), isPic = f => /\.png$/i.test(f.name) || (f.type || "").startsWith("image/");
   const pics = files.filter(f => !isJson(f) && isPic(f)), jsons = files.filter(isJson);
-  for (const f of files) if (!pics.includes(f) && !jsons.includes(f)) upNote(f.name, /\.zip$/i.test(f.name)
-    ? "That's a zip. Open it on your phone first, then pick the PNG picture that's inside it."
-    : "Not a PNG picture, so it was left out.", true);
+  for (const f of files) if (!pics.includes(f) && !jsons.includes(f)) upNote("Not added: " + f.name, /\.zip$/i.test(f.name)
+    ? "That's a zip, which the booth can't open. Open it on your phone first, then pick the PNG picture that's inside it."
+    : "The booth only takes a PNG picture, and this isn't one.", true);
   // The picture alone is enough. A JSON with the same name (or the only one picked) goes with it.
   const used = new Set();
   const pairs = pics.map(p => {
     const j = pics.length === 1 && jsons.length === 1 ? jsons[0] : jsons.find(x => stem(x.name) === stem(p.name));
     if (j) used.add(j); return [p, j || null];
   });
-  for (const j of jsons) if (!used.has(j)) upNote(j.name, "No picture was picked with it. The booth needs the PNG; the JSON is optional.", true);
+  for (const j of jsons) if (!used.has(j)) upNote("Not added: " + j.name, "No picture was picked with it. The booth needs the PNG; the JSON is optional.", true);
   if (!pairs.length) { if (!$("upResults").children.length) upNote("Nothing to add", "Pick the PNG picture of a design.", true); return; }
   $("addDesign").disabled = true; $("addDesign").textContent = "Checking…";
   for (const [p, j] of pairs) {
@@ -607,8 +615,8 @@ $("designFiles").onchange = async e => {
       const body = {file: p.name, png: await readFile(p)};
       if (j) body.json = await readFile(j);
       const out = await post("/api/design", {...body, check: true});
-      if (out.ok) offer(p.name, body, out); else upNote(p.name, out.message, true);
-    } catch (err) { upNote(p.name, "Couldn't reach the booth. Are you still on its WiFi?", true); }
+      if (out.ok) offer(p.name, body, out); else refused(p.name, out.message);
+    } catch (err) { refused(p.name, "The booth didn't answer. Are you still on its WiFi? (A picture over 20 MB is also too big.)"); }
   }
   $("addDesign").disabled = false; $("addDesign").textContent = "Add my design";
 };
@@ -628,7 +636,7 @@ function offer(file, body, found) {
     add.disabled = skip.disabled = true; add.textContent = "Adding…";
     try {
       const out = await post("/api/design", {...body, name: name.value});
-      if (!out.ok) { card.remove(); upNote(file, out.message, true); return; }
+      if (!out.ok) { card.remove(); refused(file, out.message); return; }
       card.className = ""; card.innerHTML = "";
       const done = document.createElement("b"); done.textContent = out.name; card.append(done, document.createTextNode(out.message));
       const there = await reloadDesigns(list => list.some(d => d.id === out.id));
@@ -641,7 +649,8 @@ function offer(file, body, found) {
 
 async function post(path, data) {
   const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data || {})});
-  return r.json();
+  try { return await r.json(); }
+  catch (e) { return {ok: false, message: "The booth couldn't take that (it answered " + r.status + "). Try again."}; }
 }
 
 // ---- Recently deleted: restore one, delete one for good, or empty the lot.
