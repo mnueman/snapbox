@@ -166,7 +166,7 @@ underneath: tap a setting's name (or swipe) to pick which. Tap DONE or press the
     three rows show the next photo's pick; tap RANDOM to shuffle it. Changing any of the three by hand
     turns RANDOM off.
 - Booth tab: screen orientation, screen-off time, countdown before each photo (off / 3 / 5 / 10 s), review auto-keep
-  time, LOOK (ORIGINAL, MODERN, CLASSIC CAMERA: the whole main screen and countdown redrawn, with their own
+  time, LOOK (ORIGINAL, CLASSIC CAMERA: the whole main screen and countdown redrawn, with its own
   colours and type in the menus and review screen; landscape only, see `looks.py`), MENU COLOURS for the ORIGINAL look
   (CLASSIC, SUNSHINE, BUBBLEGUM, OCEAN, MINT, PARTY, MIDNIGHT), auto shut down when idle (off / 15 / 30 min / 1 / 2 / 4 h), UPDATES, Shut down (asks first; the red power key at the top of every menu tab does the same), and a reminder
   of the button presses.

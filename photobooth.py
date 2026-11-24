@@ -28,7 +28,7 @@ import numpy as np
 import pygame
 
 try:
-    import looks  # the MODERN and CLASSIC CAMERA looks (looks.py); without it, the original look
+    import looks  # the CLASSIC CAMERA look (looks.py); without it, the original look
 except Exception as e:  # a broken or missing file must not stop the booth
     print(f"Looks unavailable ({e}); using the original look.")
     looks = None
@@ -284,7 +284,7 @@ BOOTH_SETTINGS = [
     ], 2),
     # The whole look of the screens (looks.py). ORIGINAL is the one MENU COLOURS applies to.
     ("look", "LOOK", [
-        ("original", "ORIGINAL"), ("modern", "MODERN"), ("classic", "CLASSIC CAMERA"),
+        ("original", "ORIGINAL"), ("classic", "CLASSIC CAMERA"),
     ], "original"),
     # Colours of the menus and buttons (THEMES, further down).
     ("theme", "MENU COLOURS", [
@@ -381,7 +381,7 @@ THEMES = {
 
 
 def look():
-    """The look of the main screen: "original", "modern" or "classic". The new looks are laid out
+    """The look of the main screen: "original" or "classic". CLASSIC CAMERA is laid out
     for a screen on its side; upright, the main screen stays original (menus keep the look's
     colours and type)."""
     lk = settings.get("look", "original")
@@ -737,7 +737,7 @@ def set_setting(key, value):
     print(f"Setting {key} = {value}")
     if key == "rotation":
         screen_rotation = value
-        apply_theme()  # the new looks only apply on its side
+        apply_theme()  # CLASSIC CAMERA only applies on its side
         _invalidate_live_preview()
     elif key in ("theme", "look"):
         apply_theme()
@@ -2079,57 +2079,85 @@ def pil_to_pygame_surface(img):
     return pygame.image.fromstring(img.tobytes(), img.size, "RGB")
 
 
-def _draw_centered_banner(img, text):
-    draw = ImageDraw.Draw(img, "RGBA")
+def _draw_gift_icon(draw, cx, cy, size, box_col, ribbon_col):
+    """A wrapped present, `size` px tall, centred on (cx, cy)."""
+    u = size / 40.0
+    top = cy - 8 * u
+    draw.rounded_rectangle((cx - 15 * u, top + 7 * u, cx + 15 * u, cy + 20 * u), radius=3 * u, fill=box_col)
+    draw.rounded_rectangle((cx - 18 * u, top, cx + 18 * u, top + 9 * u), radius=3 * u, fill=box_col)
+    draw.line((cx - 18 * u, top + 9 * u, cx + 18 * u, top + 9 * u), fill=ribbon_col, width=max(1, round(u)))
+    draw.rectangle((cx - 3 * u, top, cx + 3 * u, cy + 20 * u), fill=ribbon_col)
+    for side in (-1, 1):  # the bow
+        draw.ellipse((cx + side * 6 * u - 6 * u, top - 12 * u, cx + side * 6 * u + 6 * u, top + 1 * u),
+                     outline=ribbon_col, width=max(2, round(3 * u)))
+    draw.ellipse((cx - 3 * u, top - 4 * u, cx + 3 * u, top + 2 * u), fill=ribbon_col)
 
-    try:
-        font = ImageFont.load_default(size=24)
-    except TypeError:
-        font = ImageFont.load_default()
+
+def _draw_centered_banner(img, text, icon=None):
+    """A message over whatever is on screen, as a card in the theme's colours (or the look's own
+    panel and type). Lines in capitals are the headline; lines in ordinary writing, and anything
+    after a blank line, are the smaller detail under it. A first line in ordinary writing makes
+    its whole paragraph the headline. `icon`: "gift" puts a present above the text."""
+    draw = ImageDraw.Draw(img, "RGBA")
+    k = min(img.width / 640.0, img.height / 480.0)
+    margin, pad_x, pad_y = round(18 * k), round(26 * k), round(20 * k)
+    max_w = img.width - 2 * (margin + pad_x)
+
+    rows = []  # (line, font, colour, height, gap above)
+    def capitals(line):  # "SHUTTING DOWN IN 42s" still counts
+        return sum(c.isupper() for c in line) >= sum(c.islower() for c in line)
 
     lines = text.split("\n")
-    line_sizes = []
-    max_w = 0
-    total_h = 0
-    line_gap = 6
+    spoken = not capitals(lines[0])  # the first paragraph is a sentence: all of it headline
+    after_blank = False
     for line in lines:
+        if not line.strip():
+            after_blank = True
+            continue
+        detail = after_blank or not (capitals(line) or spoken)
+        font = _fit_font(draw, line, max_w, round((20 if detail else 28) * k), not detail)
         bbox = draw.textbbox((0, 0), line, font=font)
-        w = bbox[2] - bbox[0]
-        h = bbox[3] - bbox[1]
-        line_sizes.append((w, h, bbox[0], bbox[1]))
-        max_w = max(max_w, w)
-        total_h += h
-    if len(lines) > 1:
-        total_h += line_gap * (len(lines) - 1)
+        gap = 0 if not rows else round((26 if detail and not rows[-1][5] else 7) * k)
+        rows.append((line, font, MENU_DIM if detail else MENU_TEXT, bbox[3] - bbox[1], gap, detail))
 
-    cx = img.width // 2
-    cy = img.height // 2
-    pad = 12
+    rule = any(r[5] for r in rows) and not rows[0][5]  # a short accent line under the headline
+    icon_h = round(46 * k) if icon else 0
+    text_h = sum(r[3] + r[4] for r in rows)
+    text_w = max(draw.textbbox((0, 0), r[0], font=r[1])[2] for r in rows)
+    cw = max(text_w, round(150 * k)) + 2 * pad_x
+    ch = text_h + 2 * pad_y + (icon_h + round(12 * k) if icon else 0)
+    cx, cy = img.width // 2, img.height // 2
+    x0, y0 = cx - cw // 2, max(margin, cy - ch // 2)
+    box = (x0, y0, x0 + cw, y0 + ch)
+    radius = round(18 * k)
 
-    box = [
-        cx - max_w // 2 - pad,
-        cy - total_h // 2 - pad,
-        cx + max_w // 2 + pad,
-        cy + total_h // 2 + pad,
-    ]
-    if settings["theme"] == "classic":
-        draw.rectangle(box, fill=(0, 0, 0, 190))
+    lk = _skinned()
+    for grow, alpha in ((7, 40), (3, 70)):  # a soft shadow, lower right
+        draw.rounded_rectangle((box[0] - grow + 2, box[1] - grow + 5, box[2] + grow + 2, box[3] + grow + 5),
+                               radius=radius + grow, fill=(0, 0, 0, alpha))
+    if lk:
+        panel = looks.plate(lk, cw, ch, "row", radius)
+        img.paste(panel, (x0, y0), panel)
     else:
-        _rrect(draw, box, radius=10, fill=MENU_BG + (225,), outline=MENU_ACCENT + (255,),
-                               width=2)
+        draw.rounded_rectangle(box, radius=radius, fill=MENU_BG + (255,), outline=MENU_ACCENT + (255,),
+                               width=max(2, round(3 * k)))
 
-    y = cy - total_h // 2
-    for (w, h, bx, by), line in zip(line_sizes, lines):
-        draw.text(
-            (cx - w // 2 - bx, y - by),
-            line,
-            font=font,
-            fill=MENU_TEXT + (255,),
-        )
-        y += h + line_gap
+    y = y0 + pad_y
+    if icon == "gift":
+        _draw_gift_icon(draw, cx, y + icon_h // 2 + round(4 * k), icon_h * 0.72,
+                        (MENU_DANGER if lk else MENU_ACCENT) + (255,), MENU_TEXT + (255,))
+        y += icon_h + round(12 * k)
+    for n, (line, font, colour, h, gap, detail) in enumerate(rows):
+        if rule and detail and not rows[n - 1][5]:
+            ry = y + gap // 2
+            draw.rounded_rectangle((cx - round(22 * k), ry - 2, cx + round(22 * k), ry + 2), radius=2,
+                                   fill=(MENU_DANGER if lk else MENU_ACCENT) + (255,))
+        y += gap
+        _draw_text_centered(draw, (x0, y, x0 + cw, y + h), line, font, colour + (255,))
+        y += h
 
 
-def update_lcd(img=None, overlay_text=None, fast=False):
+def update_lcd(img=None, overlay_text=None, fast=False, overlay_icon=None):
     global _lcd_xform
     if lcd is None or screen_asleep:
         return
@@ -2155,13 +2183,13 @@ def update_lcd(img=None, overlay_text=None, fast=False):
         on_main = not menu_open and not gallery_open and not fullscreen_view
         framed = on_main and look() != "original" and img.size == ui_size()
         if framed:
-            # MODERN / CLASSIC: everything around the strip is one cached picture (looks.py).
+            # CLASSIC CAMERA: everything around the strip is one cached picture (looks.py).
             chrome = _look_chrome()
             img.paste(chrome, (0, 0), chrome)
         if countdown_value is not None:
             _draw_countdown(img)
         if overlay_text is not None:
-            _draw_centered_banner(img, overlay_text)
+            _draw_centered_banner(img, overlay_text, overlay_icon)
         elif on_main and not framed:
             if in_review() and review_started is not None:
                 _draw_review_hint(img, review_seconds_left())
@@ -2284,12 +2312,13 @@ def wake_screen(camera=True, activity=True):
     return True
 
 
-def flash_message(text, seconds=1.0):
+def flash_message(text, seconds=1.0, icon=None):
+    """A banner over the screen for `seconds`. `icon`: see _draw_centered_banner."""
     if lcd is None:
         return
 
     wake_screen()
-    update_lcd(overlay_text=text)
+    update_lcd(overlay_text=text, overlay_icon=icon)
     time.sleep(seconds)
     # Taps made while the message was up would all act now (PRINT tapped five times = more sheets).
     pygame.event.clear()
@@ -4088,7 +4117,7 @@ _look_slow = {"t": 0.0, "saved": 0, "wifi": False}
 
 
 def _look_state():
-    """What the MODERN / CLASSIC main screen shows right now, as plain values (looks.py draws it)."""
+    """What the CLASSIC CAMERA main screen shows right now, as plain values (looks.py draws it)."""
     now = time.monotonic()
     if now - _look_slow["t"] > 10:  # things that change rarely and cost a little to look up
         _look_slow["t"] = now
@@ -4939,8 +4968,8 @@ def _skinned():
 
 
 def _rrect(draw, box, radius=0, fill=None, outline=None, width=1):
-    """A rounded box. In the MODERN and CLASSIC looks, boxes in the menu colours are drawn as that
-    look's buttons and panels (looks.plate): chrome, enamel, soft cards."""
+    """A rounded box. In the CLASSIC CAMERA look, boxes in the menu colours are drawn as that
+    look's buttons and panels (looks.plate): chrome, enamel, black glass."""
     lk = _skinned()
     if lk and fill is not None and outline is None and hasattr(draw, "_image"):
         rgb = tuple(fill[:3])
@@ -5934,13 +5963,13 @@ def tick_updates():
             if update_last_result:
                 text = update_last_result.get("message", "")
                 if update_last_result.get("version"):
-                    text += f"\n{update_last_result['version']}"
+                    text += f"\nVersion {update_last_result['version']}"
                 wake_screen()
-                flash_message(text, seconds=3.0)
+                flash_message(text, seconds=3.0, icon="gift" if update_last_result.get("ok") else None)
 
     if _update_announce_pending and _booth_idle():
         _update_announce_pending = False
-        flash_message(UPDATE_ANNOUNCEMENT, seconds=6.0)
+        flash_message(UPDATE_ANNOUNCEMENT, seconds=6.0, icon="gift")
 
 
 def open_console_confirm():
