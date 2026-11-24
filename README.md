@@ -286,6 +286,9 @@ each photo back as it will look (`/api/preview`), so the phone shows what gets s
 The booth builds and prints it exactly like its own strips. The page is `web/index.html`; it's only
 reachable from the booth's own network.
 
+- **Look closer.** LOOK on a design's card (or "Look closer at this design" while adding photos) shows it
+  at its real size, as wide as the screen: scroll with a finger, ZOOM IN for 2x and 3x, the arrows for the
+  designs either side, USE THIS DESIGN to pick it.
 - **Mix 2 strips.** On a finished strip, "Mix: print this with a different strip" saves it and goes back
   to the designs for strip 2 (the photos are kept, to reuse or swap). "Print the 2 strips" then prints
   both side by side on one sheet, like MIX 2 STRIPS in REVIEW. Only strips: big sheets print alone.

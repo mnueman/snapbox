@@ -3853,7 +3853,8 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
             elif url.path in ("/design.png", "/design.jpg"):
                 # .jpg: the page's list (grey where the photos go). .png: see-through, to build on.
                 solid = url.path.endswith(".jpg")
-                size = 900 if query.get("big") else 560 if solid else 260
+                # full: the design at its real size, for the page's close-up.
+                size = 3600 if query.get("full") else 900 if query.get("big") else 560 if solid else 260
                 body = _web_design_image((query.get("id") or [""])[0], size, solid)
                 if body is None:
                     self._send(404, b"gone", "text/plain")
