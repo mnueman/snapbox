@@ -77,6 +77,10 @@ git.
   and "All". Filters may only narrow the list after a tap, and the page says "Showing N of M" with SHOW
   ALL when one is on. (The page once opened on "4 photos", which hid the Atkinsons' 3-photo family
   strips; the owner said this must not happen again.) `check_designs.py` fails if the page loses this.
+- People add their own designs from the phone page ("Want to design your own?"): `_web_add_design` checks
+  them and saves them in `~/my-designs/uploads/`, never inside `~/photobooth`, so updates keep them. Keep
+  `web/design-prompt.txt` (the spec they give an AI) true to `read_design_slots` and `_web_add_design`
+  whenever a design rule changes.
 - Never delete, rename or renumber a shipped design, and never move one between `frames/` and `gifts/`:
   booths would lose it on their next update. New designs get the next free number.
 - New designs: `python3 system/test_designs.py --new` runs each through the booth's strip builder and

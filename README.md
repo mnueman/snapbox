@@ -286,6 +286,19 @@ each photo back as it will look (`/api/preview`), so the phone shows what gets s
 The booth builds and prints it exactly like its own strips. The page is `web/index.html`; it's only
 reachable from the booth's own network.
 
+- **Mix 2 strips.** On a finished strip, "Mix: print this with a different strip" saves it and goes back
+  to the designs for strip 2 (the photos are kept, to reuse or swap). "Print the 2 strips" then prints
+  both side by side on one sheet, like MIX 2 STRIPS in REVIEW. Only strips: big sheets print alone.
+- **Want to design your own?** Under the designs: COPY INSTRUCTIONS copies `web/design-prompt.txt`, a spec
+  to paste into any AI chat app, which draws a PNG and a JSON. ADD MY DESIGN takes both files. The booth
+  checks them before anything is written (a real PNG, exactly 1200x3600 / 1800x1200 / 1200x1800, with
+  transparency; 1 to 8 photo boxes of whole numbers inside the picture; at least half of every box
+  see-through; valid JSON; not a design it already has), saves its own clean copy in
+  `~/my-designs/uploads/` (`sheets/` and `portrait/` inside it) and shows it under MY DESIGNS on the page
+  and the booth within seconds. A name that's taken gets `-2`, `-3`; nothing is ever overwritten. That
+  folder is outside `~/photobooth`, so updates never touch it. A design added this way has "Remove this
+  design from the booth" under it on the page; shipped and gifted designs can't be removed there.
+
 ## Command line on the booth's screen
 
 For when there's no WiFi to reach the booth over SSH: BOOTH tab, last row, COMMAND LINE. It explains

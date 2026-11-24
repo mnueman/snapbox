@@ -93,6 +93,12 @@
   #upResults div { margin-top:10px; padding:9px 10px; border-radius:6px; background:#1e1f20; font-size:16px; border-left:4px solid #8f9192; overflow-wrap:anywhere; }
   #upResults div.bad { border-left-color:var(--red); color:#ffd2d3; }
   #upResults b { display:block; letter-spacing:.05em; text-transform:uppercase; }
+  /* Mix 2 strips: a red-edged note while the 2nd strip is being made */
+  #mixBar { margin-top:8px; display:none; }
+  #mixNote { display:none; margin:6px 0 12px; padding:10px 12px; border-radius:7px; background:#1e1f20; border-left:4px solid var(--red); font-size:16px; }
+  #mixNote b { display:block; letter-spacing:.08em; text-transform:uppercase; }
+  #mixNote button { display:block; margin-top:6px; background:none; border:0; padding:6px 0; color:var(--dim); font-size:15px;
+    letter-spacing:.08em; text-transform:uppercase; text-decoration:underline; }
   #remove { display:none; margin:10px auto 0; background:none; border:0; color:var(--bad); font-size:15px; letter-spacing:.08em;
     text-transform:uppercase; text-decoration:underline; padding:8px; }
   #msg { position:fixed; left:16px; right:16px; top:36%; background:var(--rim); border-radius:10px; padding:2px;
@@ -109,7 +115,8 @@
 </header>
 <main id="main">
   <section id="picker">
-    <div class="step">1. Pick a design</div>
+    <div id="mixNote"><b>Mixing 2 strips</b><span id="mixText"></span><button id="mixCancel">Cancel the mix</button></div>
+    <div class="step" id="pickStep">1. Pick a design</div>
     <div class="chips" id="layouts"></div>
     <div class="chips" id="counts"></div>
     <div class="chips" id="cats"></div>
@@ -151,6 +158,7 @@
     <button class="btn ok" id="save" disabled>Save</button>
     <button class="btn go" id="print" disabled>Save &amp; print</button>
   </div>
+  <div class="bar" id="mixBar"><button class="btn" id="mix" disabled>Mix: print this with a different strip</button></div>
 </div>
 <div id="msg"><div><span id="msgText"></span><i></i><button class="btn go" id="msgOk">OK</button></div></div>
 <input type="file" id="file" accept="image/*" multiple hidden>
@@ -164,6 +172,7 @@ const FX_TABS = [["colour", "Colour"], ["stamp", "Date stamp"], ["leaks", "Light
 const FX_NONE = {colour: "normal", stamp: false, leaks: 0, spots: 0, lines: 0};
 let designs = [], layout = "strip", count = 0, cat = "", design = null, slots = [], target = null, busy = false;
 let shown = [], effects = null, fx = {...FX_NONE}, fxTab = null;
+let mixFirst = null;  // Mix 2 strips: {strip, name} of the 1st, saved on the booth, while the 2nd is made
 const cap = t => t.charAt(0) + t.slice(1).toLowerCase();
 const title = d => d.name.includes(":") ? d.name.split(":").slice(1).join(":").trim() : d.name;
 
@@ -196,7 +205,11 @@ function chips(el, items, current, pick) {
 function showPicker() {
   design = null;
   $("editor").style.display = "none"; $("dock").style.display = "none"; $("picker").style.display = "block";
-  const kinds = ["strip", "sheet", "psheet"].filter(k => designs.some(d => d.kind === k));
+  let kinds = ["strip", "sheet", "psheet"].filter(k => designs.some(d => d.kind === k));
+  if (mixFirst) { kinds = kinds.filter(k => k === "strip"); layout = "strip"; }  // only strips share a print
+  $("mixNote").style.display = mixFirst ? "block" : "none";
+  if (mixFirst) $("mixText").textContent = 'Strip 1 ("' + mixFirst.name + '") is saved. Now pick the design for strip 2. Your photos are kept: swap any you like.';
+  $("pickStep").textContent = mixFirst ? "Pick the 2nd strip's design" : "1. Pick a design";
   if (!kinds.includes(layout)) layout = kinds[0];
   chips($("layouts"), kinds.map(k => [k, NAMES[k]]), layout, v => { layout = v; showPicker(); });
   const counts = [...new Set(designs.filter(d => d.kind === layout).map(d => d.slots.length))].sort();
@@ -386,9 +399,16 @@ $("file").onchange = async e => {
 
 function refresh() {
   const filled = slots.filter(s => s.photo).length, full = filled === slots.length;
-  $("save").disabled = $("print").disabled = !full || busy;
-  $("hint").textContent = full ? "Looks good? Save it to the booth, or save and print."
-    : filled + " of " + slots.length + " photos added";
+  $("save").disabled = $("print").disabled = $("mix").disabled = !full || busy;
+  const strip = design && design.kind === "strip";
+  $("mixBar").style.display = strip && !mixFirst ? "flex" : "none";
+  $("print").textContent = mixFirst ? "Print the 2 strips" : "Save & print";
+  $("save").style.display = mixFirst ? "none" : "";
+  $("hint").textContent = !full ? filled + " of " + slots.length + " photos added"
+    : mixFirst ? "Strip 2 ready? Both strips print side by side on one sheet."
+    : strip ? "Looks good? Save it, print 2 copies of it, or mix it with a different strip."
+    : "Looks good? Save it to the booth, or save and print.";
+  fitDock();
 }
 
 function crop(s, longest = 1600, quality = 0.92) {
@@ -401,15 +421,24 @@ function crop(s, longest = 1600, quality = 0.92) {
   return c.toDataURL("image/jpeg", quality);
 }
 
-async function send(print) {
+// `mix`: save this strip as the 1st of two and go pick the 2nd; with a 1st waiting, print sends both.
+async function send(print, mix) {
   if (busy) return; busy = true; refresh();
   $("hint").textContent = "Sending to the booth…";
   try {
-    const body = JSON.stringify({design: design.id, print, fx, photos: slots.map(s => crop(s))});
+    const body = JSON.stringify({design: design.id, print: print && !mix, fx, photos: slots.map(s => crop(s)),
+                                 pair: print && mixFirst ? mixFirst.strip : ""});
     const r = await fetch("/api/make", {method: "POST", headers: {"Content-Type": "application/json"}, body});
     const out = await r.json();
     busy = false;
-    say(out.message, out.ok ? () => { slots.forEach(s => { s.photo = null; }); fx = {...FX_NONE}; fxTab = null; showPicker(); } : null);
+    if (out.ok && mix) {
+      // Photos and effects stay, so the 2nd strip can use the same ones in another design.
+      mixFirst = {strip: out.strip, name: title(design)};
+      showPicker();
+    } else {
+      if (out.ok || /Start the mix again/.test(out.message || "")) mixFirst = null;
+      say(out.message, out.ok ? () => { slots.forEach(s => { s.photo = null; }); fx = {...FX_NONE}; fxTab = null; showPicker(); } : null);
+    }
   } catch (e) { busy = false; say("Couldn't reach the booth. Are you still on its WiFi?"); }
   refresh(); status();
 }
@@ -525,6 +554,8 @@ $("next").onclick = () => step(1);
 $("add").onclick = () => { target = null; $("file").multiple = true; $("file").click(); };
 $("save").onclick = () => send(false);
 $("print").onclick = () => send(true);
+$("mix").onclick = () => send(false, true);
+$("mixCancel").onclick = () => { mixFirst = null; say("Mix cancelled. Strip 1 is still saved on the booth: find it in REVIEW.", showPicker); };
 
 (async () => {
   try {

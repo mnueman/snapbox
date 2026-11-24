@@ -3769,6 +3769,14 @@ def web_make_strip(job):
         photos = (job["photos"] + [None] * 8)[:frame_slot_count(index)]
         if not any(p is not None for p in photos):
             raise ValueError("No photos arrived.")
+        # Mix 2 strips from the phone: this one prints beside a strip the phone saved a moment ago.
+        other = None
+        if job.get("pair"):
+            other = ARCHIVE_DIR / job["pair"]
+            if not re.fullmatch(r"strip_[0-9_-]+\.jpg", job["pair"]) or not other.is_file():
+                raise ValueError("The first strip isn't on the booth any more. Start the mix again.")
+            if frame_kind(index) != "strip" or is_sheet_file(other):
+                raise ValueError("Only two photo strips can share a print. Big sheets print on their own.")
         stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         path = ARCHIVE_DIR / f"strip_{stamp}.jpg"
         n = 1
@@ -3786,15 +3794,16 @@ def web_make_strip(job):
         note_activity()
         message = "Saved on the booth. Find it in REVIEW."
         if job.get("print"):
-            if start_print(path):
-                message = "Saved, and printing now (about a minute)."
+            if start_print(other, path) if other else start_print(path):
+                message = ("Saved, and printing both strips on one sheet now (about a minute)." if other
+                           else "Saved, and printing now (about a minute).")
             elif printer_connected is False:
                 message = "Saved on the booth, but the printer isn't connected. Print it from REVIEW later."
             else:
                 message = "Saved on the booth, but it couldn't print right now. Print it from REVIEW."
         else:
             flash_message("PHOTOS FROM A PHONE\nSAVED", seconds=1.0)
-        job["result"] = {"ok": True, "message": message}
+        job["result"] = {"ok": True, "message": message, "strip": path.name, "kind": frame_kind(index)}
     except OSError as e:
         print(f"Could not save the phone's strip: {e}")
         job["result"] = {"ok": False, "message": "The booth couldn't save it (storage full?)."}
@@ -3892,7 +3901,8 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
                 photos.append(_web_colour(_web_read_photo(item, 2400), choice["colour"])
                               if item else None)
             job = {"design": str(data.get("design", "")), "photos": photos, "fx": choice,
-                   "print": bool(data.get("print")), "done": threading.Event(), "result": None}
+                   "print": bool(data.get("print")), "pair": str(data.get("pair") or ""),
+                   "done": threading.Event(), "result": None}
             action_queue.put(("web_strip", job))
             if not job["done"].wait(60):
                 self._json(503, {"ok": False, "message": "The booth is busy. Try again in a moment."})
