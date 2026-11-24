@@ -683,11 +683,18 @@ def write_file_durably(path, write):
     # Temp file + fsync + rename: a power cut leaves the old file or the new one, never an empty one.
     path = Path(path)
     tmp = path.with_name(f".{path.name}.tmp")
-    with open(tmp, "wb") as f:
-        write(f)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "wb") as f:
+            write(f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)  # storage full, most likely: don't leave the half-written file
+        except OSError:
+            pass
+        raise
     dir_fd = os.open(path.parent, os.O_RDONLY)
     try:
         os.fsync(dir_fd)
@@ -1219,6 +1226,13 @@ def first_empty_slot():
 def resize_live_photos(new_capacity):
     global live_photos, live_capture_paths, current_slot
 
+    taken = [i for i, p in enumerate(live_photos) if p is not None]
+    if taken and taken[-1] >= new_capacity and len(taken) <= new_capacity:
+        # A gap (a photo being retaken) and a smaller design: close the gap rather than lose
+        # the last photo.
+        paths = (live_capture_paths + [None] * len(live_photos))[:len(live_photos)]
+        live_photos = [live_photos[i] for i in taken] + [None] * (len(live_photos) - len(taken))
+        live_capture_paths = [paths[i] for i in taken] + [None] * (len(live_photos) - len(taken))
     for path in live_capture_paths[new_capacity:]:
         delete_capture_file(path)
     live_photos = (live_photos + [None] * new_capacity)[:new_capacity]
@@ -1548,6 +1562,9 @@ def _ensure_live_preview_base():
     ):
         return True
 
+    if not frames:   # no usable design on the booth: nothing to lay the camera into
+        _invalidate_live_preview()
+        return False
     slots = current_frame_slots()
     if current_slot < 0 or current_slot >= len(slots):
         _invalidate_live_preview()
@@ -2107,7 +2124,7 @@ def _draw_centered_banner(img, text, icon=None):
     def capitals(line):  # "SHUTTING DOWN IN 42s" still counts
         return sum(c.isupper() for c in line) >= sum(c.islower() for c in line)
 
-    lines = text.split("\n")
+    lines = text.split("\n") if text.strip() else ["..."]
     spoken = not capitals(lines[0])  # the first paragraph is a sentence: all of it headline
     after_blank = False
     for line in lines:
@@ -2368,9 +2385,20 @@ def save_strip_photos(strip_path, photos):
         shutil.rmtree(folder, ignore_errors=True)
 
 
+def new_strip_path():
+    """A file name for a strip saved now that no saved strip has. The clock has no battery: after
+    a power cut with no WiFi it carries on from an old time, so the same second can come round
+    again, and a strip must never replace another."""
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    path, n = ARCHIVE_DIR / f"strip_{stamp}.jpg", 1
+    while path.exists() or strip_photos_dir(path).exists():
+        n += 1
+        path = ARCHIVE_DIR / f"strip_{stamp}_{n}.jpg"
+    return path
+
+
 def save_finished_strip():
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    jpg_archive_path = ARCHIVE_DIR / f"strip_{timestamp}.jpg"
+    jpg_archive_path = new_strip_path()
 
     strip = compose_single_strip(live_photos)
     save_strip_photos(jpg_archive_path, live_photos)
@@ -2542,13 +2570,15 @@ def start_photo_show(photo, index):
 
 
 def end_photo_show():
+    """True if a photo was on show and this closed it."""
     global _photo_show_img, fullscreen_view
     if _photo_show_img is None:
-        return
+        return False
     _photo_show_img = None
     fullscreen_view = False
     _invalidate_live_preview()
     update_lcd()
+    return True
 
 
 def tick_photo_show():
@@ -2580,6 +2610,8 @@ def run_countdown():
             kept.append(item)
     for item in kept:
         action_queue.put(item)
+    if lcd is not None:
+        pygame.event.clear()  # nor are touches
 
 
 def take_next_photo():
@@ -2753,6 +2785,11 @@ def refresh_designs():
     _designs_stale = False
     found, kinds = _find_designs()
     if found == frames:
+        if frames and current_capacity() != len(live_photos):
+            # Same designs, but the one in use was redrawn with another number of photos.
+            resize_live_photos(current_capacity())
+            _clear_photo_cache()
+            return True
         return False
     old = frames
     in_use = old[current_frame_index] if old else None
@@ -3207,7 +3244,10 @@ def _printer_watch():
     # Prints left over from before (the booth was switched off mid-print, the printer went away)
     # must not come out by surprise later.
     for old in Path(tempfile.gettempdir()).glob("print_*.jpg"):
-        old.unlink(missing_ok=True)
+        try:
+            old.unlink(missing_ok=True)
+        except OSError:
+            pass  # someone else's file: not a reason to stop watching the printer
     if _queued_jobs():
         print("Cancelling prints left over from last time.")
         _cancel_prints()
@@ -3333,6 +3373,12 @@ def note_print_sent(result):
 
 def tick_printer():
     global printer_toast
+    # A print the printer watcher never reported finished (it left the queue within seconds, or
+    # the watcher stopped) must not count as "printing" for ever.
+    now = time.monotonic()
+    for job in [j for j, (_, sent) in print_jobs.items() if now - sent > PRINT_STUCK_SECONDS + 120]:
+        print(f"Forgetting print job {job}: no word on it for a long time.")
+        print_jobs.pop(job, None)
     if printer_toast is not None and time.monotonic() >= printer_toast[2]:
         printer_toast = None
         if not should_show_live_preview():
@@ -3585,6 +3631,9 @@ def _clear_areas(mask):
                     boxes[area] = [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]), a[4] + b[4]]
                 j += 1
             if area is None:
+                if len(parent) >= 20000:
+                    raise UploadError("The picture's see-through parts are thousands of specks, not photo "
+                                      "boxes. Each photo box must be one clean transparent rectangle.")
                 area = len(parent)
                 parent.append(area)
                 boxes.append([x0, y, x1, y + 1, 0])
@@ -3895,15 +3944,17 @@ _trash_thumbs = {}  # picture in Recently deleted -> (its small picture, kind)
 
 def trash_thumb(path, kind):
     """A small picture of a design in Recently deleted, grey where the photos go."""
-    if path not in _trash_thumbs:
+    made = _trash_thumbs.get(path)
+    stamp = _ctime(path)   # another design can land on the same name later
+    if made is None or made[0] != stamp:
         if len(_trash_thumbs) > 60:
             _trash_thumbs.clear()
         with Image.open(path) as im:
             small = im.convert("RGBA").resize(THUMB_SIZES[kind], Image.BILINEAR, reducing_gap=2.0)
         thumb = Image.new("RGBA", small.size, (206, 210, 216, 255))
         thumb.alpha_composite(small)
-        _trash_thumbs[path] = thumb.convert("RGB")
-    return _trash_thumbs[path]
+        made = _trash_thumbs[path] = (stamp, thumb.convert("RGB"))
+    return made[1]
 
 
 def _trash_name(path):
@@ -3983,9 +4034,16 @@ def _web_colour(img, colour):
     return apply_colour_look(img, colour)
 
 
+WEB_PHOTO_FORMATS = ("JPEG", "PNG", "WEBP")   # what a phone's browser sends; nothing exotic gets decoded
+WEB_PHOTO_MAX_PIXELS = 40_000_000             # a phone photo is 12 to 50 MP before the page shrinks it
+
+
 def _web_read_photo(item, longest):
     raw = base64.b64decode(item.split(",", 1)[-1])
-    img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+    opened = Image.open(io.BytesIO(raw), formats=WEB_PHOTO_FORMATS)
+    if opened.width * opened.height > WEB_PHOTO_MAX_PIXELS:   # known before any of it is unpacked
+        raise ValueError("That photo is too big for the booth.")
+    img = ImageOps.exif_transpose(opened).convert("RGB")
     img.thumbnail((longest, longest), Image.LANCZOS)
     return img
 
@@ -4018,6 +4076,11 @@ def _web_preview(photo, choice, ident):
 def web_make_strip(job):
     """Main thread: builds and saves what a phone sent; prints it if asked. Fills job["result"]."""
     try:
+        if job.get("cancelled"):
+            return  # the phone was told the booth is busy: don't make it behind its back
+        free = storage_free_bytes()
+        if free is not None and free < STORAGE_FULL_BYTES:
+            raise ValueError("The booth's storage is full. Delete old strips in REVIEW first.")
         index = next((i for i, f in enumerate(frames) if design_id(f) == job["design"]), None)
         if index is None:
             raise ValueError("That design isn't on the booth any more. Pick another.")
@@ -4032,12 +4095,7 @@ def web_make_strip(job):
                 raise ValueError("The first strip isn't on the booth any more. Start the mix again.")
             if frame_kind(index) != "strip" or is_sheet_file(other):
                 raise ValueError("Only two photo strips can share a print. Big sheets print on their own.")
-        stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        path = ARCHIVE_DIR / f"strip_{stamp}.jpg"
-        n = 1
-        while path.exists():
-            n += 1
-            path = ARCHIVE_DIR / f"strip_{stamp}_{n}.jpg"
+        path = new_strip_path()
         fx = _web_strip_fx(job["fx"]) if job.get("fx") else WEB_NEUTRAL_FX
         strip = compose_single_strip(photos, index, fx=fx)
         _forget_slot_cache(photos)
@@ -4070,9 +4128,13 @@ def web_make_strip(job):
         job["done"].set()
 
 
+_web_heavy = threading.BoundedSemaphore(3)  # uploads being read and checked at once (each can hold tens of MB)
+
+
 class _WebHandler(http.server.BaseHTTPRequestHandler):
     server_version = "snapbox"
     protocol_version = "HTTP/1.1"
+    timeout = 30  # a phone that walked away mid-request doesn't hold a thread for ever
 
     def log_message(self, *args):
         pass  # the journal is on the SD card
@@ -4136,11 +4198,25 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self):
+        if not _web_heavy.acquire(timeout=20):
+            self.close_connection = True
+            try:
+                self._json(503, {"ok": False, "message": "The booth is busy. Try again in a moment."})
+            except OSError:
+                pass
+            return
+        try:
+            self._post()
+        finally:
+            _web_heavy.release()
+
+    def _post(self):
         try:
             length = int(self.headers.get("Content-Length") or 0)
             if (self.path not in ("/api/make", "/api/preview", "/api/design", "/api/design/remove",
                                   "/api/trash/restore", "/api/trash/delete", "/api/trash/empty")
                     or not 0 < length <= WEB_MAX_BYTES):
+                self.close_connection = True  # its body is unread: not the next request
                 self._json(400, {"ok": False, "message": "Too big, or not understood."})
                 return
             data = json.loads(self.rfile.read(length))
@@ -4167,6 +4243,7 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
                    "done": threading.Event(), "result": None}
             action_queue.put(("web_strip", job))
             if not job["done"].wait(60):
+                job["cancelled"] = True
                 self._json(503, {"ok": False, "message": "The booth is busy. Try again in a moment."})
                 return
             self._json(200 if job["result"]["ok"] else 400, job["result"])
@@ -4354,6 +4431,7 @@ def save_partial_strip_before_shutdown():
     try:
         save_finished_strip()
         delete_live_captures()
+        clear_live_strip()  # saved: the stop that follows a shut-down must not save it again
     except Exception as e:
         print(f"Could not save partial strip: {e}")
 
@@ -5712,6 +5790,7 @@ def render_wifi_tab(draw, area, buttons):
 GALLERY_IDLE_SECONDS = 60  # back to the camera after this long untouched
 DELETE_CONFIRM_SECONDS = 4
 SWIPE_MIN_PX = 50
+STALE_PRESS_SECONDS = 1.5  # a button press older than this when it's read was made during a banner or a save
 DRAG_MIN_PX = 10  # DESIGNS' close-up: a touch that moves this far is a drag, not a tap
 STORAGE_LOW_BYTES = 1024 ** 3
 STORAGE_FULL_BYTES = 200 * 1024 ** 2
@@ -5728,6 +5807,8 @@ _gallery_thumbs = {}
 _gesture_down = None
 _gesture_last = None
 _gesture_dragged = False
+_gesture_finger = None   # which finger the gesture in progress belongs to
+_gesture_seen = 0.0      # when that finger last did anything
 
 
 def storage_free_bytes():
@@ -5939,8 +6020,8 @@ def gallery_pair_print():
         if is_sheet_file(gallery_paths[gallery_index]):
             flash_message("PICK A STRIP:\nBIG SHEETS PRINT ALONE", seconds=1.0)
             return
-        start_print(gallery_pair_first, gallery_paths[gallery_index])
-        gallery_pair_first = None
+        if start_print(gallery_pair_first, gallery_paths[gallery_index]):
+            gallery_pair_first = None  # not sent (printer off, already printing): the pair stays picked
 
 
 def gallery_delete():
@@ -6267,19 +6348,31 @@ def _dragging_picture(start):
     """A touch that began on the picture in DESIGNS' close-up: it moves the picture."""
     if not (menu_open and menu_tab == "designs" and designs_inspect is not None and _inspect_view):
         return False
-    vx0, vy0, vx1, vy1 = _inspect_view[:4]
+    vx0, vy0, vx1, vy1, over_x, over_y = _inspect_view
+    if not (over_x or over_y):
+        return False  # all of it is showing: a swipe goes to the next design, as elsewhere
     return vx0 <= start[0] <= vx1 and vy0 <= start[1] <= vy1
 
 
 def next_gestures(events):
     """[("tap", (x, y)) or ("swipe", dx)] in UI coordinates, each counted when the finger lifts.
     Every touch in the batch counts: none is dropped for coming soon after another."""
-    global _gesture_down, _gesture_last, _gesture_dragged
+    global _gesture_down, _gesture_last, _gesture_dragged, _gesture_finger, _gesture_seen
     gestures = []
     for event in events:
         if event.type in (pygame.FINGERDOWN, pygame.FINGERUP, pygame.FINGERMOTION):
             screen_w, screen_h = lcd.get_size()
             pos = (event.x * screen_w, event.y * screen_h)
+            # One finger at a time: a second one (a resting thumb, a pinch) is not part of the
+            # gesture. A finger whose lift was never seen (a banner clears touches) stops
+            # counting after a moment, so it can't shut the next touch out.
+            finger = getattr(event, "finger_id", None)
+            if _gesture_down is not None and finger != _gesture_finger:
+                if event.type != pygame.FINGERDOWN or time.monotonic() - _gesture_seen < 1.0:
+                    continue
+            if event.type == pygame.FINGERDOWN:
+                _gesture_finger = finger
+            _gesture_seen = time.monotonic()
         elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
             if getattr(event, "touch", False):
                 continue  # the same touch also arrives as a finger event
@@ -6360,7 +6453,8 @@ _update_announce_pending = False
 
 def _git(*args, timeout=60):
     # Never wait for a password: the updates repo is public.
-    return subprocess.run(["git", "-C", str(BASE), *args], capture_output=True, text=True,
+    return subprocess.run(["git", "-C", str(BASE), "-c", "http.lowSpeedLimit=1000",
+                           "-c", "http.lowSpeedTime=30", *args], capture_output=True, text=True,
                           timeout=timeout, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
 
 
@@ -6472,8 +6566,9 @@ def tick_updates():
                 text = update_last_result.get("message", "")
                 if update_last_result.get("version"):
                     text += f"\nVersion {update_last_result['version']}"
-                wake_screen()
-                flash_message(text, seconds=3.0, icon="gift" if update_last_result.get("ok") else None)
+                if text.strip():
+                    wake_screen()
+                    flash_message(text, seconds=3.0, icon="gift" if update_last_result.get("ok") else None)
 
     if _update_announce_pending and _booth_idle():
         _update_announce_pending = False
@@ -7803,7 +7898,8 @@ try:
                         wake_screen(camera=False)
                         handle_gallery_gesture((kind, value))
                         continue
-                    end_photo_show()  # a touch skips the photo on show
+                    if end_photo_show():
+                        continue  # a touch skips the photo on show, and does nothing else
                     if wake_screen():
                         continue  # a touch on a sleeping screen only wakes it
                     if kind == "tap":
@@ -7835,6 +7931,7 @@ try:
                     continue
                 if action == "web_strip":
                     web_make_strip(payload)
+                    watchdog_ping()  # several phones at once: each strip takes a second or two
                     continue
                 if action == "print_done":
                     note_print_sent(payload)
@@ -7847,6 +7944,9 @@ try:
                     short_press_count = 0
                     toggle_mode()
                 elif action == "short":
+                    if time.monotonic() - payload > STALE_PRESS_SECONDS:
+                        print("Ignoring a button press made while the booth was busy.")
+                        continue
                     short_press_count += 1
                     pending_short_time = payload
                 else:
@@ -7902,6 +8002,10 @@ try:
             _loop_errors = [t for t in _loop_errors if now - t < 60] + [now]
             if len(_loop_errors) >= 5:
                 print("Repeated errors; exiting so the service restarts the app.", flush=True)
+                try:
+                    save_partial_strip_before_shutdown()  # startup clears leftover captures
+                except Exception:
+                    traceback.print_exc()
                 raise
             time.sleep(0.5)
 except KeyboardInterrupt:

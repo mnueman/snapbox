@@ -181,7 +181,7 @@ underneath: tap a setting's name (or swipe) to pick which. Tap DONE or press the
   connects, so a wrong password can't leave the booth offline. Open and WPA/WPA2/WPA3 networks work;
   enterprise (802.1X) and hidden networks don't. Needs `system/photobooth-wifi.rules` (installed by `install.sh`).
 - The WiFi tab also shows the command to reach the Pi from a computer on the same network, e.g.
-  `ssh admin@192.168.4.62` (the IP changes with each network) or `ssh admin@photobooth.local`
+  `ssh admin@192.168.1.50` (the IP changes with each network) or `ssh admin@photobooth.local`
   (works on any network that lets devices see each other).
 
 ## Reviewing saved strips (photo button)

@@ -224,7 +224,7 @@ function say(text, after) {
   $("msgOk").onclick = () => { $("msg").style.display = "none"; if (after) after(); };
 }
 
-async function status() {
+async function pollStatus() {
   try {
     const s = await (await fetch("/api/status")).json();
     const el = $("status");
@@ -523,10 +523,12 @@ async function send(print, mix) {
       showPicker();
     } else {
       if (out.ok || /Start the mix again/.test(out.message || "")) mixFirst = null;
-      say(out.message, out.ok ? () => { slots.forEach(s => { s.photo = null; }); fx = {...FX_NONE}; fxTab = null; showPicker(); } : null);
+      // Sent: the photos go now, so a tap on the buttons under the message can't send them again.
+      if (out.ok) { slots.forEach(s => { if (s.photo) URL.revokeObjectURL(s.photo.url); s.photo = null; }); fx = {...FX_NONE}; fxTab = null; }
+      say(out.message, out.ok ? showPicker : null);
     }
   } catch (e) { busy = false; say("Couldn't reach the booth. Are you still on its WiFi?"); }
-  refresh(); status();
+  refresh(); pollStatus();
 }
 
 // ---- Want to design your own? The instructions for an AI app, and adding what it made.
@@ -542,19 +544,22 @@ $("showPrompt").onclick = async () => {
   el.style.display = open ? "block" : "none"; $("showPrompt").textContent = open ? "Hide them" : "Read them";
 };
 
-$("copyPrompt").onclick = async () => {
-  let text;
-  try { text = await loadPrompt(); } catch (e) { say("Can't reach the booth. Are you still on its WiFi?"); return; }
+// This page isn't on https, where phones only allow the old way of copying, and only straight from a tap.
+function copyText(text) {
+  const t = document.createElement("textarea"); t.value = text; t.setAttribute("readonly", "");
+  Object.assign(t.style, {position: "fixed", top: "0", left: "0", opacity: "0", fontSize: "16px"});
+  document.body.appendChild(t); t.focus(); t.select(); t.setSelectionRange(0, text.length);
   let done = false;
-  try { await navigator.clipboard.writeText(text); done = true; } catch (e) {}
-  if (!done) {
-    // This page isn't on https, where phones only allow the old way of copying.
-    const t = document.createElement("textarea"); t.value = text; t.setAttribute("readonly", "");
-    Object.assign(t.style, {position: "fixed", top: "0", left: "0", opacity: "0", fontSize: "16px"});
-    document.body.appendChild(t); t.focus(); t.select(); t.setSelectionRange(0, text.length);
-    try { done = document.execCommand("copy"); } catch (e) {}
-    t.remove();
-  }
+  try { done = document.execCommand("copy"); } catch (e) {}
+  t.remove(); return done;
+}
+
+$("copyPrompt").onclick = async () => {
+  // The text is fetched when the page opens, so normally nothing is waited for between the tap and the copy.
+  if (!promptText) { try { await loadPrompt(); } catch (e) { say("Can't reach the booth. Are you still on its WiFi?"); return; } }
+  const text = promptText;
+  let done = copyText(text);
+  if (!done) { try { await navigator.clipboard.writeText(text); done = true; } catch (e) {} }
   if (done) say("Copied. Paste it into your AI app and write your idea at the end.");
   else { $("promptText").style.display = "block"; $("showPrompt").textContent = "Hide them";
          say("Your phone wouldn't copy it by itself. The instructions are showing now: press and hold on them, Select All, Copy."); }
@@ -719,7 +724,7 @@ $("mixCancel").onclick = () => { mixFirst = null; say("Mix cancelled. Strip 1 is
     designs = got.designs; effects = got.effects || null;
     showPicker();
   } catch (e) { say("Can't reach the booth. Join its WiFi and reload."); }
-  status(); setInterval(status, 5000); loadTrash();
+  pollStatus(); setInterval(pollStatus, 5000); loadTrash(); loadPrompt().catch(() => {});
 })();
 </script>
 </body>

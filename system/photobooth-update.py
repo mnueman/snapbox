@@ -103,7 +103,7 @@ def update(branch):
     log(f"Fetching {branch}...")
     try:
         git("fetch", "--quiet", REMOTE, branch)
-    except RuntimeError as e:
+    except (RuntimeError, subprocess.TimeoutExpired) as e:  # no internet, or too slow to finish
         log(str(e))
         result(False, "COULDN'T REACH GITHUB; CHECK WIFI")
         return 1
@@ -165,4 +165,16 @@ if __name__ == "__main__":
     if args == ["--recover"]:
         sys.exit(recover())
     branch = args[1] if len(args) == 2 and args[0] == "--branch" else BRANCH
-    sys.exit(update(branch))
+    try:
+        code = update(branch)
+    except Exception as e:
+        # Whatever went wrong (storage full, git in a state it shouldn't be in), the app is told,
+        # so its UPDATES screen doesn't wait a quarter of an hour for an answer that never comes.
+        # Once the switch has started, update() deals with failures itself and rolls back.
+        log(f"Update stopped: {e}")
+        try:
+            result(False, "UPDATE DIDN'T FINISH; TRY AGAIN")
+        except Exception as e2:
+            log(f"Could not report it: {e2}")
+        code = 1
+    sys.exit(code)

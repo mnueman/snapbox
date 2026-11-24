@@ -43,8 +43,9 @@ if [ -n "$freq" ] && [ "$freq" -ge 2412 ] && [ "$freq" -le 2472 ]; then
 elif [ -n "$freq" ]; then
     # wlan0 on 5 GHz: the hotspot would have to be on 5 GHz too, which the SELPHY can't see.
     # If the same network also has 2.4 GHz, keep this booth on 2.4 GHz for it from now on.
-    con=$(nmcli -g GENERAL.CONNECTION device show "$STA")
-    ssid=$(nmcli -g 802-11-wireless.ssid connection show "$con" 2>/dev/null)
+    # -e no: as they are. nmcli would put a backslash before every : and \ in a name.
+    con=$(nmcli -e no -g GENERAL.CONNECTION device show "$STA")
+    ssid=$(nmcli -e no -g 802-11-wireless.ssid connection show "$con" 2>/dev/null)
     esc=$(printf '%s' "$ssid" | sed 's/[\\:]/\\&/g')
     # Look again first: an old list could miss the network's 2.4 GHz side.
     nmcli device wifi rescan ifname "$STA" >/dev/null 2>&1 && sleep 4
@@ -76,8 +77,8 @@ fi
 state=$(nmcli -g GENERAL.STATE connection show "$CON" 2>/dev/null)
 # The file decides the name and password: edit it, then `sudo systemctl restart photobooth-hotspot`.
 # (The printer then has to be told the new ones from its own menu.)
-if [ "$(nmcli -g 802-11-wireless.ssid connection show "$CON")" != "$SSID" ] ||
-        [ "$(nmcli -s -g 802-11-wireless-security.psk connection show "$CON")" != "$PASSWORD" ]; then
+if [ "$(nmcli -e no -g 802-11-wireless.ssid connection show "$CON")" != "$SSID" ] ||
+        [ "$(nmcli -e no -s -g 802-11-wireless-security.psk connection show "$CON")" != "$PASSWORD" ]; then
     echo "snapbox-hotspot: name or password changed in $CONF"
     nmcli connection modify "$CON" 802-11-wireless.ssid "$SSID" wifi-sec.psk "$PASSWORD"
     state=""
