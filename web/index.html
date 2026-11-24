@@ -115,6 +115,14 @@
   #zoomImg { display:block; width:100%; height:auto; }
   #lookCloser { display:block; margin:8px auto 0; background:none; border:0; color:var(--text); font-size:15px; font-weight:700; letter-spacing:.08em;
     text-transform:uppercase; text-decoration:underline; padding:6px; }
+  /* Recently deleted: designs added from a phone wait here until the trash is emptied */
+  #trash { display:none; }
+  #trashList { display:grid; gap:10px; margin-top:10px; grid-template-columns:repeat(auto-fill, minmax(130px, 1fr)); }
+  #trashList > div { background:#1e1f20; border-radius:6px; padding:7px; border-top:3px solid var(--red); display:flex; flex-direction:column; gap:6px; }
+  #trashList img { width:100%; height:auto; display:block; border-radius:3px; background:#262626; opacity:.8; }
+  #trashList span { font-size:15px; letter-spacing:.04em; text-transform:uppercase; overflow-wrap:anywhere; }
+  #trashList .btn { flex:none; padding:9px 4px 8px; font-size:15px; }
+  .btn.red { background:linear-gradient(#f66064, #e23239 12%, #c81e25 60%, #8c1218); border-color:#460a0e; }
   #remove { display:none; margin:10px auto 0; background:none; border:0; color:var(--bad); font-size:15px; letter-spacing:.08em;
     text-transform:uppercase; text-decoration:underline; padding:8px; }
   #msg { position:fixed; left:16px; right:16px; top:36%; background:var(--rim); border-radius:10px; padding:2px;
@@ -155,6 +163,12 @@
       <pre id="promptText"></pre>
       <div id="upResults"></div>
     </div></div>
+    <div class="panel" id="trash"><div>
+      <div class="step" id="trashTitle">Recently deleted</div>
+      <p class="note">Designs you deleted. They stay here, off the booth's lists, until the trash is emptied.</p>
+      <div id="trashList"></div>
+      <div class="bar"><button class="btn red" id="trashEmpty">Empty trash</button></div>
+    </div></div>
   </section>
   <section id="editor">
     <div class="step">2. Add your photos</div>
@@ -163,7 +177,7 @@
     <button id="lookCloser">Look closer at this design</button>
     <div id="stageWrap"><div id="stage"><img id="frame" alt=""></div></div>
     <p class="hint" id="hint"></p>
-    <button id="remove">Remove this design from the booth</button>
+    <button id="remove">Delete this design</button>
   </section>
 </main>
 <div id="dock">
@@ -602,15 +616,58 @@ $("designFiles").onchange = async e => {
   $("addDesign").disabled = false; $("addDesign").textContent = "Add my design";
 };
 
+async function post(path, data) {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data || {})});
+  return r.json();
+}
+
+// ---- Recently deleted: restore one, delete one for good, or empty the lot.
+async function loadTrash() {
+  let list = [];
+  try { list = (await (await fetch("/api/trash")).json()).designs; } catch (e) { return; }
+  $("trash").style.display = list.length ? "block" : "none";
+  $("trashTitle").textContent = "Recently deleted (" + list.length + ")";
+  const box = $("trashList"); box.innerHTML = "";
+  for (const t of list) {
+    const card = document.createElement("div");
+    const img = new Image(); img.alt = ""; img.width = t.w; img.height = t.h; img.src = "/trash.jpg?id=" + encodeURIComponent(t.id);
+    const name = document.createElement("span"); name.textContent = t.name;
+    const back = document.createElement("button"); back.className = "btn ok"; back.textContent = "Restore";
+    back.onclick = async () => {
+      try {
+        const out = await post("/api/trash/restore", {id: t.id});
+        if (!out.ok) { say(out.message); loadTrash(); return; }
+        loadTrash();
+        if (await reloadDesigns(l => l.some(d => d.id === out.id))) { layout = t.kind; count = 0; cat = "MY DESIGNS"; if (!design) showPicker(); }
+      } catch (e) { say("Couldn't reach the booth. Are you still on its WiFi?"); }
+    };
+    const kill = document.createElement("button"); kill.className = "btn red"; kill.textContent = "Delete forever";
+    kill.onclick = async () => {
+      if (!confirm('Delete "' + t.name + '" for good? This can\'t be undone.')) return;
+      try { const out = await post("/api/trash/delete", {id: t.id}); if (!out.ok) say(out.message); }
+      catch (e) { say("Couldn't reach the booth. Are you still on its WiFi?"); }
+      loadTrash();
+    };
+    card.append(img, name, back, kill); box.appendChild(card);
+  }
+}
+
+$("trashEmpty").onclick = async () => {
+  if (!confirm("Empty the trash? Every design in Recently deleted is deleted for good.")) return;
+  try { const out = await post("/api/trash/empty"); say(out.message); }
+  catch (e) { say("Couldn't reach the booth. Are you still on its WiFi?"); }
+  loadTrash();
+};
+
 $("remove").onclick = async () => {
-  if (!design || !design.mine || !confirm('Remove "' + title(design) + '" from the booth? Strips already made with it are kept.')) return;
+  if (!design || !design.mine || !confirm('Delete "' + title(design) + '"? It goes to Recently deleted, where you can restore it. Strips already made with it are kept.')) return;
   const gone = design.id;
   try {
-    const r = await fetch("/api/design/remove", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id: gone})});
-    const out = await r.json();
+    const out = await post("/api/design/remove", {id: gone});
     if (!out.ok) { say(out.message); return; }
     designs = designs.filter(d => d.id !== gone);
     say(out.message, () => { slots.forEach(s => { s.photo = null; }); showPicker(); });
+    loadTrash();
     reloadDesigns(list => !list.some(d => d.id === gone));
   } catch (e) { say("Couldn't reach the booth. Are you still on its WiFi?"); }
 };
@@ -630,7 +687,7 @@ $("mixCancel").onclick = () => { mixFirst = null; say("Mix cancelled. Strip 1 is
     designs = got.designs; effects = got.effects || null;
     showPicker();
   } catch (e) { say("Can't reach the booth. Join its WiFi and reload."); }
-  status(); setInterval(status, 5000);
+  status(); setInterval(status, 5000); loadTrash();
 })();
 </script>
 </body>

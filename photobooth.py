@@ -3639,8 +3639,9 @@ def _web_add_design(data):
                 same = False
             if same:
                 raise UploadError(f'That design is already on the booth ("{design_name(other) or other.stem}").')
-        if len(existing) >= UPLOAD_MAX_DESIGNS:
-            raise UploadError(f"The booth already holds {UPLOAD_MAX_DESIGNS} added designs. Remove one first.")
+        if len(existing) + len(_trashed_designs()) >= UPLOAD_MAX_DESIGNS:
+            raise UploadError(f"The booth already holds {UPLOAD_MAX_DESIGNS} added designs, counting Recently "
+                              "deleted. Empty the trash, or delete one, first.")
         free = storage_free_bytes()
         if free is not None and free < STORAGE_FULL_BYTES:
             raise UploadError("The booth's storage is full. Delete old strips in REVIEW first.")
@@ -3678,18 +3679,148 @@ def _web_add_design(data):
                        f'with {len(slots)} photo{"" if len(slots) == 1 else "s"}. Find it under My designs.'}
 
 
-def _web_remove_design(ident):
-    """Takes a design added from a phone off the booth. Only those: never a shipped or gifted one."""
+# ---- Recently deleted: designs added from a phone go here first, and stay until the trash is
+# emptied. A folder whose name starts with a dot, which the booth's design search skips. Used by
+# the phone page and by DESIGNS on the booth's own screen.
+TRASH_DIR = UPLOAD_DIR / ".trash"
+_UPLOAD_SUBS = {"strip": "", "sheet": "sheets", "psheet": "portrait"}
+
+
+def _trashed_designs(kind=None):
+    """[(picture, kind)] in Recently deleted, the last one deleted first."""
+    found = []
+    for k, sub in _UPLOAD_SUBS.items():
+        if kind in (None, k):
+            folder = TRASH_DIR / sub if sub else TRASH_DIR
+            found += [(f, k) for f in folder.glob("*.png")] if folder.is_dir() else []
+    return sorted(found, key=lambda item: (-(_ctime(item[0]) or 0), item[0].name))
+
+
+def _ctime(path):
+    try:
+        return path.stat().st_ctime_ns  # when it was moved here
+    except OSError:
+        return None
+
+
+def _trash_id(path):
+    return str(path.relative_to(TRASH_DIR))
+
+
+def _move_design(path, folder):
+    """Moves a design (picture and JSON) into `folder` under a name nothing there has. The JSON
+    is in place before the picture arrives and stays until the picture has left, so the booth
+    (which looks for pictures) never finds one without its JSON."""
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = _upload_stem(path.stem, folder)
+    target = folder / f"{stem}.png"
+    sidecar = path.with_suffix(".json")
+    if sidecar.exists():
+        shutil.copyfile(sidecar, target.with_suffix(".json"))
+    os.replace(path, target)
+    sidecar.unlink(missing_ok=True)
+    return target
+
+
+def trash_design(path):
+    """Soft delete: an uploaded design leaves the booth's designs for Recently deleted."""
     global _designs_stale
-    path = next((f for f in _uploaded_designs() if design_id(f) == ident), None)
-    if path is None:
-        raise UploadError("Only designs added from a phone can be removed here.")
     with _upload_lock:
-        path.unlink(missing_ok=True)
-        path.with_suffix(".json").unlink(missing_ok=True)
+        if path not in _uploaded_designs():
+            raise UploadError("Only designs added from a phone can be deleted. The booth's own stay.")
+        kind = next(k for k, sub in _UPLOAD_SUBS.items() if path.parent == (UPLOAD_DIR / sub if sub else UPLOAD_DIR))
+        sub = _UPLOAD_SUBS[kind]
+        moved = _move_design(path, TRASH_DIR / sub if sub else TRASH_DIR)
     _designs_stale = True
-    print(f"Design removed from a phone: {ident}")
-    return {"ok": True, "message": "Removed from the booth."}
+    print(f"Design moved to Recently deleted: {path.name} -> {moved.name}")
+    return moved
+
+
+def restore_design(ident):
+    """Out of Recently deleted, back among the designs (under a new name if its old one was taken)."""
+    global _designs_stale
+    with _upload_lock:
+        path, kind = next(((f, k) for f, k in _trashed_designs() if _trash_id(f) == ident), (None, None))
+        if path is None:
+            raise UploadError("That design isn't in Recently deleted any more.")
+        sub = _UPLOAD_SUBS[kind]
+        back = _move_design(path, UPLOAD_DIR / sub if sub else UPLOAD_DIR)
+    _designs_stale = True
+    print(f"Design restored: {back.name}")
+    return back
+
+
+def empty_trash(ident=None):
+    """Hard delete: everything in Recently deleted, or just one design. Returns how many went."""
+    gone = 0
+    with _upload_lock:
+        for path, _ in _trashed_designs():
+            if ident is None or _trash_id(path) == ident:
+                path.unlink(missing_ok=True)
+                path.with_suffix(".json").unlink(missing_ok=True)
+                _trash_thumbs.pop(path, None)
+                gone += 1
+    if ident is not None and not gone:
+        raise UploadError("That design isn't in Recently deleted any more.")
+    print(f"Recently deleted: {gone} design(s) deleted for good")
+    return gone
+
+
+_trash_thumbs = {}  # picture in Recently deleted -> (its small picture, kind)
+
+
+def trash_thumb(path, kind):
+    """A small picture of a design in Recently deleted, grey where the photos go."""
+    if path not in _trash_thumbs:
+        if len(_trash_thumbs) > 60:
+            _trash_thumbs.clear()
+        with Image.open(path) as im:
+            small = im.convert("RGBA").resize(THUMB_SIZES[kind], Image.BILINEAR, reducing_gap=2.0)
+        thumb = Image.new("RGBA", small.size, (206, 210, 216, 255))
+        thumb.alpha_composite(small)
+        _trash_thumbs[path] = thumb.convert("RGB")
+    return _trash_thumbs[path]
+
+
+def _trash_name(path):
+    try:
+        name = json.loads(path.with_suffix(".json").read_text()).get("name")
+    except (OSError, ValueError, AttributeError):
+        name = None
+    return name if isinstance(name, str) and name.strip() else path.stem
+
+
+def _web_trash():
+    return [{"id": _trash_id(f), "name": _trash_name(f), "kind": k, "w": DESIGN_SIZES[k][0], "h": DESIGN_SIZES[k][1]}
+            for f, k in _trashed_designs()]
+
+
+def _web_trash_image(ident):
+    path, kind = next(((f, k) for f, k in _trashed_designs() if _trash_id(f) == ident), (None, None))
+    if path is None:
+        return None
+    buf = io.BytesIO()
+    trash_thumb(path, kind).save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
+def _web_design_action(path, data):
+    """The phone page's delete, restore and empty: what to tell the phone."""
+    ident = str(data.get("id", "")) if isinstance(data, dict) else ""
+    if path == "/api/design/remove":
+        target = next((f for f in _uploaded_designs() if design_id(f) == ident), None)
+        if target is None:
+            raise UploadError("Only designs added from a phone can be deleted. The booth's own stay.")
+        trash_design(target)
+        return {"ok": True, "message": "Moved to Recently deleted. It stays there until the trash is emptied."}
+    if path == "/api/trash/restore":
+        back = restore_design(ident)
+        return {"ok": True, "id": design_id(back), "message": "Restored. It's back under My designs."}
+    if path == "/api/trash/delete":
+        empty_trash(ident)
+        return {"ok": True, "message": "Deleted for good."}
+    gone = empty_trash()
+    return {"ok": True, "message": f"Trash emptied: {gone} design{'' if gone == 1 else 's'} deleted for good."}
 
 
 def _web_effects():
@@ -3847,6 +3978,11 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
             elif url.path == "/api/designs":
                 self._json(200, {"designs": _web_designs(), "layouts": LAYOUT_NAMES,
                                  "effects": _web_effects()})
+            elif url.path == "/api/trash":
+                self._json(200, {"designs": _web_trash()})
+            elif url.path == "/trash.jpg":
+                body = _web_trash_image((query.get("id") or [""])[0])
+                self._send(*((404, b"gone", "text/plain") if body is None else (200, body, "image/jpeg")))
             elif url.path == "/api/status":
                 self._json(200, {"printer": bool(printer_connected), "alert": printer_alert,
                                  "waiting": len(print_jobs)})
@@ -3878,15 +4014,16 @@ class _WebHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             length = int(self.headers.get("Content-Length") or 0)
-            if (self.path not in ("/api/make", "/api/preview", "/api/design", "/api/design/remove")
+            if (self.path not in ("/api/make", "/api/preview", "/api/design", "/api/design/remove",
+                                  "/api/trash/restore", "/api/trash/delete", "/api/trash/empty")
                     or not 0 < length <= WEB_MAX_BYTES):
                 self._json(400, {"ok": False, "message": "Too big, or not understood."})
                 return
             data = json.loads(self.rfile.read(length))
-            if self.path.startswith("/api/design"):
+            if self.path.startswith(("/api/design", "/api/trash")):
                 try:
                     self._json(200, _web_add_design(data) if self.path == "/api/design"
-                               else _web_remove_design(str(data.get("id", ""))))
+                               else _web_design_action(self.path, data))
                 except UploadError as e:
                     self._json(400, {"ok": False, "message": str(e)})
                 return
@@ -6292,9 +6429,14 @@ _inspect_at = [0.5, 0.0]  # where the view is, 0-1 across and down what there is
 _inspect_view = None     # the picture's area on screen: drags that start inside it move the picture
 _inspect_full = (None, None)  # (design, its full-size picture)
 _inspect_fits = {}       # (design, w, h) -> it at a size shown
+# Recently deleted (designs added from a phone): the "trash" group of DESIGNS.
+designs_trash_pick = None   # the deleted design being asked about (its path)
+_designs_confirm = (None, 0.0)  # (what a 2nd tap confirms: "delete", "forever" or "empty"; until when)
 
 
 def design_in_category(index, cat):
+    if cat == "trash":
+        return False  # Recently deleted holds no design in use
     if cat == "all" or not 0 <= index < len(frames):
         return True
     if cat == "fav":
@@ -6314,7 +6456,8 @@ def _design_cats(kind):
         cat = design_category(frames[i])
         if cat not in cats:
             cats.append(cat)
-    return ["fav", "all"] + cats
+    # Last: Recently deleted, when a design of this layout is in it.
+    return ["fav", "all"] + cats + (["trash"] if _trashed_designs(kind) else [])
 
 
 def _thumb_file(path, kind):
@@ -6391,6 +6534,7 @@ def open_designs():
         return
     print("Designs opened.")
     designs_inspect = None
+    _designs_reset_trash()
     designs_kind = current_kind()
     designs_cat = design_filter if design_filter in _design_cats(designs_kind) else "all"
     if designs_cat != "all" and not design_in_category(current_frame_index, designs_cat):
@@ -6401,8 +6545,89 @@ def open_designs():
     update_menu(force=True)
 
 
+def _designs_reset_trash():
+    global designs_trash_pick, _designs_confirm
+    designs_trash_pick, _designs_confirm = None, (None, 0.0)
+
+
+def _confirming(what):
+    return _designs_confirm[0] == what and time.monotonic() < _designs_confirm[1]
+
+
+def _confirm_tap(what):
+    """True on the 2nd tap within a few seconds; the 1st only arms it (the key then says so)."""
+    global _designs_confirm
+    if _confirming(what):
+        _designs_confirm = (None, 0.0)
+        return True
+    _designs_confirm = (what, time.monotonic() + 4.0)
+    return False
+
+
+def inspect_delete():
+    """DELETE in the close-up of a design added from a phone: off to Recently deleted."""
+    path = designs_inspect
+    if path is None or not _is_upload(path) or not _confirm_tap("delete"):
+        return
+    try:
+        trash_design(path)
+    except (UploadError, OSError) as e:
+        print(f"Could not delete {path.name}: {e}")
+        flash_message("COULD NOT DELETE", seconds=1.0)
+        return
+    inspect_close()
+    refresh_designs()  # now, not at the next look: the pages must not show it any more
+    flash_message("MOVED TO\nRECENTLY DELETED", seconds=0.9)
+
+
+def trash_pick(path):
+    global designs_trash_pick, _designs_confirm
+    designs_trash_pick, _designs_confirm = path, (None, 0.0)
+
+
+def trash_restore():
+    path = designs_trash_pick
+    _designs_reset_trash()
+    try:
+        restore_design(_trash_id(path))
+    except (UploadError, OSError) as e:
+        print(f"Could not restore {path.name}: {e}")
+        flash_message("COULD NOT RESTORE", seconds=1.0)
+        return
+    refresh_designs()
+    flash_message("RESTORED", seconds=0.8)
+
+
+def trash_delete_forever():
+    path = designs_trash_pick
+    if not _confirm_tap("forever"):
+        return
+    _designs_reset_trash()
+    try:
+        empty_trash(_trash_id(path))
+    except (UploadError, OSError) as e:
+        print(f"Could not delete {path.name}: {e}")
+        flash_message("COULD NOT DELETE", seconds=1.0)
+        return
+    flash_message("DELETED FOR GOOD", seconds=0.8)
+
+
+def trash_empty():
+    if not _confirm_tap("empty"):
+        return
+    try:
+        gone = empty_trash()
+    except OSError as e:
+        print(f"Could not empty the trash: {e}")
+        flash_message("COULD NOT EMPTY\nTHE TRASH", seconds=1.0)
+        return
+    _designs_reset_trash()
+    flash_message(f"TRASH EMPTIED\n{gone} deleted for good", seconds=1.0)
+
+
 def designs_step_cat(step):
     global designs_cat, designs_page
+    _designs_reset_trash()
     cats = _design_cats(designs_kind)
     at = cats.index(designs_cat) if designs_cat in cats else 1
     designs_cat = cats[(at + step) % len(cats)]
@@ -6411,6 +6636,7 @@ def designs_step_cat(step):
 
 def designs_next_kind():
     global designs_kind, designs_cat, designs_page
+    _designs_reset_trash()
     order = [k for k in LAYOUTS if _designs_on_offer(k)]
     if not order:
         return
@@ -6459,7 +6685,8 @@ def _designs_shown():
 
 
 def inspect_design(path):
-    global designs_inspect, _inspect_zoom, _inspect_at
+    global designs_inspect, _inspect_zoom, _inspect_at, _designs_confirm
+    _designs_confirm = (None, 0.0)
     if path in frames:
         designs_inspect, _inspect_zoom, _inspect_at = path, 0, [0.5, 0.0]
 
@@ -6609,6 +6836,9 @@ def render_design_inspect(img, area, buttons):
         if zoom:
             _draw_key(draw, box, zoom, buttons, inspect_zoom_step, fill=MENU_KEY, size=20)
 
+    mine = _is_upload(path)   # added from a phone: it can go to Recently deleted
+    wipe = dict(fill=MENU_DANGER, size=20)
+    wipe_text = "SURE?\nTAP AGAIN" if _confirming("delete") else "DELETE"
     if side:
         kx0, kx1 = x1 - col_w, x1
         half = (col_w - gap) // 2
@@ -6621,7 +6851,12 @@ def render_design_inspect(img, area, buttons):
         _draw_key(draw, (kx0, ys[2], kx0 + half, ys[2] + kh), "\u25c0", buttons, lambda: inspect_step(-1), **arrow)
         _draw_key(draw, (kx1 - half, ys[2], kx1, ys[2] + kh), "\u25b6", buttons, lambda: inspect_step(1), **arrow)
         zoom_key((kx0, ys[3], kx1, ys[3] + kh))
-        star_key((kx0, ys[4], kx1, ys[4] + kh))
+        if mine:  # the star and DELETE share a row
+            star_key((kx0, ys[4], kx0 + half, ys[4] + kh))
+            _draw_key(draw, (kx1 - half, ys[4], kx1, ys[4] + kh), wipe_text, buttons, inspect_delete,
+                      fill=MENU_DANGER, size=15)
+        else:
+            star_key((kx0, ys[4], kx1, ys[4] + kh))
         _draw_key(draw, (kx0, ys[5], kx1, y1), "IN USE" if in_use else "USE\nTHIS", buttons,
                   lambda: choose_design(path), size=22, **use)
     else:
@@ -6636,7 +6871,11 @@ def render_design_inspect(img, area, buttons):
         star_key((xs[2], fy, xs[2] + q, fy + kh))
         _draw_key(draw, (xs[3], fy, x1, fy + kh), "\u25b6", buttons, lambda: inspect_step(1), **arrow)
         fy += kh + gap
-        _draw_key(draw, (x0, fy, xs[1] + q, y1), "\u25c0 BACK", buttons, inspect_close, fill=MENU_DONE, size=22)
+        if mine:
+            _draw_key(draw, (x0, fy, xs[0] + q, y1), "\u25c0 BACK", buttons, inspect_close, fill=MENU_DONE, size=20)
+            _draw_key(draw, (xs[1], fy, xs[1] + q, y1), wipe_text, buttons, inspect_delete, **wipe)
+        else:
+            _draw_key(draw, (x0, fy, xs[1] + q, y1), "\u25c0 BACK", buttons, inspect_close, fill=MENU_DONE, size=22)
         _draw_key(draw, (xs[2], fy, x1, y1), "IN USE" if in_use else "USE THIS", buttons,
                   lambda: choose_design(path), size=22, **use)
 
@@ -6651,6 +6890,82 @@ def _draw_star(draw, cx, cy, r, on):
     draw.polygon(pts, fill=(255, 205, 40) if on else (0, 0, 0), outline=(255, 205, 40) if on else (255, 255, 255))
     if not on:
         draw.line(pts + [pts[0]], fill=(255, 255, 255), width=2)
+
+
+def _render_designs_trash(img, draw, area, trashed, buttons):
+    """DESIGNS > RECENTLY DELETED: the deleted designs; a tap on one asks RESTORE or DELETE FOREVER.
+    They stay here until EMPTY TRASH."""
+    global designs_page, designs_trash_pick
+    x0, y0, x1, y1 = area
+    w, gap, foot_h = x1 - x0, 8, 54
+    if designs_trash_pick is not None and designs_trash_pick not in trashed:
+        designs_trash_pick = None  # restored or deleted from a phone meanwhile
+    fy0 = y1 - foot_h
+    if designs_trash_pick is not None:
+        # One design: its picture on the left, what to do with it on the right.
+        path = designs_trash_pick
+        key_w = min(230, w // 2)
+        box = (x0, y0, x1 - key_w - gap, y1)
+        draw.rectangle(box, fill=MENU_FIELD)
+        try:
+            thumb = trash_thumb(path, designs_kind)
+            sc = min((box[2] - box[0] - 8) / thumb.width, (box[3] - box[1] - 8) / thumb.height)
+            fit = thumb.resize((max(1, int(thumb.width * sc)), max(1, int(thumb.height * sc))), Image.BILINEAR)
+            img.paste(fit, ((box[0] + box[2] - fit.width) // 2, (box[1] + box[3] - fit.height) // 2))
+        except Exception as e:
+            print(f"Could not show {path.name} from Recently deleted: {e}")
+        kx0 = x1 - key_w
+        kh = (y1 - y0 - 3 * gap) // 4
+        name = _trash_name(path)
+        _draw_text_centered(draw, (kx0, y0, x1, y0 + kh), name, _fit_font(draw, name, key_w - 6, 18), MENU_TEXT)
+        _draw_key(draw, (kx0, y0 + kh + gap, x1, y0 + 2 * kh + gap), "RESTORE", buttons, trash_restore,
+                  fill=MENU_DONE, size=22)
+        sure = _confirming("forever")
+        _draw_key(draw, (kx0, y0 + 2 * (kh + gap), x1, y0 + 3 * kh + 2 * gap),
+                  "SURE?\nTAP AGAIN" if sure else "DELETE\nFOREVER", buttons, trash_delete_forever,
+                  fill=MENU_DANGER, size=20)
+        _draw_key(draw, (kx0, y0 + 3 * (kh + gap), x1, y1), "\u25c0 BACK", buttons, _designs_reset_trash,
+                  fill=MENU_ROW, size=22)
+        return
+    gx0, gy0, gx1, gy1 = x0, y0, x1, fy0 - gap
+    cols, rows, tw, th = _designs_grid(designs_kind, gx1 - gx0, gy1 - gy0, gap)
+    per_page = cols * rows
+    pages = max(1, -(-len(trashed) // per_page))
+    designs_page = min(max(0, designs_page), pages - 1)
+    on_page = trashed[designs_page * per_page:(designs_page + 1) * per_page]
+    if not trashed:
+        mid = (gy0 + gy1) // 2
+        _draw_text_centered(draw, (gx0, mid - 20, gx1, mid + 20), "NOTHING IN THE TRASH", menu_font(24, True), MENU_TEXT)
+    used_w = cols * tw + (cols - 1) * gap
+    used_h = rows * th + (rows - 1) * gap
+    ox, oy = gx0 + (gx1 - gx0 - used_w) // 2, gy0 + (gy1 - gy0 - used_h) // 2
+    for n, path in enumerate(on_page):
+        bx, by = ox + (n % cols) * (tw + gap), oy + (n // cols) * (th + gap)
+        box = (bx, by, bx + tw, by + th)
+        try:
+            img.paste(trash_thumb(path, designs_kind).resize((tw, th), Image.BILINEAR), (bx, by))
+        except Exception:
+            draw.rectangle(box, fill=MENU_FIELD)
+            _draw_text_centered(draw, box, "?", menu_font(22, True), MENU_DIM)
+        draw.rectangle((bx, by, bx + tw - 1, by + th - 1), outline=MENU_DANGER, width=2)
+        buttons.append((box, lambda p=path: trash_pick(p)))
+    # Bottom: the layout, the pages when there are some, and EMPTY TRASH.
+    kind_w = min(170, w // 3)
+    _draw_key(draw, (x0, fy0, x0 + kind_w, y1), DESIGN_KIND_NAMES[designs_kind], buttons, designs_next_kind,
+              fill=MENU_KEY, size=20)
+    px = x0 + kind_w + gap
+    if pages > 1:
+        nav = 58
+        first, last = designs_page == 0, designs_page >= pages - 1
+        _draw_key(draw, (px, fy0, px + nav, y1), "\u25c0", buttons, lambda: designs_turn_page(-1),
+                  fill=MENU_OFF if first else MENU_ROW, text_fill=MENU_DIM if first else MENU_TEXT, size=24)
+        _draw_key(draw, (px + nav + gap, fy0, px + 2 * nav + gap, y1), "\u25b6", buttons, lambda: designs_turn_page(1),
+                  fill=MENU_OFF if last else MENU_ROW, text_fill=MENU_DIM if last else MENU_TEXT, size=24)
+        px += 2 * (nav + gap)
+    if trashed:
+        sure = _confirming("empty")
+        _draw_key(draw, (px, fy0, x1, y1), "SURE? TAP AGAIN" if sure else "EMPTY TRASH", buttons, trash_empty,
+                  fill=MENU_DANGER, size=20)
 
 
 def _designs_grid(kind, w, h, gap):
@@ -6689,9 +7004,10 @@ def render_designs_view(img, area, buttons):
     _draw_key(draw, (x0, y0, x0 + key_w, y0 + bar_h), "◀", buttons, lambda: designs_step_cat(-1), size=28)
     label = (x0 + key_w + gap, y0, x1 - done_w - key_w - 2 * gap, y0 + bar_h)
     _rrect(draw, label, radius=10, fill=MENU_FIELD)
-    title = {"fav": "★ FAVOURITES", "all": "ALL DESIGNS"}.get(cat, cat)
+    trashed = [f for f, _ in _trashed_designs(designs_kind)] if cat == "trash" else []
+    title = {"fav": "★ FAVOURITES", "all": "ALL DESIGNS", "trash": "RECENTLY DELETED"}.get(cat, cat)
     plain = cat == "fav"
-    text = f"{title}  ({len(shown)})"
+    text = f"{title}  ({len(trashed) if cat == 'trash' else len(shown)})"
     font = menu_font(24, True, plain)
     size = 24
     while size > 12 and draw.textbbox((0, 0), text, font=font)[2] > label[2] - label[0] - 16:
@@ -6701,6 +7017,10 @@ def render_designs_view(img, area, buttons):
     _draw_key(draw, (label[2] + gap, y0, label[2] + gap + key_w, y0 + bar_h), "▶", buttons,
               lambda: designs_step_cat(1), size=28)
     _draw_key(draw, (x1 - done_w, y0, x1, y0 + bar_h), "DONE", buttons, close_menu, fill=MENU_DONE, size=22)
+
+    if cat == "trash":
+        _render_designs_trash(img, draw, (x0, y0 + bar_h + gap, x1, y1), trashed, buttons)
+        return
 
     # The pictures.
     gx0, gy0, gx1, gy1 = x0, y0 + bar_h + gap, x1, y1 - foot_h - gap

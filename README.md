@@ -299,8 +299,13 @@ reachable from the booth's own network.
   see-through; valid JSON; not a design it already has), saves its own clean copy in
   `~/my-designs/uploads/` (`sheets/` and `portrait/` inside it) and shows it under MY DESIGNS on the page
   and the booth within seconds. A name that's taken gets `-2`, `-3`; nothing is ever overwritten. That
-  folder is outside `~/photobooth`, so updates never touch it. A design added this way has "Remove this
-  design from the booth" under it on the page; shipped and gifted designs can't be removed there.
+  folder is outside `~/photobooth`, so updates never touch it.
+- **Deleting an added design.** "Delete this design" under it on the page, or DELETE (tap twice) in its
+  close-up in DESIGNS on the booth, moves it to **Recently deleted** (`~/my-designs/uploads/.trash/`): off
+  every list, but kept. It stays there until someone restores it (RESTORE; a name taken meanwhile gets
+  `-2`), deletes it for good (DELETE FOREVER) or empties the trash (EMPTY TRASH). On the page that's the
+  Recently deleted panel under the designs; on the booth it's the last group in DESIGNS, shown when the
+  trash holds a design of that layout. Shipped and gifted designs can't be deleted either way.
 
 ## Command line on the booth's screen
 
