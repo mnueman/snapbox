@@ -244,6 +244,13 @@ Layers that keep it running:
 - Raw captures left by an interrupted strip are cleared at startup.
 - Logs survive reboots (capped at 50 MB): `journalctl -u photobooth -b -1` shows the previous boot.
 
+## Handbook for the people a booth is given to
+
+`python3 system/make_handbook.py "Their Names" ~/Booth-Guide.pdf` makes a 10-page PDF in plain words:
+the button, the screen, printing, photos from a phone, making their own designs, settings and updates,
+and what to do when something isn't right. Its text is in the script (`PAGES`): update it when a
+feature changes, and copy the new PDF to the booth.
+
 ## Printer (Canon SELPHY CP1500)
 
 The printer connects over WiFi to a network the booth makes itself, so it works anywhere, with or
