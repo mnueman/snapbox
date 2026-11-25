@@ -45,7 +45,9 @@ systemctl restart systemd-journald
 journalctl --flush
 systemctl daemon-reload
 systemctl enable photobooth.service photobooth-guard.timer photobooth-update-recover.service
-systemctl enable --now snapbox-wifi-watchdog.timer
+systemctl enable snapbox-wifi-watchdog.timer
+# restart, not just start: a timer that's already running keeps its old intervals otherwise.
+systemctl restart snapbox-wifi-watchdog.timer
 systemctl enable snapbox-wifi-nosteer.service
 # Right away too (only reconnects WiFi if it isn't set yet).
 /usr/local/sbin/snapbox-wifi-nosteer up || true

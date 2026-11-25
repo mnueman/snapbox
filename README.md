@@ -234,8 +234,9 @@ Layers that keep it running:
 - Raspberry Pi OS's hardware watchdog reboots the Pi if the whole system hangs.
 - The booth's WiFi ignores routers' "band steering" (being told to move to 5 GHz): the printer hotspot
   shares its radio and channel (`snapbox-wifi-nosteer`). If the WiFi chip still gets stuck (every scan
-  fails), `snapbox-wifi-watchdog.timer` restarts the WiFi driver, then reboots if that didn't help (at
-  most 3 times in a row). Log: `journalctl -t snapbox-wifi-nosteer -u snapbox-wifi-watchdog`.
+  fails; it still happens: the chip follows the router by itself), `snapbox-wifi-watchdog.timer` looks
+  every 20 seconds and restarts the WiFi driver within about a minute, then reboots if that didn't help
+  (at most 3 times in a row). Log: `journalctl -t snapbox-wifi-nosteer -u snapbox-wifi-watchdog`.
 - Settings and strips are written with fsync + rename, so a power cut can't leave them empty.
 - An unexpected error in the main loop is logged and the booth carries on; 5 within a minute restarts the app.
 - If the camera isn't detected the screen says "CAMERA NOT FOUND - check the cable" and keeps retrying.

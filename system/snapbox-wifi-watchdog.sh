@@ -4,7 +4,10 @@
 # hotspot is busy, the chip can get stuck: every scan fails with -52 and nothing reconnects until a
 # reboot (seen 2026-11-14). This notices that and restarts the WiFi driver; if that doesn't help,
 # it reboots.
-# Runs every minute (snapbox-wifi-watchdog.timer). While wlan0 is connected it only reads one file.
+# It has to be quick: on 2026-11-24 the router moved wlan0 to 5 GHz 20 seconds after boot, the
+# booth had no WiFi, and its owner rebooted it by hand after a minute and a half, long before
+# the old once-a-minute check (first run at 2 minutes, acting on the second look) got there.
+# Runs every 20 seconds (snapbox-wifi-watchdog.timer): stuck WiFi is back in about a minute. While wlan0 is connected it only reads one file.
 # Installed as /usr/local/sbin/snapbox-wifi-watchdog by system/install.sh. Log:
 # journalctl -u snapbox-wifi-watchdog
 set -u
@@ -31,25 +34,26 @@ if [ "$(cat /sys/class/net/$STA/operstate 2>/dev/null)" = up ]; then
 fi
 
 now=$(cut -d. -f1 /proc/uptime)
-# Just restarted the driver: give it 5 minutes to reconnect before judging again.
-if [ -r "$RUN/reset" ] && [ $((now - $(cat "$RUN/reset"))) -lt 300 ]; then
+# Just restarted the driver: give it 2 minutes to reconnect before judging again.
+if [ -r "$RUN/reset" ] && [ $((now - $(cat "$RUN/reset"))) -lt 120 ]; then
     exit 0
 fi
 
 # Not connected. That's normal with no known network around; stuck is when scans keep failing.
-fails=$(journalctl -q -o cat -u wpa_supplicant --since=-2min 2>/dev/null | grep -c 'SCAN-FAILED ret=-52')
+# A stuck chip fails a scan every second, so 10 in the last 40 seconds is unmistakable.
+fails=$(journalctl -q -o cat -u wpa_supplicant --since=-40s 2>/dev/null | grep -c 'SCAN-FAILED ret=-52')
 mkdir -p "$RUN"
 if [ "$fails" -lt 10 ]; then
     rm -f "$RUN/suspect"
     exit 0
 fi
 # Never in the middle of a print: restarting the driver drops the printer, and a reboot loses the
-# sheet. Look again next minute.
+# sheet. Look again next time.
 if lpstat -o 2>/dev/null | grep -q .; then
     echo "snapbox-wifi-watchdog: WiFi chip looks stuck, but a print is going; waiting"
     exit 0
 fi
-# Act only when it's still stuck a minute later.
+# Act only when it's still stuck at the next look, 20 seconds later.
 if [ ! -e "$RUN/suspect" ]; then
     : > "$RUN/suspect"
     exit 0
@@ -74,7 +78,7 @@ if [ -e "$RUN/reset" ] && [ "$now" -gt 600 ]; then
     reboot_booth
 fi
 
-echo "snapbox-wifi-watchdog: WiFi chip stuck ($fails failed scans in 2 minutes); restarting the WiFi driver"
+echo "snapbox-wifi-watchdog: WiFi chip stuck ($fails failed scans in 40 seconds); restarting the WiFi driver"
 echo "$now" > "$RUN/reset"
 # The printer hotspot (uap0) goes away with the driver; the hotspot service makes it again.
 if ! modprobe -r brcmfmac_cyw brcmfmac; then

@@ -1,9 +1,10 @@
 [Unit]
-Description=Check every minute that the WiFi chip isn't stuck
+Description=Check every 20 seconds that the WiFi chip isn't stuck
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=60
+OnBootSec=30
+OnUnitActiveSec=20
+AccuracySec=2
 
 [Install]
 WantedBy=timers.target
